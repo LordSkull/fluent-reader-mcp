@@ -16,7 +16,8 @@
     "start": "node dist/main.js"
   },
   "dependencies": {
-    "@modelcontextprotocol/server": "2.4.0"
+    "@modelcontextprotocol/server": "2.4.0",
+    "koffi": "3.3.4"
   },
   "devDependencies": {
     "@modelcontextprotocol/client": "2.4.0",

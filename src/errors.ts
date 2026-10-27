@@ -68,8 +68,10 @@ export type ErrorReason =
     | "primary-key"
     | "octet-length"
     | "query-only"
-    | "helper-unavailable"
-    | "helper-lost"
+    | "ffi-unavailable"
+    | "lock-failed"
+    | "lock-release"
+    | "closed"
     | "unsupported-platform"
     | "busy"
     | "io"
@@ -127,7 +129,7 @@ const TEXT: Readonly<Record<ErrorCode, { message: string; hint: string }>> = {
     },
     DB_PROTECTION_UNAVAILABLE: {
         message: "The lock that keeps the profile database unchanged during reads could not be obtained or was lost.",
-        hint: "Retry; the server never reads the database without this protection. It requires Windows PowerShell 5.1 with Add-Type allowed.",
+        hint: "Retry; the server never reads the database without this protection. It requires Windows x64 and the bundled Koffi native module.",
     },
     DB_UNREADABLE: {
         message: "The profile database could not be read.",

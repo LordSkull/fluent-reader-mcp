@@ -8,7 +8,7 @@
 
 import { serveStdio } from "@modelcontextprotocol/server/stdio"
 import { resolveProfile, selectProfileInput } from "./config/profile.js"
-import { closeAllConnections, DatabaseAccess, sharedLock } from "./db/connection.js"
+import { closeAllConnections, DatabaseAccess, fileLock } from "./db/connection.js"
 import { verifyDatabase } from "./db/schema.js"
 import { toSafeError } from "./errors.js"
 import { logEvent } from "./log.js"
@@ -23,7 +23,7 @@ function installFatalHandlers(): void {
         const safe = toSafeError(error)
         logEvent("fatal", { code: safe.code })
         closeAllConnections()
-        sharedLock().terminate()
+        // Exiting closes every handle of this process, Win32 lock handles included.
         process.exit(1)
     }
     process.on("uncaughtException", fatal)
@@ -65,7 +65,7 @@ async function main(): Promise<void> {
         const safe = toSafeError(error)
         logEvent("startup_failed", { code: safe.code, ...(safe.reason && { reason: safe.reason }) })
         closeAllConnections()
-        await sharedLock().close()
+        fileLock().close()
         process.exitCode = 1
         return
     }
@@ -81,8 +81,10 @@ async function main(): Promise<void> {
         shuttingDown = true
         logEvent("shutdown", { reason })
         closeAllConnections()
+        fileLock().close()
         setTimeout(() => process.exit(0), FORCED_EXIT_MS).unref()
-        Promise.all([handle.close(), sharedLock().close()])
+        handle
+            .close()
             .catch(() => undefined)
             .finally(() => {
                 process.stdin.pause()

@@ -6,23 +6,25 @@
  * within the call. No connection or transaction outlives a call. Calls are
  * serialized.
  *
- * Sequence of one call:
- *  1. The helper takes an SQLite-compatible SHARED lock on the database file
- *     (shared-lock.ts). While it is held no writer can obtain EXCLUSIVE, so
- *     the journal mode cannot change and the file cannot be replaced.
- *  2. T0: helper alive; file identity (dev, ino, birthtime) equal to startup
- *     and to the file the helper locked; no -wal/-shm file; 100-byte header
- *     read with fs: SQLite magic and rollback-journal format (1/1).
+ * One attempt is a single synchronous block (no await, so no other code of
+ * this process runs in between):
+ *  1. This process takes an SQLite-compatible SHARED lock on the database
+ *     file through its own Win32 handle (win32-lock.ts). While it is held no
+ *     writer can obtain EXCLUSIVE, so the journal mode cannot change, and the
+ *     file cannot be renamed, replaced or deleted.
+ *  2. File identity (dev, ino, birthtime) equal to startup and to the locked
+ *     handle; no -wal/-shm file; 100-byte header read with fs: SQLite magic
+ *     and rollback-journal format (1/1).
  *  3. readOnly connection, busy timeout 0, `PRAGMA query_only = ON` (verified),
  *     `BEGIN`.
- *  4. T1: helper alive. First read: SQLite takes its own SHARED lock without
- *     waiting (a busy result restarts the call from step 1).
- *  5. T2: helper alive, hence the lock was held without interruption from
- *     step 1 until this connection held SHARED. From here the read
- *     transaction keeps this connection's own SHARED lock until COMMIT.
- *  6. Callback, COMMIT, close, identity check; then the helper releases.
- * If the helper is lost at T0/T1/T2 the call fails with
- * DB_PROTECTION_UNAVAILABLE before the callback runs.
+ *  4. First read: SQLite takes its own SHARED lock without waiting (a busy
+ *     result releases everything and retries the attempt). Identity checked
+ *     again against the locked handle.
+ *  5. Callback, COMMIT, close.
+ *  6. Only once the connection is closed: unlock and close the Win32 handle.
+ * The preventive lock is therefore held from before the header check until
+ * after SQLite has closed the file. It belongs to this process: it can only
+ * disappear together with the process, and with it the SQLite connection.
  *
  * BUSY_TIMEOUT_MS bounds only the total wait for locks (step 1 and the first
  * read, with retries). It does not bound how long the callback's statements
@@ -37,7 +39,7 @@ import { DatabaseSync } from "node:sqlite"
 import { setTimeout as sleep } from "node:timers/promises"
 import { FrMcpError, systemErrorCode, toSafeError } from "../errors.js"
 import { logEvent } from "../log.js"
-import { SqliteSharedLock, type LockLease } from "./shared-lock.js"
+import { SqliteFileLock, type HeldLock } from "./win32-lock.js"
 
 /** Maximum total wait for database locks per call. Not a query time limit. */
 export const BUSY_TIMEOUT_MS = 1000
@@ -45,16 +47,25 @@ export const BUSY_TIMEOUT_MS = 1000
 /** The only part of the connection API exposed to callers. */
 export type ReadOnlyDatabase = Pick<DatabaseSync, "prepare">
 
-/** Test-only seams to inject concurrent events at the critical points. */
+/**
+ * Test-only seams to inject concurrent events at the critical points. All run
+ * while the preventive lock is held.
+ */
 export interface DatabaseAccessHooks {
-    /** After the header check, before SQLite opens the file (lock held by the helper). */
+    /** Right after the Win32 lock is taken, before any check. */
+    afterLock?(lock: HeldLock): void
+    /** After the header check, before SQLite opens the file. */
     afterHeaderCheck?(): void
+    /** After SQLite opened the file and began the transaction, before its first read. */
+    beforeFirstRead?(): void
     /** After this connection holds its own SHARED lock, before the callback. */
     afterOwnSharedLock?(): void
+    /** After the SQLite connection is closed, before the Win32 lock is released. */
+    beforeRelease?(lock: HeldLock): void
 }
 
 export interface DatabaseAccessOptions {
-    readonly lock?: SqliteSharedLock
+    readonly lock?: SqliteFileLock
     readonly hooks?: DatabaseAccessHooks
 }
 
@@ -71,11 +82,11 @@ const SQLITE_LOCKED = 6
 const RETRY_DELAYS_MS = [5, 10, 20, 40, 80]
 
 const openConnections = new Set<DatabaseSync>()
-let defaultLock: SqliteSharedLock | undefined
+let defaultLock: SqliteFileLock | undefined
 
-/** The process-wide lock helper used when no other is given. */
-export function sharedLock(): SqliteSharedLock {
-    defaultLock ??= new SqliteSharedLock()
+/** The process-wide lock factory used when no other is given. */
+export function fileLock(): SqliteFileLock {
+    defaultLock ??= new SqliteFileLock()
     return defaultLock
 }
 
@@ -175,7 +186,7 @@ const RETRY = Symbol("retry")
 export class DatabaseAccess {
     readonly #path: string
     readonly #identity: FileIdentity
-    readonly #lock: SqliteSharedLock
+    readonly #lock: SqliteFileLock
     readonly #hooks: DatabaseAccessHooks | undefined
     #replaced = false
     #queue: Promise<unknown> = Promise.resolve()
@@ -184,7 +195,7 @@ export class DatabaseAccess {
     constructor(databasePath: string, options: DatabaseAccessOptions = {}) {
         this.#path = databasePath
         this.#identity = readIdentity(databasePath)
-        this.#lock = options.lock ?? sharedLock()
+        this.#lock = options.lock ?? fileLock()
         this.#hooks = options.hooks
     }
 
@@ -198,7 +209,8 @@ export class DatabaseAccess {
         this.#replaced = true
     }
 
-    #checkIdentity(lease?: LockLease): void {
+    /** Path identity equal to startup and, when given, to the locked handle. */
+    #checkIdentity(lock?: HeldLock): void {
         if (this.#replaced) throw new FrMcpError("DB_REPLACED", "identity-changed")
         let current: FileIdentity
         try {
@@ -207,15 +219,15 @@ export class DatabaseAccess {
             if (error instanceof FrMcpError && error.code === "DB_REPLACED") this.#markReplaced()
             throw error
         }
-        const lockedOther = lease !== undefined && (lease.dev !== current.dev || lease.ino !== current.ino)
-        if (lockedOther || !sameIdentity(current, this.#identity)) {
+        if (!sameIdentity(current, this.#identity) || (lock !== undefined && !sameIdentity(current, lock))) {
             this.#markReplaced()
             throw new FrMcpError("DB_REPLACED", "identity-changed")
         }
     }
 
-    #ensureProtected(): void {
-        if (!this.#lock.isAliveSync()) throw new FrMcpError("DB_PROTECTION_UNAVAILABLE", "helper-lost")
+    /** Invariant: the preventive lock is released only at the end of an attempt. */
+    #ensureProtected(lock: HeldLock): void {
+        if (!lock.held) throw new FrMcpError("DB_PROTECTION_UNAVAILABLE", "lock-failed")
     }
 
     /**
@@ -233,25 +245,7 @@ export class DatabaseAccess {
         if (this.#replaced) throw new FrMcpError("DB_REPLACED", "identity-changed")
         const deadline = Date.now() + BUSY_TIMEOUT_MS
         for (let attempt = 0; ; attempt++) {
-            let lease: LockLease | "busy" | "unopenable"
-            try {
-                lease = await this.#lock.acquire(this.#path)
-            } catch (error) {
-                throw toSafeError(error)
-            }
-            if (lease === "unopenable") {
-                // Missing or replaced file first; otherwise an I/O problem. SQLite is not opened.
-                this.#checkIdentity()
-                throw new FrMcpError("DB_UNREADABLE", "io")
-            }
-            let outcome: { value: T } | typeof RETRY = RETRY
-            if (lease !== "busy") {
-                try {
-                    outcome = this.#readUnderLock(lease, fn)
-                } finally {
-                    await this.#lock.release()
-                }
-            }
+            const outcome = this.#attempt(fn)
             if (outcome !== RETRY) return outcome.value
             if (Date.now() >= deadline) throw new FrMcpError("DB_BUSY", "busy")
             const delay = RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)] as number
@@ -259,18 +253,33 @@ export class DatabaseAccess {
         }
     }
 
-    #readUnderLock<T>(lease: LockLease, fn: (db: ReadOnlyDatabase) => T): { value: T } | typeof RETRY {
+    /** One synchronous attempt: lock, check, open, read, close, unlock. */
+    #attempt<T>(fn: (db: ReadOnlyDatabase) => T): { value: T } | typeof RETRY {
+        let lock: HeldLock | "busy" | "unopenable"
+        try {
+            lock = this.#lock.acquire(this.#path)
+        } catch (error) {
+            throw toSafeError(error)
+        }
+        if (lock === "busy") return RETRY
+        if (lock === "unopenable") {
+            // Missing or replaced file first; otherwise an I/O problem. SQLite is not opened.
+            this.#checkIdentity()
+            throw new FrMcpError("DB_UNREADABLE", "io")
+        }
+
         let db: DatabaseSync | undefined
         try {
-            // T0: protection in place before anything is checked.
-            this.#ensureProtected()
-            this.#checkIdentity(lease)
+            this.#hooks?.afterLock?.(lock)
+            this.#ensureProtected(lock)
+            this.#checkIdentity(lock)
             if (fileExists(`${this.#path}-wal`) || fileExists(`${this.#path}-shm`)) {
                 throw new FrMcpError("DB_WAL_UNSUPPORTED", "wal-files-present")
             }
             checkHeader(this.#path)
             this.#hooks?.afterHeaderCheck?.()
 
+            this.#ensureProtected(lock)
             db = new DatabaseSync(this.#path, {
                 readOnly: true,
                 timeout: 0,
@@ -282,17 +291,17 @@ export class DatabaseAccess {
             const row = db.prepare("PRAGMA query_only").get() as { query_only?: unknown } | undefined
             if (row?.query_only !== 1) throw new FrMcpError("INTERNAL_ERROR", "query-only")
             db.exec("BEGIN")
+            this.#hooks?.beforeFirstRead?.()
 
-            // T1: no unprotected first read.
-            this.#ensureProtected()
+            this.#ensureProtected(lock)
             try {
                 db.prepare("PRAGMA schema_version").get()
             } catch (error) {
                 if (isBusy(error)) return RETRY
                 throw error
             }
-            // T2: the helper's lock covered every step up to this connection's own SHARED lock.
-            this.#ensureProtected()
+            // SQLite opened by path the very file this process has locked.
+            this.#checkIdentity(lock)
             this.#hooks?.afterOwnSharedLock?.()
 
             const result = fn(db)
@@ -305,13 +314,26 @@ export class DatabaseAccess {
         } catch (error) {
             throw toSafeError(error)
         } finally {
+            let closed = true
             if (db !== undefined) {
-                openConnections.delete(db)
                 try {
                     if (db.isOpen) db.close()
                 } catch {
                     // close() fails only while a statement runs, which cannot
                     // happen here: every call is synchronous.
+                }
+                closed = !db.isOpen
+                if (closed) openConnections.delete(db)
+            }
+            // Never released before SQLite has closed the file. A connection
+            // that could not be closed keeps the lock until process exit.
+            if (closed) {
+                try {
+                    this.#hooks?.beforeRelease?.(lock)
+                } catch (error) {
+                    throw toSafeError(error)
+                } finally {
+                    lock.release()
                 }
             }
         }
