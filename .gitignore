@@ -1,0 +1,21 @@
+node_modules/
+dist/
+dist-test/
+docs/
+*.tsbuildinfo
+*.log
+
+# Never commit real Fluent Reader profile data.
+fluent-reader.db
+fluent-reader.db-journal
+fluent-reader.db-wal
+fluent-reader.db-shm
+config.json
+*.db
+
+## environemnt 
+.env
+.env.*
+
+## Readme
+README.md
