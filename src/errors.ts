@@ -89,6 +89,8 @@ export type ErrorReason =
     | "corrupt"
     // tools
     | "source-not-found"
+    | "article-not-found"
+    | "text-encoding"
     | "group-not-found"
     | "not-a-group"
     | "duplicate-gid"
@@ -168,8 +170,8 @@ const TEXT: Readonly<Record<ErrorCode, { message: string; hint: string }>> = {
         hint: "Check argument names, types and ranges against the tool's input schema; unknown arguments are rejected.",
     },
     NOT_FOUND: {
-        message: "The requested source or group does not exist.",
-        hint: "Call list_sources to obtain current identifiers; a source id can be reused after its source is deleted.",
+        message: "The requested source, group or article does not exist.",
+        hint: "Call list_sources or list_groups to obtain current identifiers; a source id can be reused after its source is deleted, and article ids can change after a backup restore.",
     },
     GROUP_AMBIGUOUS: {
         message: "The group id appears more than once in the profile settings, so its members cannot be determined.",
@@ -180,8 +182,8 @@ const TEXT: Readonly<Record<ErrorCode, { message: string; hint: string }>> = {
         hint: "The database was probably modified outside Fluent Reader; sources cannot be listed safely.",
     },
     LIMIT_EXCEEDED: {
-        message: "A source record is too large to be read or returned within the response size limit.",
-        hint: "The record is neither truncated nor skipped: pagination stops before it. Filters (groupId, includeHidden, query) can exclude it.",
+        message: "A record is too large to be read or returned within the response size limit.",
+        hint: "The record is neither truncated nor skipped: pagination stops before it, and list_sources filters (groupId, includeHidden, query) can exclude it. For get_article, metadata that cannot fit even with an empty body is reported this way.",
     },
     SOURCE_IDENTITY_CHANGED: {
         message: "The source with this id is no longer the source that the sourceRef refers to.",

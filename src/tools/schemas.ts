@@ -1,5 +1,5 @@
 /**
- * Zod v4 input and output schemas of the source and group tools. Output schemas are
+ * Zod v4 input and output schemas of the source, group and article tools. Output schemas are
  * validated by the SDK against every successful structuredContent; input
  * schemas are published in tools/list and checked by the handlers
  * (see input.ts).
@@ -252,3 +252,70 @@ export type ListGroupsInput = z.output<typeof listGroupsInput>
 export type ListGroupsOutput = z.output<typeof listGroupsOutput>
 export type GetGroupInput = z.output<typeof getGroupInput>
 export type GetGroupOutput = z.output<typeof getGroupOutput>
+
+// ---- Article tool (FR-MCP-02A-04) ----
+
+export const ARTICLE_MAX_CHARS_MAX = 40_000
+export const ARTICLE_MAX_CHARS_DEFAULT = 12_000
+
+export const getArticleInput = z.strictObject({
+    articleId: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).describe("The article id (_id)."),
+    format: z
+        .enum(["text", "html"])
+        .optional()
+        .describe("text (default): the stored plain text (snippet). html: the stored raw HTML (content), never rendered or sanitized."),
+    maxChars: z
+        .number()
+        .int()
+        .min(1)
+        .max(ARTICLE_MAX_CHARS_MAX)
+        .optional()
+        .describe(`Maximum Unicode code points of body requested (default ${ARTICLE_MAX_CHARS_DEFAULT}); the response size limit can return fewer.`),
+    offset: z
+        .number()
+        .int()
+        .min(0)
+        .max(Number.MAX_SAFE_INTEGER)
+        .optional()
+        .describe("Zero-based offset in Unicode code points (not bytes, UTF-16 units or grapheme clusters); pass nextOffset to continue."),
+})
+
+const articleFieldIssue = z.strictObject({
+    field: z.enum(["source", "sourceName", "title", "creator", "date", "fetchedDate", "hasRead", "starred", "hidden", "serviceRef", "snippet", "content"]),
+    issue: z.enum(["unexpectedType", "unexpectedNull", "unexpectedValue", "tooLarge"]),
+    /** null when the value was not examined (a source record over the record limit). */
+    storageClass: storageClass.nullable(),
+})
+
+export const getArticleOutput = z.strictObject({
+    articleId: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+    sourceId: sourceId.nullable(),
+    sourceRef: z.string().nullable(),
+    sourceName: z.string().nullable(),
+    orphan: z.boolean().nullable(),
+    title: z.string().nullable(),
+    creator: z.string().nullable(),
+    date: z.string().nullable(),
+    fetchedDate: z.string().nullable(),
+    read: z.boolean().nullable(),
+    starred: z.boolean().nullable(),
+    hidden: z.boolean().nullable(),
+    synced: z.boolean(),
+    contentScope: z.literal("feed"),
+    editorialCompleteness: z.literal("unknown"),
+    fullContentAvailable: z.literal(false),
+    format: z.enum(["text", "html"]),
+    body: z.string().nullable(),
+    offset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+    returnedChars: count,
+    totalChars: count.nullable(),
+    truncated: z.boolean(),
+    nextOffset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).nullable(),
+    untrusted: z.literal(true),
+    fieldIssues: z.array(articleFieldIssue).optional(),
+    meta: groupMeta.extend({ urlsRedacted: z.literal(true) }),
+})
+
+export type GetArticleInput = z.output<typeof getArticleInput>
+export type GetArticleOutput = z.output<typeof getArticleOutput>
+export type ArticleFieldIssue = z.output<typeof articleFieldIssue>

@@ -75,6 +75,90 @@ export interface SourcesProfileOptions {
     readonly settings?: unknown
     readonly loose?: boolean
     readonly items?: number
+    /** Articles inserted with addItems' defaults. */
+    readonly articles?: readonly ItemSpec[]
+    /** items DDL without NOT NULL, to store NULL in any column (schema check still passes). */
+    readonly looseItems?: boolean
+    /** Database text encoding, set before any table exists (default UTF-8). */
+    readonly encoding?: "UTF-8" | "UTF-16le"
+}
+
+/** items DDL without NOT NULL (types, AUTOINCREMENT primary key and column order kept). */
+export const LOOSE_ITEMS_DDL = `CREATE TABLE \`items\` (
+  \`_id\` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
+  \`source\` integer,
+  \`guid\` text,
+  \`title\` text,
+  \`link\` text,
+  \`date\` integer,
+  \`fetchedDate\` integer,
+  \`thumb\` text,
+  \`content\` text,
+  \`snippet\` text,
+  \`creator\` text,
+  \`hasRead\` integer,
+  \`starred\` integer,
+  \`hidden\` integer,
+  \`notify\` integer,
+  \`serviceRef\` text
+);`
+
+export interface ItemSpec {
+    readonly _id?: number
+    readonly source?: SQLInputValue
+    readonly guid?: SQLInputValue
+    readonly title?: SQLInputValue
+    readonly link?: SQLInputValue
+    readonly date?: SQLInputValue
+    readonly fetchedDate?: SQLInputValue
+    readonly thumb?: SQLInputValue
+    readonly content?: SQLInputValue
+    readonly snippet?: SQLInputValue
+    readonly creator?: SQLInputValue
+    readonly hasRead?: SQLInputValue
+    readonly starred?: SQLInputValue
+    readonly hidden?: SQLInputValue
+    readonly notify?: SQLInputValue
+    readonly serviceRef?: SQLInputValue
+}
+
+const ITEM_FIELDS = ["source", "guid", "title", "link", "date", "fetchedDate", "thumb", "content", "snippet", "creator", "hasRead", "starred", "hidden", "notify", "serviceRef"] as const
+
+function insertItems(db: DatabaseSync, items: readonly ItemSpec[]): void {
+    const insert = db.prepare(`INSERT INTO items (_id, ${ITEM_FIELDS.join(", ")}) VALUES (${Array(ITEM_FIELDS.length + 1).fill("?").join(", ")})`)
+    db.exec("BEGIN")
+    items.forEach((item, i) => {
+        const defaults: Record<(typeof ITEM_FIELDS)[number], SQLInputValue> = {
+            source: 0,
+            guid: `guid-${i}`,
+            title: `Article ${i}`,
+            link: `https://article.invalid/${i}`,
+            date: LAST_FETCHED,
+            fetchedDate: LAST_FETCHED + 1000,
+            thumb: null,
+            content: `<p>Article ${i}</p>`,
+            snippet: `Article ${i}`,
+            creator: null,
+            hasRead: 0,
+            starred: 0,
+            hidden: 0,
+            notify: 0,
+            serviceRef: null,
+        }
+        // `undefined` means "default"; an explicit null is stored as NULL.
+        insert.run(item._id ?? null, ...ITEM_FIELDS.map((field) => (item[field] === undefined ? defaults[field] : (item[field] as SQLInputValue))))
+    })
+    db.exec("COMMIT")
+}
+
+/** Test-only writer of articles (another connection, as Fluent Reader would be). */
+export function addItems(dbPath: string, items: readonly ItemSpec[]): void {
+    const db = new DatabaseSync(dbPath)
+    try {
+        insertItems(db, items)
+    } finally {
+        db.close()
+    }
 }
 
 /** A profile whose `sources` table holds exactly `sources`. */
@@ -84,8 +168,10 @@ export function createSourcesProfile(dir: string, options: SourcesProfileOptions
     const configPath = path.join(dir, CONFIG_NAME)
     const db = new DatabaseSync(dbPath)
     try {
-        db.exec(`${options.loose ? LOOSE_SOURCES_DDL : SOURCES_DDL}\n${ITEMS_DDL}`)
+        if (options.encoding !== undefined) db.exec(`PRAGMA encoding = '${options.encoding}'`)
+        db.exec(`${options.loose ? LOOSE_SOURCES_DDL : SOURCES_DDL}\n${options.looseItems ? LOOSE_ITEMS_DDL : ITEMS_DDL}`)
         insertSources(db, options.sources)
+        if (options.articles !== undefined) insertItems(db, options.articles)
         const items = options.items ?? 0
         if (items > 0) {
             const insert = db.prepare(

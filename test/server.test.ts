@@ -75,8 +75,8 @@ describe("MCP over stdio with the SDK v2 client", { timeout: 60_000 }, () => {
                 const tools = await client.listTools()
                 assert.deepEqual(
                     tools.tools.map((t) => t.name).sort(),
-                    ["get_group", "get_source", "list_groups", "list_sources"],
-                    "exactly the FR-MCP-02A-02 and 02A-03 tools",
+                    ["get_article", "get_group", "get_source", "list_groups", "list_sources"],
+                    "exactly the FR-MCP-02A-02, 02A-03 and 02A-04 tools",
                 )
                 for (const tool of tools.tools) {
                     assert.equal(tool.annotations?.readOnlyHint, true)
@@ -102,6 +102,15 @@ describe("MCP over stdio with the SDK v2 client", { timeout: 60_000 }, () => {
                 assert.deepEqual(groupSchema.required, ["groupId"])
                 assert.equal(groupSchema.properties.groupId?.minimum, 0)
                 assert.equal(groupSchema.properties.limit?.maximum, 200)
+                const articleSchema = tools.tools.find((t) => t.name === "get_article")?.inputSchema as Props & {
+                    properties: Record<string, { enum?: string[] }>
+                }
+                assert.deepEqual(Object.keys(articleSchema.properties).sort(), ["articleId", "format", "maxChars", "offset"])
+                assert.deepEqual(articleSchema.required, ["articleId"])
+                assert.equal(articleSchema.properties.articleId?.minimum, 1)
+                assert.equal(articleSchema.properties.maxChars?.maximum, 40_000)
+                assert.deepEqual(articleSchema.properties.format?.enum, ["text", "html"])
+                assert.match(tools.tools.find((t) => t.name === "get_article")?.description ?? "", /UNTRUSTED CONTENT/)
 
                 const list = (await client.callTool({ name: "list_sources", arguments: { limit: 1 } })) as CallToolResult
                 assert.equal(list.isError, undefined)
@@ -136,6 +145,15 @@ describe("MCP over stdio with the SDK v2 client", { timeout: 60_000 }, () => {
                 assert.equal(groupPayload.sources[0]?.sourceRef, page.sources[0]?.sourceRef)
                 const single = (await client.callTool({ name: "get_group", arguments: { groupId: 1 } })) as CallToolResult
                 assert.equal(JSON.parse((single.content[0] as { text: string }).text).code, "NOT_FOUND")
+                const art = (await client.callTool({ name: "get_article", arguments: { articleId: 1 } })) as CallToolResult
+                assert.equal(art.isError, undefined)
+                assert.deepEqual(JSON.parse((art.content[0] as { text: string }).text), art.structuredContent)
+                const artPayload = art.structuredContent as { title: string; body: string; sourceName: string; untrusted: boolean }
+                assert.deepEqual([artPayload.title, artPayload.body, artPayload.sourceName, artPayload.untrusted], ["Synthetic title 0 àèì 中文 😀", "Body 0", "Synthetic A", true])
+                const html = (await client.callTool({ name: "get_article", arguments: { articleId: 2, format: "html", maxChars: 3 } })) as CallToolResult
+                assert.deepEqual((html.structuredContent as { body: string; nextOffset: number }).body, "<p>")
+                const noArticle = (await client.callTool({ name: "get_article", arguments: { articleId: 999 } })) as CallToolResult
+                assert.equal(JSON.parse((noArticle.content[0] as { text: string }).text).code, "NOT_FOUND")
                 if (mode === "legacy") await client.ping()
             } finally {
                 await client.close()
@@ -164,7 +182,7 @@ describe("MCP over stdio with raw JSON-RPC", { timeout: 60_000 }, () => {
         server.child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`)
         assert.deepEqual((await request(server, { jsonrpc: "2.0", id: 2, method: "ping" })).result, {})
         const list = await request(server, { jsonrpc: "2.0", id: 3, method: "tools/list" })
-        assert.deepEqual((list.result as { tools: { name: string }[] }).tools.map((t) => t.name).sort(), ["get_group", "get_source", "list_groups", "list_sources"])
+        assert.deepEqual((list.result as { tools: { name: string }[] }).tools.map((t) => t.name).sort(), ["get_article", "get_group", "get_source", "list_groups", "list_sources"])
         const unknown = await request(server, { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "list_rules", arguments: {} } })
         assert.ok("error" in unknown || (unknown.result as { isError?: boolean }).isError === true)
         const call = await request(server, { jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "list_sources", arguments: {} } })
