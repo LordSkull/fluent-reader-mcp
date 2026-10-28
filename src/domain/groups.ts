@@ -123,17 +123,52 @@ export class GroupIndex {
      * a public group id (the input schema already rejects it): INVALID_ARGUMENT.
      */
     members(gid: number): GroupMembers {
-        if (!Number.isSafeInteger(gid) || gid < 0) throw new FrMcpError("INVALID_ARGUMENT", "invalid-argument")
-        if (!this.#groups.ok) throw new FrMcpError(this.#groups.code)
-        const count = this.#gidCount.get(gid) ?? 0
-        if (count === 0) throw new FrMcpError("NOT_FOUND", "group-not-found")
-        if (count > 1) throw new FrMcpError("GROUP_AMBIGUOUS", "duplicate-gid")
-        const index = this.#groups.value.findIndex((entry) => entry.gid === gid)
-        const entry = this.#groups.value[index] as SourceGroupEntry
-        if (!entry.isMultiple) throw new FrMcpError("NOT_FOUND", "not-a-group")
+        const { index, entry } = this.locate(gid)
         const sids = [...new Set(entry.sids)].filter((sid) => this.#owner.get(sid) === index).sort((a, b) => a - b)
         const revision = crypto.createHash("sha256").update(JSON.stringify([gid, sids])).digest("base64url")
         return { groupId: gid, sids, revision }
+    }
+
+    /**
+     * The entry of group `gid` and its position in sourceGroups, with the
+     * errors of members().
+     */
+    locate(gid: number): { readonly index: number; readonly entry: SourceGroupEntry } {
+        if (!Number.isSafeInteger(gid) || gid < 0) throw new FrMcpError("INVALID_ARGUMENT", "invalid-argument")
+        const entries = this.entries()
+        const count = this.#gidCount.get(gid) ?? 0
+        if (count === 0) throw new FrMcpError("NOT_FOUND", "group-not-found")
+        if (count > 1) throw new FrMcpError("GROUP_AMBIGUOUS", "duplicate-gid")
+        const index = entries.findIndex((entry) => entry.gid === gid)
+        const entry = entries[index] as SourceGroupEntry
+        if (!entry.isMultiple) throw new FrMcpError("NOT_FOUND", "not-a-group")
+        return { index, entry }
+    }
+
+    /** The validated sourceGroups array, as stored; the settings error if unavailable. */
+    entries(): readonly SourceGroupEntry[] {
+        if (!this.#groups.ok) throw new FrMcpError(this.#groups.code)
+        return this.#groups.value
+    }
+
+    /** Position of the first isMultiple entry containing `sid` (its group for the rules), if any. */
+    ownerIndex(sid: number): number | undefined {
+        return this.#owner.get(sid)
+    }
+
+    /** Number of entries (of any kind) carrying `gid`. */
+    gidCount(gid: number): number {
+        return this.#gidCount.get(gid) ?? 0
+    }
+
+    /** Stored rules under `group:<gid>`; null when sourceRules is unavailable. */
+    groupRuleCount(gid: number): number | null {
+        return this.#rules.ok ? (this.#rules.value.get(`group:${gid}`)?.length ?? 0) : null
+    }
+
+    /** Error code explaining why rules are unavailable, or null. */
+    get rulesError(): ErrorCode | null {
+        return this.#rules.ok ? null : this.#rules.code
     }
 
     /** Number of stored rules for the source and for its group (rule keys `source:<sid>`, `group:<gid>`). */

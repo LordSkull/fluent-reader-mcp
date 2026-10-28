@@ -1,11 +1,12 @@
 /**
- * Zod v4 input and output schemas of the source tools. Output schemas are
+ * Zod v4 input and output schemas of the source and group tools. Output schemas are
  * validated by the SDK against every successful structuredContent; input
  * schemas are published in tools/list and checked by the handlers
  * (see input.ts).
  */
 
 import { z } from "zod"
+import { SAMPLE_MAX } from "../domain/group-catalog.js"
 import { OPEN_TARGETS, TEXT_DIRECTIONS } from "../domain/sources.js"
 
 export const LIST_LIMIT_MAX = 500
@@ -123,3 +124,131 @@ export const getSourceOutput = z.strictObject({
 export type ListSourcesInput = z.output<typeof listSourcesInput>
 export type ListSourcesOutput = z.output<typeof listSourcesOutput>
 export type GetSourceOutput = z.output<typeof getSourceOutput>
+
+// ---- Group tools (FR-MCP-02A-03) ----
+
+export const GROUP_LIMIT_MAX = 200
+export const GROUP_LIMIT_DEFAULT = 100
+
+const count = z.number().int().min(0)
+const idSample = z.strictObject({
+    count,
+    sample: z.array(z.number().int().min(0).max(Number.MAX_SAFE_INTEGER)).max(SAMPLE_MAX),
+})
+const groupLimit = (what: string) =>
+    z
+        .number()
+        .int()
+        .min(1)
+        .max(GROUP_LIMIT_MAX)
+        .optional()
+        .describe(`Maximum ${what} returned in this page (default ${GROUP_LIMIT_DEFAULT}); the response size limit can return fewer.`)
+const groupCursor = z
+    .string()
+    .max(128)
+    .optional()
+    .describe("nextCursor of the previous page. Other arguments must match the first page.")
+const groupsRevision = z.string().describe("Revision of sourceGroups this page was built from.")
+const groupMeta = z.strictObject({
+    generatedAt: z.string(),
+    schemaVersion: z.literal(RESULT_SCHEMA_VERSION),
+})
+
+export const listGroupsInput = z.strictObject({
+    includeEmpty: z.boolean().optional().describe("Include groups with no configured member (default true)."),
+    limit: groupLimit("groups"),
+    cursor: groupCursor,
+})
+
+export const getGroupInput = z.strictObject({
+    groupId: groupId.describe("The group id (groupId from list_groups)."),
+    limit: groupLimit("members"),
+    cursor: groupCursor,
+})
+
+export const listGroupsOutput = z.strictObject({
+    groups: z.array(
+        z.strictObject({
+            position: count,
+            groupId: groupId.nullable(),
+            idStatus: z.enum(["unique", "ambiguous", "invalid"]),
+            name: z.string().nullable(),
+            sourceCount: count,
+            distinctSourceCount: count,
+            existingSourceCount: count.nullable(),
+        }),
+    ),
+    integrity: z.strictObject({
+        entryCount: count,
+        groupCount: count,
+        singleEntryCount: count,
+        emptyGroupCount: count,
+        nonStandardSingleEntryCount: count,
+        duplicateGroupIds: idSample,
+        duplicateSingleEntryIds: idSample,
+        negativeGroupIds: z.strictObject({
+            groupCount: count,
+            singleEntryCount: count,
+            groupPositions: z.array(count).max(SAMPLE_MAX),
+        }),
+        sourcesInMultipleGroups: idSample,
+        sourcesInGroupAndSingleEntry: idSample,
+        repeatedMemberships: idSample,
+        negativeSourceIdCount: count,
+        databaseCheck: z.enum(["complete", "tooManySources", "sourceIdsOutOfRange"]),
+        orphanSourceIds: idSample.nullable(),
+        ungroupedSources: idSample.nullable(),
+    }),
+    groupsRevision,
+    hasMore: z.boolean(),
+    nextCursor: z.string().nullable(),
+    scan: z.strictObject({
+        examined: count,
+        filteredOut: count,
+        stoppedBy: z.enum(["exhausted", "pageFull", "responseBudget"]),
+    }),
+    meta: groupMeta,
+})
+
+export const getGroupOutput = z.strictObject({
+    groupId,
+    name: z.string().nullable(),
+    position: count,
+    sourceCount: count,
+    distinctSourceCount: count,
+    ruleCount: count.nullable(),
+    rulesError: z.string().nullable(),
+    sources: z.array(
+        z.strictObject({
+            index: count,
+            sourceId: sourceId.nullable(),
+            sourceRef: z.string().nullable(),
+            name: z.string().nullable(),
+            hidden: z.boolean().nullable(),
+            exists: z.boolean().nullable(),
+            effectiveGroup: z.boolean().nullable(),
+            fieldIssues: z.array(fieldIssue).optional(),
+        }),
+    ),
+    integrity: z.strictObject({
+        repeatedMemberships: idSample,
+        sourcesInEarlierGroups: idSample,
+        sourcesInSingleEntries: idSample,
+        negativeSourceIdCount: count,
+        membersCheck: z.enum(["complete", "tooManyMembers"]),
+        orphanSourceIds: idSample.nullable(),
+    }),
+    groupsRevision,
+    hasMore: z.boolean(),
+    nextCursor: z.string().nullable(),
+    scan: z.strictObject({
+        examined: count,
+        stoppedBy: z.enum(["exhausted", "pageFull", "byteBudget", "responseBudget"]),
+    }),
+    meta: groupMeta.extend({ urlsRedacted: z.literal(true) }),
+})
+
+export type ListGroupsInput = z.output<typeof listGroupsInput>
+export type ListGroupsOutput = z.output<typeof listGroupsOutput>
+export type GetGroupInput = z.output<typeof getGroupInput>
+export type GetGroupOutput = z.output<typeof getGroupOutput>
