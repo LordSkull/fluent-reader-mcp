@@ -13,7 +13,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "pretest": "npm run build && tsc -p tsconfig.test.json",
     "test": "node --test --test-concurrency=1 \"dist-test/test/**/*.test.js\"",
-    "start": "node dist/main.js"
+    "start": "node dist/main.js",
+    "package:win": "node node_modules/typescript/bin/tsc -p tsconfig.test.json && node dist-test/installer/build-portable.js"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.4.0",

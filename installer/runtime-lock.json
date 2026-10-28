@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "node": {
+    "version": "24.22.1",
+    "platform": "win-x64",
+    "archive": "node-v24.22.1-win-x64.zip",
+    "archiveRoot": "node-v24.22.1-win-x64",
+    "url": "https://nodejs.org/dist/v24.22.1/node-v24.22.1-win-x64.zip",
+    "shasumsUrl": "https://nodejs.org/dist/v24.22.1/SHASUMS256.txt",
+    "sha256": "d2046d28c2c3dcd211ac5145c0bf30e2047ef9dfb306693c8c6e2eccd8b95fa5"
+  },
+  "attestation": {
+    "checkedOn": "2026-10-28",
+    "release": "v24.22.1, 2026-10-20, LTS Krypton, security release (nodejs.org/dist/index.json)",
+    "method": "sha256 taken from https://nodejs.org/dist/v24.22.1/SHASUMS256.txt.asc, clearsigned by the Node.js releaser key 5BE8A3F6C8A5C01D106C0AD820B1A390B168D356 (Antoine du Hamel), which is listed in https://github.com/nodejs/release-keys keys.list; gpg reported GOODSIG and VALIDSIG and the signed content equals SHASUMS256.txt"
+  }
+}
