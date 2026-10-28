@@ -75,8 +75,8 @@ describe("MCP over stdio with the SDK v2 client", { timeout: 60_000 }, () => {
                 const tools = await client.listTools()
                 assert.deepEqual(
                     tools.tools.map((t) => t.name).sort(),
-                    ["get_article", "get_group", "get_source", "list_groups", "list_sources"],
-                    "exactly the FR-MCP-02A-02, 02A-03 and 02A-04 tools",
+                    ["get_article", "get_group", "get_rule_chain", "get_source", "list_groups", "list_rules", "list_sources"],
+                    "exactly the FR-MCP-02A-02 to 02A-05 tools",
                 )
                 for (const tool of tools.tools) {
                     assert.equal(tool.annotations?.readOnlyHint, true)
@@ -111,6 +111,14 @@ describe("MCP over stdio with the SDK v2 client", { timeout: 60_000 }, () => {
                 assert.equal(articleSchema.properties.maxChars?.maximum, 40_000)
                 assert.deepEqual(articleSchema.properties.format?.enum, ["text", "html"])
                 assert.match(tools.tools.find((t) => t.name === "get_article")?.description ?? "", /UNTRUSTED CONTENT/)
+                const rulesSchema = tools.tools.find((t) => t.name === "list_rules")?.inputSchema as Props & { properties: Record<string, { enum?: string[] }> }
+                assert.deepEqual(Object.keys(rulesSchema.properties).sort(), ["cursor", "groupId", "limit", "scope", "sourceId"])
+                assert.deepEqual([...(rulesSchema.required ?? [])].sort(), ["limit", "scope"])
+                assert.deepEqual(rulesSchema.properties.scope?.enum, ["all", "group", "source"])
+                assert.equal(rulesSchema.properties.limit?.maximum, 100)
+                const chainSchema = tools.tools.find((t) => t.name === "get_rule_chain")?.inputSchema as Props
+                assert.deepEqual(Object.keys(chainSchema.properties).sort(), ["all", "cursor", "groupId", "limit", "sourceId", "sourceRef"])
+                assert.equal(chainSchema.required, undefined)
 
                 const list = (await client.callTool({ name: "list_sources", arguments: { limit: 1 } })) as CallToolResult
                 assert.equal(list.isError, undefined)
@@ -154,6 +162,17 @@ describe("MCP over stdio with the SDK v2 client", { timeout: 60_000 }, () => {
                 assert.deepEqual((html.structuredContent as { body: string; nextOffset: number }).body, "<p>")
                 const noArticle = (await client.callTool({ name: "get_article", arguments: { articleId: 999 } })) as CallToolResult
                 assert.equal(JSON.parse((noArticle.content[0] as { text: string }).text).code, "NOT_FOUND")
+                const ruleList = (await client.callTool({ name: "list_rules", arguments: { scope: "all", limit: 5 } })) as CallToolResult
+                assert.equal(ruleList.isError, undefined)
+                assert.deepEqual(JSON.parse((ruleList.content[0] as { text: string }).text), ruleList.structuredContent)
+                assert.deepEqual((ruleList.structuredContent as { rules: { pattern: string }[] }).rules.map((r) => r.pattern), ["synthetic"])
+                const ruleChain = (await client.callTool({ name: "get_rule_chain", arguments: { sourceId: 0 } })) as CallToolResult
+                assert.equal(ruleChain.isError, undefined)
+                const chainPayload = ruleChain.structuredContent as { chain: { originKey: string; rule: { pattern: string } }[]; resolution: { groupId: number } }
+                assert.deepEqual(chainPayload.chain.map((e) => [e.originKey, e.rule.pattern]), [["all", "synthetic"], ["source:0", "^x"]])
+                assert.equal(chainPayload.resolution.groupId, 0)
+                const badChain = (await client.callTool({ name: "get_rule_chain", arguments: { sourceId: 0, all: true } })) as CallToolResult
+                assert.equal(JSON.parse((badChain.content[0] as { text: string }).text).code, "INVALID_ARGUMENT")
                 if (mode === "legacy") await client.ping()
             } finally {
                 await client.close()
@@ -182,8 +201,8 @@ describe("MCP over stdio with raw JSON-RPC", { timeout: 60_000 }, () => {
         server.child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`)
         assert.deepEqual((await request(server, { jsonrpc: "2.0", id: 2, method: "ping" })).result, {})
         const list = await request(server, { jsonrpc: "2.0", id: 3, method: "tools/list" })
-        assert.deepEqual((list.result as { tools: { name: string }[] }).tools.map((t) => t.name).sort(), ["get_article", "get_group", "get_source", "list_groups", "list_sources"])
-        const unknown = await request(server, { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "list_rules", arguments: {} } })
+        assert.deepEqual((list.result as { tools: { name: string }[] }).tools.map((t) => t.name).sort(), ["get_article", "get_group", "get_rule_chain", "get_source", "list_groups", "list_rules", "list_sources"])
+        const unknown = await request(server, { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "simulate_rules", arguments: {} } })
         assert.ok("error" in unknown || (unknown.result as { isError?: boolean }).isError === true)
         const call = await request(server, { jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "list_sources", arguments: {} } })
         const callResult = call.result as { structuredContent: { sources: unknown[] }; content: { text: string }[] }

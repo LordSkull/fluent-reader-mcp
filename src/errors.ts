@@ -90,6 +90,7 @@ export type ErrorReason =
     // tools
     | "source-not-found"
     | "article-not-found"
+    | "too-many-rules"
     | "text-encoding"
     | "group-not-found"
     | "not-a-group"
@@ -105,6 +106,7 @@ export type ErrorReason =
     | "tool-mismatch"
     | "filters-changed"
     | "group-changed"
+    | "rules-changed"
     | "schema-changed"
     // generic
     | "async-callback"

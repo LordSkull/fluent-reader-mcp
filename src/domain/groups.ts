@@ -171,6 +171,12 @@ export class GroupIndex {
         return this.#rules.ok ? null : this.#rules.code
     }
 
+    /** The validated sourceRules, key → rules as stored; the settings error if unavailable. */
+    rules(): ReadonlyMap<string, readonly StoredRuleEntry[]> {
+        if (!this.#rules.ok) throw new FrMcpError(this.#rules.code)
+        return this.#rules.value
+    }
+
     /** Number of stored rules for the source and for its group (rule keys `source:<sid>`, `group:<gid>`). */
     ruleCounts(sid: number): RuleCounts {
         if (!this.#rules.ok) return { available: false, sourceRuleCount: null, groupRuleCount: null }

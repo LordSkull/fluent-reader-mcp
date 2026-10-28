@@ -32,6 +32,7 @@
  * the parsed text.
  */
 
+import crypto from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
@@ -71,6 +72,33 @@ export interface StoredRuleEntry {
     /** null when the rule is malformed: its actions are not exposed. */
     readonly actions: readonly string[] | null
     readonly malformed?: "actions-limit"
+}
+
+/**
+ * Private facts about the stored `actions` array of a rule, taken before
+ * sanitization (a rule over the action limits keeps `actions: null`). Kept
+ * in a WeakMap, not on the entry: the entry's shape is unchanged and the
+ * metadata can never be serialized with it. Never returned or logged.
+ */
+export interface RuleActionsMetadata {
+    /** Number of strings in the stored array. */
+    readonly count: number
+    /** false when the reader replaced the array with null (action limits). */
+    readonly preserved: boolean
+    /**
+     * HMAC-SHA256, under a random key of this process, of the canonical JSON
+     * of the stored array (order, values and duplicates included). Stable for
+     * the life of the process; unrelated to any other key or output.
+     */
+    readonly fingerprint: string
+}
+
+const ACTIONS_KEY = crypto.randomBytes(32)
+const actionsMetadata = new WeakMap<StoredRuleEntry, RuleActionsMetadata>()
+
+/** Metadata of a rule read by readSettings; undefined for entries built elsewhere. */
+export function ruleActionsMetadata(rule: StoredRuleEntry): RuleActionsMetadata | undefined {
+    return actionsMetadata.get(rule)
 }
 
 export type SectionError = "SETTINGS_INVALID" | "SETTINGS_TOO_LARGE"
@@ -335,9 +363,13 @@ function extractRules(value: unknown): ReadonlyMap<string, readonly StoredRuleEn
                 const withinLimits =
                     actions.length <= LIMITS.actionsPerRule &&
                     actions.every((a: string) => a.length <= LIMITS.actionLength)
-                return withinLimits
+                const entry: StoredRuleEntry = withinLimits
                     ? { filter, search, match, actions: [...(actions as string[])] }
                     : { filter, search, match, actions: null, malformed: "actions-limit" }
+                // JSON of an array of strings is canonical and unambiguous; computed before sanitization.
+                const fingerprint = crypto.createHmac("sha256", ACTIONS_KEY).update(JSON.stringify(actions)).digest("hex")
+                actionsMetadata.set(entry, { count: actions.length, preserved: withinLimits, fingerprint })
+                return entry
             }),
         )
     }

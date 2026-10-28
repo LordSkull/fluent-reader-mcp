@@ -1,5 +1,5 @@
 /**
- * Zod v4 input and output schemas of the source, group and article tools. Output schemas are
+ * Zod v4 input and output schemas of the source, group, article and rule tools. Output schemas are
  * validated by the SDK against every successful structuredContent; input
  * schemas are published in tools/list and checked by the handlers
  * (see input.ts).
@@ -7,6 +7,7 @@
 
 import { z } from "zod"
 import { SAMPLE_MAX } from "../domain/group-catalog.js"
+import { NOTE_ORDERS_MAX, NOTES_PER_PAGE_MAX, RULE_DIAGNOSTICS } from "../domain/rules.js"
 import { OPEN_TARGETS, TEXT_DIRECTIONS } from "../domain/sources.js"
 
 export const LIST_LIMIT_MAX = 500
@@ -319,3 +320,206 @@ export const getArticleOutput = z.strictObject({
 export type GetArticleInput = z.output<typeof getArticleInput>
 export type GetArticleOutput = z.output<typeof getArticleOutput>
 export type ArticleFieldIssue = z.output<typeof articleFieldIssue>
+
+// ---- Rule tools (FR-MCP-02A-05) ----
+
+export const RULE_LIMIT_MAX = 100
+export const RULE_CHAIN_LIMIT_DEFAULT = 100
+
+/** Fixed description of how the app evaluates a chain (returned with every get_rule_chain page). */
+export const CHAIN_SEMANTICS =
+    "Chain order is all, then the first multiple group (in sourceGroups order) containing the source, then the source. " +
+    "The app evaluates every rule of the chain, in order and without early stop, on each article it fetches or syncs; " +
+    "for each flag the last matching rule wins, and a condition can depend on flags set by earlier rules. " +
+    "Besides fetch and sync, rules are only applied by an explicit retroactive hide requested in the app. " +
+    "This server never evaluates or applies rules."
+
+const ruleCursor = z.string().max(128).optional().describe("nextCursor of the previous page. Other arguments must match the first page.")
+const sourceRefInput = z.string().regex(/^sr1\.[A-Za-z0-9_-]{8}\.[A-Za-z0-9_-]{22}$/)
+
+export const listRulesInput = z
+    .strictObject({
+        scope: z
+            .enum(["all", "group", "source"])
+            .describe("all: sourceRules.all; group: group:<groupId>; source: source:<sourceId>. Only the rules stored under that key, never inherited ones."),
+        groupId: groupId.optional().describe("Required with scope group, not allowed otherwise."),
+        sourceId: sourceId.optional().describe("Required with scope source, not allowed otherwise."),
+        limit: z.number().int().min(1).max(RULE_LIMIT_MAX).describe(`Rules per page (1..${RULE_LIMIT_MAX}); the response size limit can return fewer.`),
+        cursor: ruleCursor,
+    })
+    .superRefine((v, ctx) => {
+        const ok =
+            v.scope === "all"
+                ? v.groupId === undefined && v.sourceId === undefined
+                : v.scope === "group"
+                  ? v.groupId !== undefined && v.sourceId === undefined
+                  : v.sourceId !== undefined && v.groupId === undefined
+        if (!ok) ctx.addIssue({ code: "custom", message: "target" })
+    })
+
+export const getRuleChainInput = z
+    .strictObject({
+        sourceId: sourceId.optional().describe("Chain of a source: all + its first group + source."),
+        sourceRef: sourceRefInput.optional().describe("Only with sourceId: fails with SOURCE_IDENTITY_CHANGED if the id now designates another source."),
+        groupId: groupId.optional().describe("Chain of a group: all + group."),
+        all: z.literal(true).optional().describe("Chain of the global target: all only."),
+        limit: z
+            .number()
+            .int()
+            .min(1)
+            .max(RULE_LIMIT_MAX)
+            .optional()
+            .describe(`Chain entries per page (default ${RULE_CHAIN_LIMIT_DEFAULT}); the response size limit can return fewer.`),
+        cursor: ruleCursor,
+    })
+    .superRefine((v, ctx) => {
+        const selected = [v.sourceId !== undefined, v.groupId !== undefined, v.all !== undefined].filter(Boolean).length
+        if (selected !== 1 || (v.sourceRef !== undefined && v.sourceId === undefined)) ctx.addIssue({ code: "custom", message: "target" })
+    })
+
+const ruleSummary = z.strictObject({
+    index: count,
+    field: z.enum(["title", "text", "creator"]),
+    pattern: z.string(),
+    patternTruncated: z.boolean(),
+    patternLength: count,
+    caseSensitive: z.boolean(),
+    match: z.boolean(),
+    stateMask: z.strictObject({ requireUnread: z.boolean(), requireStarred: z.boolean(), requireVisible: z.boolean() }),
+    rawFilter: z.number().int().min(-Number.MAX_SAFE_INTEGER).max(Number.MAX_SAFE_INTEGER),
+    standard: z.boolean(),
+    actions: z
+        .array(z.strictObject({ action: z.enum(["read", "star", "hide", "notify"]), value: z.boolean() }))
+        .max(4)
+        .nullable(),
+    rawActionCount: count,
+    unknownActionCount: count,
+    diagnostics: z.array(z.enum(RULE_DIAGNOSTICS)).max(RULE_DIAGNOSTICS.length),
+})
+
+const ruleKeysIntegrity = z.strictObject({
+    keyCount: count,
+    ruleCount: count,
+    emptyRuleArrays: count,
+    oversizedRuleArrays: count,
+    malformedKeys: count,
+    negativeIdKeys: count,
+    sourceKeys: z.strictObject({
+        count,
+        check: z.enum(["complete", "tooManyKeys", "notChecked"]),
+        orphans: idSample.nullable(),
+    }),
+    groupKeys: z.strictObject({
+        count,
+        groupsAvailable: z.boolean(),
+        orphans: idSample.nullable(),
+        singleEntryOnly: idSample.nullable(),
+        ambiguous: idSample.nullable(),
+    }),
+})
+
+const ruleScan = z.strictObject({ examined: count, stoppedBy: z.enum(["exhausted", "pageFull", "responseBudget"]) })
+
+export const listRulesOutput = z.strictObject({
+    target: z.strictObject({
+        scope: z.enum(["all", "group", "source"]),
+        key: z.string(),
+        exists: z.boolean().nullable(),
+        status: z.enum(["exists", "absent", "ambiguous", "singleEntry", "unavailable"]),
+        name: z.string().nullable(),
+        keyPresent: z.boolean(),
+        ruleCount: count,
+    }),
+    revision: z.string(),
+    rules: z.array(ruleSummary),
+    integrity: ruleKeysIntegrity,
+    hasMore: z.boolean(),
+    nextCursor: z.string().nullable(),
+    scan: ruleScan,
+    meta: groupMeta,
+})
+
+const actionFlag = z.enum(["read", "star", "hide", "notify"])
+
+export const getRuleChainOutput = z.strictObject({
+    target: z.strictObject({
+        scope: z.enum(["all", "group", "source"]),
+        key: z.string(),
+        sourceId: sourceId.nullable(),
+        groupId: groupId.nullable(),
+        name: z.string().nullable(),
+        sourceRef: z.string().nullable(),
+    }),
+    chain: z.array(
+        z.strictObject({
+            order: count,
+            origin: z.enum(["all", "group", "source"]),
+            originKey: z.string(),
+            inherited: z.boolean(),
+            index: count,
+            rule: ruleSummary,
+        }),
+    ),
+    resolution: z.strictObject({
+        complete: z.boolean(),
+        groupStatus: z.enum(["notApplicable", "target", "grouped", "ungrouped", "ambiguous", "unavailable"]),
+        reason: z.enum([
+            "targetIsAll",
+            "targetIsGroup",
+            "firstMultipleGroup",
+            "noMultipleGroup",
+            "firstGroupIdAmbiguous",
+            "firstGroupIdInvalid",
+            "groupsUnavailable",
+        ]),
+        groupId: groupId.nullable(),
+        groupPosition: count.nullable(),
+        chainLength: count,
+        countByOrigin: z.strictObject({ all: count, group: count, source: count }),
+    }),
+    semantics: z.literal(CHAIN_SEMANTICS),
+    conflicts: z
+        .array(
+            z.strictObject({
+                kind: z.enum([
+                    "duplicateRule",
+                    "oppositeActionsSameCondition",
+                    "sameFlagDifferentConditions",
+                    "contradictoryActionsInRule",
+                    "stateDependentCondition",
+                ]),
+                certainty: z.enum(["proven", "possible", "notStaticallyDecidable"]),
+                flag: actionFlag.nullable(),
+                orders: z.array(count).max(NOTE_ORDERS_MAX),
+                ordersCount: count,
+                ordersTruncated: z.boolean(),
+            }),
+        )
+        .max(NOTES_PER_PAGE_MAX),
+    conflictsOmitted: count,
+    conflictCounts: z.strictObject({
+        duplicateRule: count,
+        oppositeActionsSameCondition: count,
+        sameFlagDifferentConditions: count,
+        contradictoryActionsInRule: count,
+        stateDependentCondition: count,
+    }),
+    fetchBlockers: z.array(
+        z.strictObject({
+            order: count,
+            kind: z.enum(["invalidRegex", "regexNotChecked", "unknownAction", "malformedActions"]),
+            certainty: z.enum(["everyArticle", "whenMatched", "notDeterminable"]),
+        }),
+    ),
+    fetchBlockerCounts: z.strictObject({ everyArticle: count, whenMatched: count, notDeterminable: count }),
+    chainRevision: z.string(),
+    hasMore: z.boolean(),
+    nextCursor: z.string().nullable(),
+    scan: ruleScan,
+    meta: groupMeta,
+})
+
+export type ListRulesInput = z.output<typeof listRulesInput>
+export type ListRulesOutput = z.output<typeof listRulesOutput>
+export type GetRuleChainInput = z.output<typeof getRuleChainInput>
+export type GetRuleChainOutput = z.output<typeof getRuleChainOutput>

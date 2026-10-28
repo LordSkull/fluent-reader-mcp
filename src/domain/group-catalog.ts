@@ -44,7 +44,7 @@ export interface IdSample {
     readonly sample: number[]
 }
 
-function idSample(ids: Iterable<number>): IdSample {
+export function idSample(ids: Iterable<number>): IdSample {
     let count = 0
     const valid: number[] = []
     for (const id of ids) {
