@@ -16,6 +16,7 @@ export type LogEvent =
     | "database_replaced"
     | "serving"
     | "transport_error"
+    | "tool_error"
     | "shutdown"
     | "fatal"
 

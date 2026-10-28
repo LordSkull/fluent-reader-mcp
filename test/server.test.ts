@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import fs from "node:fs"
 import path from "node:path"
 import { after, before, describe, test } from "node:test"
-import { Client } from "@modelcontextprotocol/client"
+import { Client, type CallToolResult } from "@modelcontextprotocol/client"
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio"
 import { SERVER_NAME, SERVER_VERSION } from "../src/server.js"
 import {
@@ -56,7 +56,7 @@ test("package.json version matches the advertised server version", () => {
 
 describe("MCP over stdio with the SDK v2 client", { timeout: 60_000 }, () => {
     for (const mode of ["legacy", "auto"] as const) {
-        test(`handshake, empty tools/list and close (versionNegotiation: ${mode})`, async () => {
+        test(`handshake, exactly two tools, calls and close (versionNegotiation: ${mode})`, async () => {
             const profile = newProfile(` ${mode} àè 😀`)
             const initial = snapshotDir(profile.dir)
             const transport = new StdioClientTransport({
@@ -73,7 +73,48 @@ describe("MCP over stdio with the SDK v2 client", { timeout: 60_000 }, () => {
                 assert.equal(client.getProtocolEra(), mode === "auto" ? "modern" : "legacy")
                 assert.deepEqual(client.getServerVersion(), { name: SERVER_NAME, version: SERVER_VERSION })
                 const tools = await client.listTools()
-                assert.deepEqual(tools.tools, [], "no application tools in FR-MCP-02A-01")
+                assert.deepEqual(
+                    tools.tools.map((t) => t.name).sort(),
+                    ["get_source", "list_sources"],
+                    "exactly the FR-MCP-02A-02 tools",
+                )
+                for (const tool of tools.tools) {
+                    assert.equal(tool.annotations?.readOnlyHint, true)
+                    assert.equal(tool.annotations?.openWorldHint, false)
+                    assert.equal(tool.annotations?.destructiveHint, false)
+                    assert.equal(tool.inputSchema.type, "object")
+                    assert.equal((tool.inputSchema as { additionalProperties?: unknown }).additionalProperties, false)
+                    assert.equal(tool.outputSchema?.type, "object")
+                }
+                const listSchema = tools.tools.find((t) => t.name === "list_sources")?.inputSchema as {
+                    properties: Record<string, { maximum?: number; maxLength?: number; minimum?: number }>
+                }
+                assert.deepEqual(Object.keys(listSchema.properties).sort(), ["cursor", "groupId", "includeHidden", "limit", "query"])
+                assert.equal(listSchema.properties.limit?.maximum, 500)
+                assert.equal(listSchema.properties.query?.maxLength, 100)
+                assert.equal(listSchema.properties.groupId?.minimum, 0)
+
+                const list = (await client.callTool({ name: "list_sources", arguments: { limit: 1 } })) as CallToolResult
+                assert.equal(list.isError, undefined)
+                const page = list.structuredContent as { sources: { sourceId: number; sourceRef: string; name: string }[]; nextCursor: string }
+                assert.deepEqual(JSON.parse((list.content[0] as { text: string }).text), page)
+                assert.deepEqual(page.sources.map((s) => [s.sourceId, s.name]), [[0, "Synthetic A"]])
+                const next = (await client.callTool({ name: "list_sources", arguments: { cursor: page.nextCursor } })) as CallToolResult
+                assert.deepEqual(
+                    (next.structuredContent as { sources: { sourceId: number }[] }).sources.map((s) => s.sourceId),
+                    [1],
+                )
+                const one = (await client.callTool({
+                    name: "get_source",
+                    arguments: { sourceId: 0, sourceRef: page.sources[0]?.sourceRef },
+                })) as CallToolResult
+                assert.equal((one.structuredContent as { source: { name: string } }).source.name, "Synthetic A")
+                const missing = (await client.callTool({ name: "get_source", arguments: { sourceId: 99 } })) as CallToolResult
+                assert.equal(missing.isError, true)
+                assert.equal(JSON.parse((missing.content[0] as { text: string }).text).code, "NOT_FOUND")
+                const invalid = (await client.callTool({ name: "list_sources", arguments: { limit: "x" } })) as CallToolResult
+                assert.equal(invalid.isError, true)
+                assert.equal(JSON.parse((invalid.content[0] as { text: string }).text).code, "INVALID_ARGUMENT")
                 if (mode === "legacy") await client.ping()
             } finally {
                 await client.close()
@@ -102,15 +143,22 @@ describe("MCP over stdio with raw JSON-RPC", { timeout: 60_000 }, () => {
         server.child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`)
         assert.deepEqual((await request(server, { jsonrpc: "2.0", id: 2, method: "ping" })).result, {})
         const list = await request(server, { jsonrpc: "2.0", id: 3, method: "tools/list" })
-        assert.deepEqual((list.result as { tools: unknown[] }).tools, [])
-        const unknown = await request(server, { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "list_sources", arguments: {} } })
+        assert.deepEqual((list.result as { tools: { name: string }[] }).tools.map((t) => t.name).sort(), ["get_source", "list_sources"])
+        const unknown = await request(server, { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "list_groups", arguments: {} } })
         assert.ok("error" in unknown || (unknown.result as { isError?: boolean }).isError === true)
+        const call = await request(server, { jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "list_sources", arguments: {} } })
+        const callResult = call.result as { structuredContent: { sources: unknown[] }; content: { text: string }[] }
+        assert.equal(callResult.structuredContent.sources.length, 2)
+        assert.deepEqual(JSON.parse(callResult.content[0]?.text ?? ""), callResult.structuredContent)
+        const bad = await request(server, { jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "get_source", arguments: { sourceId: -1 } } })
+        assert.equal((bad.result as { isError?: boolean }).isError, true)
 
         server.child.stdin.end()
         const exit = await server.exited(5_000)
         assert.equal(exit.code, 0)
         const messages = assertOnlyJsonRpc(exit.stdout)
-        assert.equal(messages.length, 4)
+        assert.equal(messages.length, 6)
+        assert.deepEqual(findLeaks([exit.stdout], ["feed.invalid", SECRET_SENTINEL]), [])
         assertCleanStderr(exit.stderr, [profile.dir])
         assert.match(exit.stderr, /"event":"shutdown","reason":"stdin-(end|close)"/)
         assert.deepEqual(snapshotDir(profile.dir), initial)

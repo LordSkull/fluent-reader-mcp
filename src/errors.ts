@@ -21,6 +21,17 @@ export const ERROR_CODES = [
     "DB_WAL_UNSUPPORTED",
     "DB_PROTECTION_UNAVAILABLE",
     "DB_UNREADABLE",
+    "INVALID_ARGUMENT",
+    "NOT_FOUND",
+    "GROUP_AMBIGUOUS",
+    "ID_RANGE_UNSUPPORTED",
+    "LIMIT_EXCEEDED",
+    "SOURCE_IDENTITY_CHANGED",
+    "SOURCE_REF_EXPIRED",
+    "CURSOR_INVALID",
+    "CURSOR_EXPIRED",
+    "CURSOR_MISMATCH",
+    "CURSOR_STALE",
     "INTERNAL_ERROR",
 ] as const
 
@@ -76,6 +87,23 @@ export type ErrorReason =
     | "busy"
     | "io"
     | "corrupt"
+    // tools
+    | "source-not-found"
+    | "group-not-found"
+    | "not-a-group"
+    | "duplicate-gid"
+    | "sid-out-of-range"
+    | "record-too-large"
+    | "response-too-large"
+    | "ref-mismatch"
+    | "other-process"
+    | "malformed"
+    | "unknown-or-expired"
+    | "scan-expired"
+    | "tool-mismatch"
+    | "filters-changed"
+    | "group-changed"
+    | "schema-changed"
     // generic
     | "async-callback"
     | "unexpected"
@@ -134,6 +162,50 @@ const TEXT: Readonly<Record<ErrorCode, { message: string; hint: string }>> = {
     DB_UNREADABLE: {
         message: "The profile database could not be read.",
         hint: "Check that the database file is accessible and not damaged.",
+    },
+    INVALID_ARGUMENT: {
+        message: "The tool arguments are not valid.",
+        hint: "Check argument names, types and ranges against the tool's input schema; unknown arguments are rejected.",
+    },
+    NOT_FOUND: {
+        message: "The requested source or group does not exist.",
+        hint: "Call list_sources to obtain current identifiers; a source id can be reused after its source is deleted.",
+    },
+    GROUP_AMBIGUOUS: {
+        message: "The group id appears more than once in the profile settings, so its members cannot be determined.",
+        hint: "Open Fluent Reader so that it can repair its groups; the server never modifies config.json.",
+    },
+    ID_RANGE_UNSUPPORTED: {
+        message: "The profile database contains source ids outside the supported range (0 to 2^53-1).",
+        hint: "The database was probably modified outside Fluent Reader; sources cannot be listed safely.",
+    },
+    LIMIT_EXCEEDED: {
+        message: "A source record is too large to be read or returned within the response size limit.",
+        hint: "The record is neither truncated nor skipped: pagination stops before it. Filters (groupId, includeHidden, query) can exclude it.",
+    },
+    SOURCE_IDENTITY_CHANGED: {
+        message: "The source with this id is no longer the source that the sourceRef refers to.",
+        hint: "The source was deleted and its id reused, or its identifying attributes changed. Call list_sources again.",
+    },
+    SOURCE_REF_EXPIRED: {
+        message: "The sourceRef was issued by another run of the MCP server and cannot be verified.",
+        hint: "Call list_sources, or get_source without sourceRef, to obtain a current sourceRef.",
+    },
+    CURSOR_INVALID: {
+        message: "The cursor is malformed or was not issued by this server process.",
+        hint: "Pass nextCursor exactly as returned, or start again without a cursor.",
+    },
+    CURSOR_EXPIRED: {
+        message: "The cursor has expired or is no longer kept.",
+        hint: "A cursor lasts 30 minutes after its last use (2 hours per listing), at most 64 are kept and all are lost on restart. Start again without a cursor.",
+    },
+    CURSOR_MISMATCH: {
+        message: "The cursor was issued for different arguments or for another tool.",
+        hint: "Pass only the cursor, or the same filters that started the listing; start again without a cursor to change them.",
+    },
+    CURSOR_STALE: {
+        message: "The data behind the cursor changed in a way that invalidates the listing.",
+        hint: "Start the listing again without a cursor.",
     },
     INTERNAL_ERROR: {
         message: "An internal error occurred.",

@@ -14,6 +14,7 @@ import { toSafeError } from "./errors.js"
 import { logEvent } from "./log.js"
 import { createServer } from "./server.js"
 import { readSettings } from "./settings/read-settings.js"
+import { createToolContext, type ToolContext } from "./tools/context.js"
 
 /** Backstop: exit even if some handle keeps the event loop alive. */
 const FORCED_EXIT_MS = 1000
@@ -50,17 +51,18 @@ async function probeSettings(configPath: string, directory: string): Promise<voi
 async function main(): Promise<void> {
     installFatalHandlers()
 
-    let database: DatabaseAccess
+    let context: ToolContext
     try {
         const profile = resolveProfile(selectProfileInput(process.argv.slice(2), process.env))
         logEvent("profile_ok", {
             canonicalPathDiffers: profile.canonicalPathDiffers,
             hardLinkWarning: profile.hardLinkWarning,
         })
-        database = new DatabaseAccess(profile.databasePath)
+        const database = new DatabaseAccess(profile.databasePath)
         const capabilities = await database.withReadConnection(verifyDatabase)
         logEvent("database_ok", { sqliteVersion: capabilities.sqliteVersion, encoding: capabilities.encoding })
         await probeSettings(profile.configPath, profile.directory)
+        context = createToolContext({ database, configPath: profile.configPath, profileDir: profile.directory })
     } catch (error) {
         const safe = toSafeError(error)
         logEvent("startup_failed", { code: safe.code, ...(safe.reason && { reason: safe.reason }) })
@@ -70,7 +72,7 @@ async function main(): Promise<void> {
         return
     }
 
-    const handle = serveStdio(createServer, {
+    const handle = serveStdio(() => createServer(context), {
         onerror: (error) => logEvent("transport_error", { kind: error.name }),
     })
     logEvent("serving")
