@@ -85,7 +85,7 @@ export interface BuildDeps {
 }
 
 export type CheckpointStep = "before-zip" | "zip-prepared" | "cleanup-work" | "before-publish" | `promote:${ArtifactKind}`
-export type ArtifactKind = "zip" | "sha256" | "report"
+export type ArtifactKind = "zip" | "exe" | "sha256" | "report"
 
 export interface BuildResult {
     readonly dryRun: boolean
