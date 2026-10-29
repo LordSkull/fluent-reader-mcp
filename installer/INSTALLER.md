@@ -4,8 +4,11 @@ Installer NSIS per l'utente corrente (Windows 10/11 x64) costruito **a partire d
 (`fluent-reader-mcp-v<versione>-beta-win-x64.zip`, FR-MCP-04-BETA-01). Il server non viene ricompilato: l'installer
 contiene esattamente i file del pacchetto, più il programma di supporto del setup.
 
-Beta privata: sette strumenti in sola lettura (FR-MCP-02A). Il client supportato è **Claude Code** (CLI o binario
-dell'estensione VS Code); Claude Desktop non è supportato da questa beta.
+Beta privata: otto strumenti in sola lettura (i sette di FR-MCP-02A e `list_articles` di FR-MCP-02B-01). L'installer
+registra il server soltanto in **Claude Code** (CLI o binario dell'estensione VS Code). Questa versione beta
+dell'installer non configura automaticamente Claude Desktop: il server Fluent Reader MCP è compatibile con Claude
+Desktop tramite configurazione manuale. I sette strumenti originari sono stati collaudati con Claude Desktop; il nuovo
+`list_articles` è stato verificato tramite test sintetici.
 
 ## Prerequisiti (solo per chi costruisce l'installer)
 
@@ -46,7 +49,7 @@ fissato negli script: va passato ogni volta con `--bundle-sha256`.
 1. Windows x64; nome del pacchetto, file `.sha256` e `--bundle-sha256` tutti uguali allo SHA-256 del file.
 2. Ogni voce dello ZIP riletta (CRC, nomi sicuri, nessuna voce fuori da `FluentReaderMCP/`); manifest (schema 1)
    uguale al contenuto, con dimensione e SHA-256 di ogni file; versione uguale a `package.json`; runtime uguale a
-   `installer/runtime-lock.json` (Node.js 24.22.1, hash dell'archivio ufficiale); entrypoint e i sette strumenti;
+   `installer/runtime-lock.json` (Node.js 24.22.1, hash dell'archivio ufficiale); entrypoint e gli otto strumenti;
    presenti `runtime\node.exe`, `server\dist\main.js`, il modulo Koffi win32-x64, le licenze; nessun contenuto
    vietato. Un pacchetto incompleto, alterato o di un'altra versione viene rifiutato prima di scrivere qualsiasi file.
 3. Percorsi canonici (collegamenti e junction risolti); `--out` fuori dalla repository; nessun artefatto o cartella
@@ -164,7 +167,7 @@ contiene dati di Claude Code né di Fluent Reader.
 | Fase | Che cosa è già persistente quando inizia |
 |---|---|
 | `staging` | il journal, prima che esista `.staging` |
-| `prepared` | `.staging` verificata con il proprio runtime (inventario, manifest, `node --version`, handshake MCP con i sette strumenti su un profilo **sintetico**); il nuovo disinstallatore in `state\uninstall.exe.new`; copia del registro precedente in `state\install-record.previous.json`; per i nove valori HKCU del prodotto presenza, tipo e valore, e la presenza delle due chiavi |
+| `prepared` | `.staging` verificata con il proprio runtime (inventario, manifest, `node --version`, handshake MCP con gli otto strumenti su un profilo **sintetico**); il nuovo disinstallatore in `state\uninstall.exe.new`; copia del registro precedente in `state\install-record.previous.json`; per i nove valori HKCU del prodotto presenza, tipo e valore, e la presenza delle due chiavi |
 | `swapping` | inizio delle due rinomine `current` → `previous`, `.staging` → `current` |
 | `metadata` | nuova versione in `current`; poi nuovo registro, disinstallatore precedente spostato in `state\uninstall.exe.previous` e nuovo al suo posto, valori HKCU (ciascuno scritto e riletto) |
 | `committed` | tutti i controlli superati: la nuova versione è definitiva |
@@ -265,9 +268,9 @@ terminato durante l'installazione o la disinstallazione.
 ### Privacy
 
 Il wizard dichiara che il profilo è letto in sola lettura, che il server non fa richieste di rete proprie, che i
-risultati degli strumenti possono essere inviati da Claude Code al servizio Anthropic, che la beta espone sette
-strumenti senza ricerca né paginazione avanzata degli articoli e che non viene installato alcun servizio. Il setup non
-scrive file di log; i messaggi e i file di risultato non contengono contenuti della configurazione Claude, del
+risultati degli strumenti possono essere inviati da Claude Code al servizio Anthropic, che la beta espone otto
+strumenti senza ricerca degli articoli e che non viene installato alcun servizio. Il setup non scrive file di log; i
+messaggi e i file di risultato non contengono contenuti della configurazione Claude, del
 database, URL dei feed, titoli o token. Il registro di installazione e i backup restano sulla macchina dell'utente.
 
 ## Registrazione manuale (alternativa)

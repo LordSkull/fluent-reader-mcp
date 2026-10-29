@@ -189,7 +189,7 @@ describe("NSIS script", () => {
     })
 
     test("the wizard states the privacy facts and the beta limits", () => {
-        for (const fact of ["sola lettura", "non effettua richieste di rete proprie", "servizio Anthropic", "sette strumenti", "ricerca e paginazione avanzata degli articoli non sono ancora disponibili", "Nessun servizio Windows", "Claude Desktop non è supportato"]) {
+        for (const fact of ["sola lettura", "non effettua richieste di rete proprie", "servizio Anthropic", "otto strumenti", "la ricerca degli articoli non è ancora disponibile", "Nessun servizio Windows", "Claude Desktop va configurato a mano", "questo installer non lo registra"]) {
             assert.ok(SCRIPT.includes(fact), fact)
         }
         assert.match(SCRIPT, /non cerca profili da solo/)

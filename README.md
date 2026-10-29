@@ -4,7 +4,7 @@
 
 Il server espone fonti RSS, gruppi, articoli e regole di filtraggio già presenti nel profilo Fluent Reader. Non modifica il database, non aggiorna i feed, non applica le regole e non scarica da Internet il contenuto degli articoli.
 
-> **Stato:** `v0.1.0-beta` — sette strumenti MCP read-only disponibili. L'elenco e la ricerca autonoma degli articoli (`list_articles` e `search_articles`) **non sono ancora implementati**.
+> **Stato:** `v0.1.0-beta` — otto strumenti MCP read-only disponibili, compreso l'elenco paginato degli articoli (`list_articles`). La ricerca degli articoli (`search_articles`) **non è ancora implementata**.
 
 ## Come funziona
 
@@ -108,7 +108,7 @@ Gli artefatti generati devono essere verificati tramite i relativi checksum e re
 
 ## Strumenti MCP disponibili
 
-La versione attuale implementa **sette strumenti**, tutti in sola lettura.
+La versione attuale implementa **otto strumenti**, tutti in sola lettura.
 
 | Strumento | Cosa fa |
 |---|---|
@@ -116,11 +116,19 @@ La versione attuale implementa **sette strumenti**, tutti in sola lettura.
 | `get_source` | Recupera i dettagli di una fonte tramite identificativo, inclusi metadati, gruppo e conteggi delle regole. Non calcola automaticamente statistiche complete sugli articoli. |
 | `list_groups` | Elenca i gruppi di fonti salvati in Fluent Reader, mantenendo l'ordine e le informazioni di appartenenza. |
 | `get_group` | Recupera un gruppo specifico e le relative fonti, segnalando eventuali anomalie negli identificativi o nelle appartenenze. |
+| `list_articles` | Elenca gli articoli salvati, con filtri, paginazione a cursore e un breve estratto opzionale, senza il corpo dell'articolo. Restituisce gli ID da passare a `get_article`. |
 | `get_article` | Legge un articolo tramite ID e restituisce i metadati, gli stati e il **contenuto locale disponibile**; può suddividere testi lunghi in segmenti. Non recupera la pagina web originale. |
 | `list_rules` | Elenca le regole RSS archiviate per ambito (globale, gruppo o fonte), senza applicarle o modificarle. |
 | `get_rule_chain` | Ricostruisce la sequenza delle regole pertinenti a una fonte: **globali → primo gruppo applicabile → fonte**. Espone la configurazione, non simula l'esecuzione sui singoli articoli. |
 
-**Limite importante:** al momento non esistono `list_articles` e `search_articles`. Per usare `get_article` bisogna conoscere l'ID dell'articolo. Le due funzionalità sono previste nella roadmap **FR-MCP-02B**.
+### `list_articles`: filtri, paginazione e ordinamento
+
+- **Filtri principali:** fonti (`sourceIds`) oppure gruppo (`groupId`), intervallo di date (`dateFrom`/`dateTo`, sulla data salvata dell'articolo), stato di lettura (`read`), preferiti (`starred`), articoli nascosti nell'app (`hidden`, esclusi per impostazione predefinita) e fonti nascoste da «Tutti gli articoli» (`includeHiddenSources`, escluse per impostazione predefinita).
+- **Paginazione:** da 1 a 100 articoli per pagina (predefinito 20). Per la pagina successiva si ripassa `nextCursor` finché `hasMore` è vero. Ogni chiamata esamina un numero limitato di articoli: con filtri molto selettivi una pagina può contenere meno articoli del richiesto, o nessuno, pur avendo `hasMore` vero. L'elenco è concluso solo quando `scan.exhausted` è vero.
+- **Ordinamento:** è disponibile soltanto `stored`, cioè per **ID di memorizzazione decrescente** (l'ordine in cui Fluent Reader ha salvato gli articoli nel database). **Non garantisce l'ordine per data di pubblicazione**, che resta disponibile come campo `date` di ciascun articolo.
+- Gli articoli salvati dopo la prima pagina non vengono inclusi nell'elenco in corso; URL di articoli, feed, icone e miniature non vengono mai restituiti.
+
+**Limite importante:** al momento non esiste `search_articles`: non è possibile cercare articoli per testo. La funzionalità è prevista nella roadmap **FR-MCP-02B**.
 
 ### Esempi di richieste
 
@@ -128,6 +136,7 @@ La versione attuale implementa **sette strumenti**, tutti in sola lettura.
 - «Quali gruppi ho creato in Fluent Reader?» → `list_groups`.
 - «Mostrami le fonti di questo gruppo» → `get_group`, dopo aver identificato il gruppo.
 - «Quali regole si applicano a questa fonte?» → `get_rule_chain`, dopo aver identificato la fonte.
+- «Mostrami gli articoli non letti di questo gruppo» → `list_articles`, dopo aver identificato il gruppo.
 - «Leggi l'articolo con ID 1234» → `get_article` (l'ID è un esempio e deve esistere nel proprio database).
 
 ## Collegamento ai client Claude
@@ -163,8 +172,9 @@ Una futura versione dell'installer prevede una scelta esplicita tra **Claude Cod
 
 ## Stato e roadmap
 
-- **Completato:** sette strumenti read-only; ZIP Windows con Node incluso; primo installer NSIS; test end-to-end dei sette strumenti con Claude Desktop e un profilo reale, più installazione/disinstallazione ordinaria in Windows Sandbox.
-- **FR-MCP-02B (prossima fase):** `list_articles`, poi `search_articles`, con paginazione, filtri, limiti prestazionali e test su database sintetici.
+- **Completato:** otto strumenti read-only; ZIP Windows con Node incluso; primo installer NSIS; test end-to-end dei sette strumenti FR-MCP-02A con Claude Desktop e un profilo reale, più installazione/disinstallazione ordinaria in Windows Sandbox.
+- **FR-MCP-02B-01 (completato):** `list_articles`, con filtri, paginazione a cursore, limiti di lavoro per chiamata e test su database sintetici.
+- **FR-MCP-02B (prossima fase):** `search_articles`, la ricerca degli articoli.
 - **FR-MCP-04-BETA-03:** scelta di un percorso di installazione locale sicuro anche fuori da `C:`, supporto alla registrazione Claude Desktop e identificazione affidabile del suo file di configurazione attivo.
 - **Successivamente:** hardening di sicurezza, benchmark su archivi grandi, miglioramento della distribuzione Windows, licenze, CI e release pubblica quando autorizzata.
 
