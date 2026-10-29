@@ -96,6 +96,7 @@ export type ErrorReason =
     | "not-a-group"
     | "duplicate-gid"
     | "sid-out-of-range"
+    | "article-id-out-of-range"
     | "record-too-large"
     | "response-too-large"
     | "ref-mismatch"
@@ -108,6 +109,9 @@ export type ErrorReason =
     | "group-changed"
     | "rules-changed"
     | "schema-changed"
+    | "sources-changed"
+    | "position-changed"
+    | "source-identity-unverifiable"
     // generic
     | "async-callback"
     | "unexpected"
@@ -180,8 +184,9 @@ const TEXT: Readonly<Record<ErrorCode, { message: string; hint: string }>> = {
         hint: "Open Fluent Reader so that it can repair its groups; the server never modifies config.json.",
     },
     ID_RANGE_UNSUPPORTED: {
-        message: "The profile database contains source ids outside the supported range (0 to 2^53-1).",
-        hint: "The database was probably modified outside Fluent Reader; sources cannot be listed safely.",
+        message:
+            "The profile database contains ids outside the supported range (source ids 0 to 2^53-1, article ids 1 to 2^53-1).",
+        hint: "The database was probably modified outside Fluent Reader; sources or articles cannot be listed safely.",
     },
     LIMIT_EXCEEDED: {
         message: "A record is too large to be read or returned within the response size limit.",
@@ -208,8 +213,8 @@ const TEXT: Readonly<Record<ErrorCode, { message: string; hint: string }>> = {
         hint: "Pass only the cursor, or the same filters that started the listing; start again without a cursor to change them.",
     },
     CURSOR_STALE: {
-        message: "The data behind the cursor changed in a way that invalidates the listing.",
-        hint: "Start the listing again without a cursor.",
+        message: "The data behind the cursor changed, or can no longer be verified, in a way that invalidates the listing.",
+        hint: "Start the listing again without a cursor. A list_articles listing filtered on a source whose feed URL cannot be verified (larger than 64 KiB, or not text) cannot be continued past its first page.",
     },
     INTERNAL_ERROR: {
         message: "An internal error occurred.",

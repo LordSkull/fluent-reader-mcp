@@ -1,6 +1,6 @@
 # FR-MCP-04-BETA-01 — Pacchetto portatile Windows x64 (beta privata)
 
-Builder del pacchetto ZIP autonomo di Fluent Reader MCP, limitato ai sette strumenti read-only di FR-MCP-02A.
+Builder del pacchetto ZIP autonomo di Fluent Reader MCP, limitato agli otto strumenti read-only (i sette di FR-MCP-02A e `list_articles` di FR-MCP-02B-01).
 Il pacchetto non è un installer: non registra nulla, non crea servizi né porte di rete, non legge profili.
 
 > Stato: script pronti per la review. Il pacchetto **non è ancora stato costruito**: lo costruisce il proprietario,
@@ -125,7 +125,7 @@ Opzioni:
 6. **Archivio:** ZIP deterministico (ordine stabile, data del commit, nomi UTF-8), riletto, estratto in
    `work-<versione>\verify`, ogni file confrontato con il manifest; quindi **auto-test** del pacchetto estratto:
    il suo `runtime\node.exe` avvia il suo `server\dist\main.js` su un profilo **sintetico** (la fixture dello smoke
-   test) in una cartella temporanea, con handshake MCP, `tools/list` (esattamente sette strumenti), `list_sources`
+   test) in una cartella temporanea, con handshake MCP, `tools/list` (esattamente otto strumenti), `list_sources`
    e `get_article` (SQLite e lock Win32/Koffi), chiusura con EOF.
 7. **Pubblicazione, fase A (preparazione):** ZIP, `.sha256` e report vengono scritti come
    `<nome>.partial`, ciascuno **creato in modo esclusivo** (fallisce se il nome esiste già); un `.partial`
@@ -245,7 +245,7 @@ Il manifest (`schemaVersion: 1`) è l'interfaccia per l'installer:
 | --- | --- |
 | `product` | `fluent-reader-mcp`, versione, canale `beta`, piattaforma `win-x64` |
 | `runtime.executable` | `runtime/node.exe` |
-| `server.entrypoint` | `server/dist/main.js`, trasporto `stdio`, i sette strumenti |
+| `server.entrypoint` | `server/dist/main.js`, trasporto `stdio`, gli otto strumenti |
 | `launch` | `runtime/node.exe` + `["server/dist/main.js", "--profile-dir", "{profileDir}"]`, `profileDirRequired: true` |
 | `install` | `scope: currentUser`, `defaultDirectory: %LOCALAPPDATA%\FluentReaderMCP` (P-INS-05), `approved: false` |
 | `install.ownedEntries` | `runtime/`, `server/`, `licenses/`, `manifest.json`, `PACKAGING-INFO.md`: ciò che l'installer potrà rimuovere |

@@ -291,6 +291,7 @@ const ERROR_REASONS: Readonly<Record<ErrorReason, true>> = {
     "not-a-group": true,
     "duplicate-gid": true,
     "sid-out-of-range": true,
+    "article-id-out-of-range": true,
     "record-too-large": true,
     "response-too-large": true,
     "ref-mismatch": true,
@@ -303,6 +304,9 @@ const ERROR_REASONS: Readonly<Record<ErrorReason, true>> = {
     "group-changed": true,
     "rules-changed": true,
     "schema-changed": true,
+    "sources-changed": true,
+    "position-changed": true,
+    "source-identity-unverifiable": true,
     // generic
     "async-callback": true,
     "unexpected": true,

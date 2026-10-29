@@ -21,8 +21,8 @@ export const MANIFEST = "manifest.json"
 export const INFO = "PACKAGING-INFO.md"
 /** P-INS-05; still subject to the owner's approval. */
 export const DEFAULT_INSTALL_DIR = "%LOCALAPPDATA%\\FluentReaderMCP"
-/** The seven read-only tools of FR-MCP-02A; the self-test requires exactly these. */
-export const TOOLS = ["get_article", "get_group", "get_rule_chain", "get_source", "list_groups", "list_rules", "list_sources"] as const
+/** The eight read-only tools (FR-MCP-02A and list_articles of FR-MCP-02B-01), sorted; the self-test requires exactly these. */
+export const TOOLS = ["get_article", "get_group", "get_rule_chain", "get_source", "list_articles", "list_groups", "list_rules", "list_sources"] as const
 /** Top-level entries owned by the product (for a future uninstaller). */
 export const OWNED_ENTRIES = ["runtime/", "server/", "licenses/", MANIFEST, INFO] as const
 export const KOFFI_NATIVE = "server/node_modules/@koromix/koffi-win32-x64/win32_x64/koffi.node"
@@ -260,7 +260,7 @@ export function packagingInfo(version: string, lock: RuntimeLock): string {
         "Read-only MCP server (stdio) for one local Fluent Reader profile.",
         `Tools: ${TOOLS.join(", ")}. No write tools; Fluent Reader data is never modified.`,
         "",
-        "This beta is limited to the seven tools of FR-MCP-02A; the broader search tools (FR-MCP-02B) are not included.",
+        "This beta is limited to eight read-only tools: the seven of FR-MCP-02A and list_articles (FR-MCP-02B-01); article search is not included.",
         "It is not an installer: nothing is registered, no service or network port is created.",
         "",
         "## Contents",

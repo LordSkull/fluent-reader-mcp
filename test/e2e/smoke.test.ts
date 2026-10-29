@@ -20,6 +20,7 @@ import {
     getGroupOutput,
     getRuleChainOutput,
     getSourceOutput,
+    listArticlesOutput,
     listGroupsOutput,
     listRulesOutput,
     listSourcesOutput,
@@ -137,7 +138,7 @@ describe("FR-MCP-02A-06 synthetic smoke fixture", () => {
 })
 
 describe("compiled server over stdio with the SDK client", { timeout: 60_000 }, () => {
-    test("handshake, seven tools, one conforming call each, errors, no writes, clean shutdown", async () => {
+    test("handshake, eight tools, one conforming call each, errors, no writes, clean shutdown", async () => {
         const profile = newSmokeProfile()
         const initial = integritySnapshot(profile.dir, scratch())
         const transport = new StdioClientTransport({
@@ -161,7 +162,8 @@ describe("compiled server over stdio with the SDK client", { timeout: 60_000 }, 
         try {
             assert.deepEqual(client.getServerVersion(), { name: SERVER_NAME, version: SERVER_VERSION })
             const tools = (await client.listTools()).tools
-            assert.deepEqual(tools.map((t) => t.name).sort(), [...TOOL_NAMES].sort())
+            // TOOL_NAMES is the set exercised by the Claude Code smoke (FR-MCP-02A); list_articles is FR-MCP-02B-01.
+            assert.deepEqual(tools.map((t) => t.name).sort(), [...TOOL_NAMES, "list_articles"].sort())
             for (const tool of tools) {
                 assert.equal(tool.inputSchema.type, "object")
                 assert.equal(tool.outputSchema?.type, "object")
@@ -256,6 +258,85 @@ describe("compiled server over stdio with the SDK client", { timeout: 60_000 }, 
     })
 })
 
+describe("FR-MCP-02B-01 list_articles over stdio (SDK client)", { timeout: 60_000 }, () => {
+    test("handshake, tools/list, first page, cursor continuation, get_article on a returned id, other tools still available", async () => {
+        const profile = newSmokeProfile()
+        const initial = integritySnapshot(profile.dir, scratch())
+        const transport = new StdioClientTransport({ command: process.execPath, args: [MAIN_JS, "--profile-dir", profile.dir], env: childEnv(), stderr: "pipe" })
+        let stderr = ""
+        transport.stderr?.on("data", (chunk: Buffer) => (stderr += chunk.toString("utf8")))
+        const client = new Client({ name: "frmcp-smoke-list-articles", version: "0.0.0" })
+        await client.connect(transport)
+        const pid = transport.pid
+        assert.ok(typeof pid === "number")
+        const texts: string[] = []
+        const run = async (name: string, args: Record<string, unknown>): Promise<Outcome> => {
+            const outcome = await call(client, name, args)
+            texts.push(outcome.text)
+            return outcome
+        }
+        try {
+            const tools = (await client.listTools()).tools
+            assert.ok(tools.some((t) => t.name === "list_articles"))
+            assert.deepEqual(tools.map((t) => t.name).sort(), [...TOOL_NAMES, "list_articles"].sort(), "the seven FR-MCP-02A tools are still listed")
+            const listed = tools.find((t) => t.name === "list_articles")
+            assert.equal(listed?.annotations?.readOnlyHint, true)
+            assert.equal(listed?.outputSchema?.type, "object")
+
+            // Default filters: hidden source 5 is left out; stored order is descending _id.
+            const first = await run("list_articles", { pageSize: 2, excerptChars: 40 })
+            assertSuccess(first, listArticlesOutput)
+            assert.deepEqual(first.payload.articles.map((a: any) => a.articleId), [6, 4])
+            assert.equal(first.payload.hasMore, true)
+            assert.equal(typeof first.payload.nextCursor, "string")
+            const ids: number[] = first.payload.articles.map((a: any) => a.articleId)
+            let cursor: string | null = first.payload.nextCursor
+            let pages = 1
+            while (cursor !== null) {
+                const next = await run("list_articles", { cursor })
+                assertSuccess(next, listArticlesOutput)
+                ids.push(...next.payload.articles.map((a: any) => a.articleId))
+                cursor = next.payload.nextCursor
+                assert.equal(next.payload.hasMore, cursor !== null)
+                assert.ok(++pages < 10)
+            }
+            assert.deepEqual(ids, [6, 4, 3, 2, 1])
+            const all = await run("list_articles", { includeHiddenSources: true, pageSize: 10 })
+            assert.deepEqual(all.payload.articles.map((a: any) => a.articleId), [6, 5, 4, 3, 2, 1])
+            assert.equal(all.payload.scan.exhausted, true)
+
+            // The returned id is directly usable with get_article.
+            const listedUnicode = all.payload.articles.find((a: any) => a.articleId === 2)
+            const article = await run("get_article", { articleId: listedUnicode.articleId })
+            assertSuccess(article, getArticleOutput)
+            assert.equal(article.payload.title, listedUnicode.title)
+            assert.equal(article.payload.sourceName, listedUnicode.sourceName)
+
+            // The injected article is listed as data.
+            const injected = all.payload.articles.find((a: any) => a.articleId === 3)
+            assert.equal(injected.untrusted, true)
+            assert.ok(injected.excerpt.startsWith("SMOKE-ART-3"))
+
+            // The other tools still answer.
+            assertSuccess(await run("list_sources", {}), listSourcesOutput)
+            assertSuccess(await run("get_source", { sourceId: 1 }), getSourceOutput)
+            assertSuccess(await run("list_groups", {}), listGroupsOutput)
+            assertSuccess(await run("get_group", { groupId: 0 }), getGroupOutput)
+            assertSuccess(await run("list_rules", { scope: "all", limit: 5 }), listRulesOutput)
+            assertSuccess(await run("get_rule_chain", { sourceId: 1 }), getRuleChainOutput)
+
+            assert.deepEqual(findLeaks(texts, REDACTED), [], "no credential or URL in any result")
+            assert.deepEqual(findLeaks(texts, [profile.dir, root]), [], "no path in any result")
+        } finally {
+            await client.close()
+        }
+        assert.ok(await waitFor(() => processGone(pid), 5_000))
+        assertCleanStderr(stderr, profile)
+        assertNoHandleHeld(profile.dbPath)
+        assert.deepEqual(integrityDifferences(initial, integritySnapshot(profile.dir, scratch())), [])
+    })
+})
+
 describe("compiled server over stdio with raw JSON-RPC", { timeout: 60_000 }, () => {
     async function initialize(server: RunningServer): Promise<void> {
         const init = await request(server, {
@@ -276,7 +357,7 @@ describe("compiled server over stdio with raw JSON-RPC", { timeout: 60_000 }, ()
         let id = 1
         const tool = (name: string, args: unknown) => request(server, { jsonrpc: "2.0", id: ++id, method: "tools/call", params: { name, arguments: args } })
         const listed = await request(server, { jsonrpc: "2.0", id: ++id, method: "tools/list" })
-        assert.equal((listed.result as { tools: unknown[] }).tools.length, 7)
+        assert.equal((listed.result as { tools: unknown[] }).tools.length, 8)
         const calls: [string, Record<string, unknown>][] = [
             ["list_sources", {}],
             ["get_source", { sourceId: 2 }],
@@ -285,6 +366,7 @@ describe("compiled server over stdio with raw JSON-RPC", { timeout: 60_000 }, ()
             ["get_article", { articleId: 1 }],
             ["list_rules", { scope: "source", sourceId: 3, limit: 5 }],
             ["get_rule_chain", { groupId: 1 }],
+            ["list_articles", { pageSize: 2 }],
         ]
         for (const [name, args] of calls) {
             const response = await tool(name, args)

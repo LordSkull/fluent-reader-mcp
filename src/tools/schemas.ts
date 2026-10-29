@@ -321,6 +321,155 @@ export type GetArticleInput = z.output<typeof getArticleInput>
 export type GetArticleOutput = z.output<typeof getArticleOutput>
 export type ArticleFieldIssue = z.output<typeof articleFieldIssue>
 
+// ---- Article listing (FR-MCP-02B-01) ----
+
+export const ARTICLE_PAGE_SIZE_MAX = 100
+export const ARTICLE_PAGE_SIZE_DEFAULT = 20
+export const EXCERPT_CHARS_MAX = 500
+export const EXCERPT_CHARS_DEFAULT = 200
+export const ARTICLE_SOURCE_IDS_MAX = 500
+/** Fixed description of what a listing guarantees (returned with every list_articles page). */
+export const ARTICLE_LIST_CONSISTENCY =
+    "Order 'stored': descending article id, the order in which articles were saved in the database, not publication date. " +
+    "Windowed scan without snapshot: each article is included or excluded when the scan reaches it, with its state at that moment; " +
+    "articles saved after the first page are not included, articles deleted before the scan reaches them are absent, " +
+    "and no article is returned twice in one chain of cursors."
+
+/** Valid range of a JavaScript Date, in milliseconds. */
+const DATE_MS_MAX = 8.64e15
+const ISO_INSTANT = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?(?:(Z)|([+-])(\d{2}):(\d{2}))$/
+
+/**
+ * Milliseconds since the epoch of an ISO 8601 date-time with an explicit
+ * offset (`Z` or `±hh:mm`), or null when it is not one or names no real
+ * instant (month 13, February 30, hour 24, offset beyond ±23:59). Date-only
+ * and offset-less forms are rejected: their time zone would be implicit.
+ */
+export function parseInstant(text: string): number | null {
+    const m = ISO_INSTANT.exec(text)
+    if (m === null) return null
+    const [year, month, day, hour, minute, second] = [m[1], m[2], m[3], m[4], m[5], m[6] ?? "0"].map(Number) as [number, number, number, number, number, number]
+    const millis = Number((m[7] ?? "0").padEnd(3, "0"))
+    const offsetMinutes = m[8] === "Z" ? 0 : (m[9] === "-" ? -1 : 1) * (Number(m[10]) * 60 + Number(m[11]))
+    if (month < 1 || month > 12 || hour > 23 || minute > 59 || second > 59 || Number(m[10] ?? 0) > 23 || Number(m[11] ?? 0) > 59) return null
+    const date = new Date(0)
+    date.setUTCFullYear(year, month - 1, day)
+    date.setUTCHours(hour, minute, second, millis)
+    if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null
+    const ms = date.getTime() - offsetMinutes * 60_000
+    return Number.isFinite(ms) && Math.abs(ms) <= DATE_MS_MAX ? ms : null
+}
+
+const isoInstant = z
+    .string()
+    .max(40)
+    .regex(ISO_INSTANT)
+    .refine((s) => parseInstant(s) !== null)
+
+export const listArticlesInput = z
+    .strictObject({
+        sourceIds: z
+            .array(sourceId)
+            .min(1)
+            .max(ARTICLE_SOURCE_IDS_MAX)
+            .optional()
+            .describe(`Only articles of these sources (1..${ARTICLE_SOURCE_IDS_MAX} sourceIds; duplicates are ignored). NOT_FOUND if one does not exist. Not with groupId.`),
+        groupId: groupId
+            .optional()
+            .describe("Only articles of the sources whose first group is this group id (as list_sources groupId). Not with sourceIds."),
+        dateFrom: isoInstant
+            .optional()
+            .describe("Only articles whose stored date is >= this instant. ISO 8601 date-time with Z or ±hh:mm offset, e.g. 2026-10-01T00:00:00Z."),
+        dateTo: isoInstant.optional().describe("Only articles whose stored date is < this instant (same format; must be later than dateFrom)."),
+        read: z.enum(["any", "read", "unread"]).optional().describe("Read state filter (default any)."),
+        starred: z.enum(["any", "starred", "unstarred"]).optional().describe("Starred state filter (default any)."),
+        hidden: z
+            .enum(["exclude", "include", "only"])
+            .optional()
+            .describe("Articles hidden in the app (by the user or a rule): exclude (default), include or only."),
+        includeHiddenSources: z
+            .boolean()
+            .optional()
+            .describe(
+                "Include articles of sources hidden from 'All articles' (default false), also when they are named in sourceIds or groupId. " +
+                    "With false, articles of a source whose hidden flag cannot be verified (oversized or malformed source record) are left out too; articles whose source no longer exists are kept.",
+            ),
+        sort: z
+            .enum(["stored"])
+            .optional()
+            .describe("stored (default, the only one): descending article id, i.e. the order articles were saved in the database, NOT publication date."),
+        pageSize: z
+            .number()
+            .int()
+            .min(1)
+            .max(ARTICLE_PAGE_SIZE_MAX)
+            .optional()
+            .describe(`Maximum articles returned in this page (default ${ARTICLE_PAGE_SIZE_DEFAULT}); scan budgets and the response size limit can return fewer.`),
+        excerptChars: z
+            .number()
+            .int()
+            .min(0)
+            .max(EXCERPT_CHARS_MAX)
+            .optional()
+            .describe(`Maximum Unicode code points of the stored plain-text excerpt per article (default ${EXCERPT_CHARS_DEFAULT}, 0 for none).`),
+        cursor: z
+            .string()
+            .max(128)
+            .optional()
+            .describe("nextCursor of the previous page. Other arguments may be omitted; if given they must match the first page."),
+    })
+    .superRefine((v, ctx) => {
+        if (v.sourceIds !== undefined && v.groupId !== undefined) ctx.addIssue({ code: "custom", message: "sourceIds and groupId" })
+        if (v.dateFrom !== undefined && v.dateTo !== undefined && (parseInstant(v.dateFrom) ?? 0) >= (parseInstant(v.dateTo) ?? 0)) {
+            ctx.addIssue({ code: "custom", message: "date range" })
+        }
+    })
+
+export const listArticlesOutput = z.strictObject({
+    articles: z
+        .array(
+            z.strictObject({
+                articleId: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+                sourceId: sourceId.nullable(),
+                sourceName: z.string().nullable(),
+                sourceNameTruncated: z.literal(true).optional(),
+                orphan: z.boolean().nullable(),
+                title: z.string().nullable(),
+                titleTruncated: z.boolean(),
+                date: z.string().nullable(),
+                dateValid: z.boolean(),
+                fetchedDate: z.string().nullable(),
+                creator: z.string().nullable(),
+                creatorTruncated: z.literal(true).optional(),
+                read: z.boolean().nullable(),
+                starred: z.boolean().nullable(),
+                hidden: z.boolean().nullable(),
+                excerpt: z.string().nullable(),
+                excerptTruncated: z.boolean(),
+                untrusted: z.literal(true),
+                fieldIssues: z.array(articleFieldIssue).optional(),
+            }),
+        )
+        .max(ARTICLE_PAGE_SIZE_MAX),
+    sort: z.literal("stored"),
+    pageSize: z.number().int().min(1).max(ARTICLE_PAGE_SIZE_MAX),
+    hasMore: z.boolean(),
+    nextCursor: z.string().nullable(),
+    scan: z.strictObject({
+        examined: count,
+        exhausted: z.boolean(),
+        stoppedBy: z.enum(["exhausted", "pageFull", "responseBudget", "scanBudget", "timeBudget"]),
+        oversizeSkipped: count,
+        invalidDateExcluded: count,
+    }),
+    consistency: z.literal(ARTICLE_LIST_CONSISTENCY),
+    meta: groupMeta.extend({ urlsRedacted: z.literal(true) }),
+})
+
+export type ListArticlesInput = z.output<typeof listArticlesInput>
+export type ListArticlesOutput = z.output<typeof listArticlesOutput>
+export type ListedArticle = ListArticlesOutput["articles"][number]
+
 // ---- Rule tools (FR-MCP-02A-05) ----
 
 export const RULE_LIMIT_MAX = 100

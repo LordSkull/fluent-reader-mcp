@@ -441,7 +441,7 @@ describe("builder pipeline refusals", { timeout: 60_000 }, () => {
 })
 
 describe("self-test protocol (build machine Node + repository server, not a package)", { timeout: 60_000 }, () => {
-    test("handshake, seven tools, synthetic reads and clean exit", async () => {
+    test("handshake, eight tools, synthetic reads and clean exit", async () => {
         const lines = await runSelfTest({ nodeExe: process.execPath, entrypoint: MAIN_JS, env: process.env })
         assert.equal(lines.length, 3)
     })

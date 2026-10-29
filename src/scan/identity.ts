@@ -45,6 +45,15 @@ export class SourceIdentity {
             .subarray(0, MAC_BYTES)
     }
 
+    /**
+     * A keyed SHA-256 (HMAC under this process's key) for internal
+     * fingerprints, domain-separated from sourceRefs. Never returned: it
+     * only lets a fingerprint kept in memory be compared later.
+     */
+    digest(domain: string): crypto.Hmac {
+        return crypto.createHmac("sha256", this.#key).update(`fluent-reader-mcp/${domain}\0`)
+    }
+
     /** The ref of the source currently stored as (sid, url). */
     refFor(sid: number, url: string): string {
         return `sr1.${this.#epoch}.${this.#mac(sid, url).toString("base64url")}`

@@ -2,7 +2,7 @@
  * Functional self-test of an EXTRACTED package: its own runtime/node.exe
  * runs its own server/dist/main.js on a synthetic profile (the FR-MCP-02A-06
  * smoke fixture) created in a temporary directory outside the package.
- * Raw JSON-RPC over stdio: initialize, tools/list (exactly the seven tools),
+ * Raw JSON-RPC over stdio: initialize, tools/list (exactly the eight tools),
  * list_sources and get_article (SQLite and the Win32/Koffi lock), then stdin
  * EOF and a clean exit. No real profile is ever used.
  */
@@ -97,7 +97,7 @@ export const runSelfTest: SelfTestFn = async (input) => {
         report.push("self-test: initialize and clean exit on stdin EOF")
         const tools = ((byId(2)?.result?.tools as { name: string }[] | undefined) ?? []).map((t) => t.name).sort()
         if (!isDeepStrictEqual(tools, [...TOOLS])) throw new BuildError(`self-test: tools/list returned ${JSON.stringify(tools)}`)
-        report.push("self-test: tools/list returned exactly the seven tools")
+        report.push(`self-test: tools/list returned exactly the ${TOOLS.length} tools`)
         const sources = (byId(3)?.result?.structuredContent as { sources?: { sourceId: number }[] } | undefined)?.sources?.map((s) => s.sourceId)
         if (!isDeepStrictEqual(sources, [1, 2, 3, 4, 5])) throw new BuildError("self-test: list_sources did not read the synthetic profile")
         const article = byId(4)?.result?.structuredContent as { articleId?: number; untrusted?: boolean } | undefined
