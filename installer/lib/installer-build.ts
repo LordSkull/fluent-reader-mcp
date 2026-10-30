@@ -107,7 +107,7 @@ export function checkBundleEntries(entries: readonly ZipEntry[], expect: { versi
     if (manifest.product?.version !== expect.version) problems.push(`bundle version ${String(manifest.product?.version)}, expected ${expect.version}`)
     if (manifest.product?.channel !== "beta" || manifest.product?.platform !== "win-x64") problems.push("bundle is not the beta win-x64 package")
     if (manifest.runtime?.version !== expect.runtimeVersion || manifest.runtime?.archiveSha256 !== expect.runtimeSha256 || manifest.runtime?.executable !== RUNTIME_EXE) problems.push("bundle runtime differs from installer/runtime-lock.json")
-    if (manifest.server?.entrypoint !== ENTRYPOINT || !isDeepStrictEqual(manifest.server?.tools, [...TOOLS])) problems.push("bundle server section differs (entrypoint or the eight tools)")
+    if (manifest.server?.entrypoint !== ENTRYPOINT || !isDeepStrictEqual(manifest.server?.tools, [...TOOLS])) problems.push("bundle server section differs (entrypoint or the nine tools)")
     const listed = Array.isArray(manifest.files) ? manifest.files : []
     const actual = [...files.keys()].filter((f) => f !== MANIFEST).sort(compareOrdinal)
     if (!isDeepStrictEqual(listed.map((f) => f.path), actual)) problems.push("bundle content differs from its manifest (files missing or not listed)")

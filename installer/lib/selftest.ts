@@ -2,7 +2,7 @@
  * Functional self-test of an EXTRACTED package: its own runtime/node.exe
  * runs its own server/dist/main.js on a synthetic profile (the FR-MCP-02A-06
  * smoke fixture) created in a temporary directory outside the package.
- * Raw JSON-RPC over stdio: initialize, tools/list (exactly the eight tools),
+ * Raw JSON-RPC over stdio: initialize, tools/list (exactly the nine tools),
  * list_sources and get_article (SQLite and the Win32/Koffi lock), then stdin
  * EOF and a clean exit. No real profile is ever used.
  */

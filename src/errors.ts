@@ -214,7 +214,7 @@ const TEXT: Readonly<Record<ErrorCode, { message: string; hint: string }>> = {
     },
     CURSOR_STALE: {
         message: "The data behind the cursor changed, or can no longer be verified, in a way that invalidates the listing.",
-        hint: "Start the listing again without a cursor. A list_articles listing filtered on a source whose feed URL cannot be verified (larger than 64 KiB, or not text) cannot be continued past its first page.",
+        hint: "Start the listing again without a cursor. A list_articles or search_articles listing filtered on a source whose feed URL cannot be verified (larger than 64 KiB, or not text) cannot be continued past its first page.",
     },
     INTERNAL_ERROR: {
         message: "An internal error occurred.",

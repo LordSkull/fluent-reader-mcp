@@ -75,8 +75,8 @@ describe("MCP over stdio with the SDK v2 client", { timeout: 60_000 }, () => {
                 const tools = await client.listTools()
                 assert.deepEqual(
                     tools.tools.map((t) => t.name).sort(),
-                    ["get_article", "get_group", "get_rule_chain", "get_source", "list_articles", "list_groups", "list_rules", "list_sources"],
-                    "exactly the FR-MCP-02A-02 to 02A-05 tools and FR-MCP-02B-01 list_articles",
+                    ["get_article", "get_group", "get_rule_chain", "get_source", "list_articles", "list_groups", "list_rules", "list_sources", "search_articles"],
+                    "exactly the FR-MCP-02A-02 to 02A-05 tools, FR-MCP-02B-01 list_articles and FR-MCP-02B-02 search_articles",
                 )
                 for (const tool of tools.tools) {
                     assert.equal(tool.annotations?.readOnlyHint, true)
@@ -201,7 +201,7 @@ describe("MCP over stdio with raw JSON-RPC", { timeout: 60_000 }, () => {
         server.child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`)
         assert.deepEqual((await request(server, { jsonrpc: "2.0", id: 2, method: "ping" })).result, {})
         const list = await request(server, { jsonrpc: "2.0", id: 3, method: "tools/list" })
-        assert.deepEqual((list.result as { tools: { name: string }[] }).tools.map((t) => t.name).sort(), ["get_article", "get_group", "get_rule_chain", "get_source", "list_articles", "list_groups", "list_rules", "list_sources"])
+        assert.deepEqual((list.result as { tools: { name: string }[] }).tools.map((t) => t.name).sort(), ["get_article", "get_group", "get_rule_chain", "get_source", "list_articles", "list_groups", "list_rules", "list_sources", "search_articles"])
         const unknown = await request(server, { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "simulate_rules", arguments: {} } })
         assert.ok("error" in unknown || (unknown.result as { isError?: boolean }).isError === true)
         const call = await request(server, { jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "list_sources", arguments: {} } })

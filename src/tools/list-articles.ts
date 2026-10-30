@@ -1,6 +1,8 @@
 /**
  * list_articles (FR-MCP-01 §11.3, §11.5, §14.5, adapted to the
- * FR-MCP-02B-01 contract).
+ * FR-MCP-02B-01 contract). The scan below (scanPage, with its source checks
+ * and identity fingerprint) is also the scan of search_articles
+ * (FR-MCP-02B-02, search-articles.ts), which adds a text comparison.
  *
  * Lists stored articles in "stored" order, descending `_id`, by a windowed
  * keyset scan of the primary key. Never OFFSET, and never one statement whose
@@ -80,6 +82,8 @@ import {
     URL_DIGEST_BYTES_MAX,
     type EvaluatedRow,
     type ProjectedRow,
+    type SearchColumn,
+    type SearchFields,
     type SourceInfoRow,
 } from "../domain/article-scan.js"
 import { BATCH_BYTES_MAX, RECORD_BYTES_MAX, type StorageClass } from "../domain/sources.js"
@@ -124,6 +128,10 @@ export interface ScanLimits {
     readonly sourceCallBytes: number
     /** Distinct sources resolved and cached per call (each entry holds at most a 300-code-point name). */
     readonly sourceCacheEntries: number
+    /** Search only: bytes of searchable values loaded by one phase-B statement (the first record of a window is always allowed). */
+    readonly searchWindowBytes: number
+    /** Search only: bytes of searchable values loaded per call, checked before each window. */
+    readonly searchCallBytes: number
 }
 
 export const DEFAULT_SCAN_LIMITS: ScanLimits = {
@@ -137,6 +145,8 @@ export const DEFAULT_SCAN_LIMITS: ScanLimits = {
     sourceBatchBytes: BATCH_BYTES_MAX,
     sourceCallBytes: 8 * 1024 * 1024,
     sourceCacheEntries: 1024,
+    searchWindowBytes: 1024 * 1024,
+    searchCallBytes: 8 * 1024 * 1024,
 }
 
 /** Uncached sources resolved ahead by one source lookup (S1 of at most this many point lookups). */
@@ -153,9 +163,25 @@ const DATE_MS_MAX = 8.64e15
 
 type StoppedBy = ListArticlesOutput["scan"]["stoppedBy"]
 const STOPPED_BY: readonly StoppedBy[] = ["exhausted", "pageFull", "responseBudget", "scanBudget", "timeBudget"]
-const LONGEST_STOPPED_BY = STOPPED_BY.reduce((a, b) => (b.length > a.length ? b : a))
+export const LONGEST_STOPPED_BY = STOPPED_BY.reduce((a, b) => (b.length > a.length ? b : a))
 
-interface Binding {
+/**
+ * Outcome of the text comparison of one row that passed the article filters
+ * (search_articles): the column that matched, "none" when every searched
+ * value was examined without a match, or why one could not be examined.
+ */
+export type TextOutcome = SearchColumn | "none" | "tooLarge" | "unexpectedType"
+
+/** A search run by scanPage: the columns to load (SEARCH_SQL) and the comparison of one row. */
+export interface SearchSpec {
+    readonly fields: SearchFields
+    readonly match: (row: EvaluatedRow) => TextOutcome
+}
+
+/** An article of a page; matchedIn only in a search. */
+export type ScannedArticle = ListedArticle & { matchedIn?: SearchColumn }
+
+export interface Binding {
     readonly [key: string]: string | number | boolean | null
     /** JSON of the sorted, distinct sourceIds. */
     readonly sourceIds: string | null
@@ -171,7 +197,7 @@ interface Binding {
     readonly excerptChars: number
 }
 
-interface ScanState {
+export interface ScanState {
     readonly lo: number
     readonly hi: number
     /** Highest id not yet examined (inclusive), within [lo, hi]. */
@@ -185,7 +211,10 @@ interface ScanState {
     readonly positionFingerprint: string | null
 }
 
-function normalize(input: ListArticlesInput): Binding {
+/** The filter arguments shared with search_articles, with their defaults. */
+export type FilterInput = Omit<ListArticlesInput, "cursor">
+
+export function normalize(input: FilterInput): Binding {
     return {
         sourceIds: input.sourceIds === undefined ? null : JSON.stringify([...new Set(input.sourceIds)].sort((a, b) => a - b)),
         groupId: input.groupId ?? null,
@@ -201,11 +230,14 @@ function normalize(input: ListArticlesInput): Binding {
     }
 }
 
-/** Arguments repeated with a cursor must equal (after normalization) those the listing started with. */
-function checkBinding(input: ListArticlesInput, binding: Binding): void {
-    const given = normalize(input)
+/**
+ * Arguments repeated with a cursor must equal (after normalization) those the
+ * listing started with. `given` is the normalized form of `input`; only the
+ * arguments present in `input` are compared.
+ */
+export function checkBinding(input: object, given: Readonly<Record<string, unknown>>, binding: Readonly<Record<string, unknown>>): void {
     for (const key of Object.keys(given)) {
-        if (input[key as keyof ListArticlesInput] !== undefined && given[key] !== binding[key]) {
+        if ((input as Record<string, unknown>)[key] !== undefined && given[key] !== binding[key]) {
             throw new FrMcpError("CURSOR_MISMATCH", "filters-changed")
         }
     }
@@ -296,7 +328,7 @@ function sourcesFingerprint(db: ReadOnlyDatabase, sids: readonly number[], ident
     return { fingerprint: verifiable ? digest.digest("base64url") : null, missing }
 }
 
-interface PageInput {
+export interface PageInput {
     readonly binding: Binding
     readonly entry: CursorEntry<ScanState> | undefined
     readonly filterSids: readonly number[] | null
@@ -304,22 +336,38 @@ interface PageInput {
     readonly limits: ScanLimits
     readonly identity: SourceIdentity
     readonly budget: PageBudget
+    /** search_articles only. */
+    readonly search?: SearchSpec
 }
 
-interface PageResult {
-    readonly articles: ListedArticle[]
+export interface PageResult {
+    readonly articles: ScannedArticle[]
     readonly examined: number
     readonly oversizeSkipped: number
     readonly invalidDateExcluded: number
+    /** Search only: consumed articles that passed every filter but had a searched value too large to load, or not TEXT, and no match elsewhere. */
+    readonly notSearchedTooLarge: number
+    readonly notSearchedUnexpectedType: number
+    /** Search only: bytes of searchable values loaded by this call. */
+    readonly textBytes: number
     readonly exhausted: boolean
     readonly stoppedBy: StoppedBy
     /** State of the successor cursor; null when exhausted. */
     readonly next: ScanState | null
 }
 
-/** One page, synchronously inside one read transaction. */
-function scanPage(db: ReadOnlyDatabase, page: PageInput): PageResult {
-    const { binding, entry, limits } = page
+/**
+ * One page, synchronously inside one read transaction. Shared by
+ * list_articles and search_articles: with `page.search`, phases A and B use
+ * SEARCH_SQL, the searchable values loaded are bounded per statement and per
+ * call (searchWindowBytes, searchCallBytes, accepted like the record bytes),
+ * and a row must also match the text (page.search.match) to enter the page.
+ * The text is compared only for rows that passed the article filters; rows
+ * whose value could not be examined go through the same source check and,
+ * when visible, are counted (notSearched*), never returned.
+ */
+export function scanPage(db: ReadOnlyDatabase, page: PageInput): PageResult {
+    const { binding, entry, limits, search } = page
     const schemaVersion = readScanSchemaVersion(db)
     if (entry !== undefined && entry.state.schemaVersion !== schemaVersion) throw new FrMcpError("CURSOR_STALE", "schema-changed")
 
@@ -360,7 +408,7 @@ function scanPage(db: ReadOnlyDatabase, page: PageInput): PageResult {
             },
         }
     }
-    const empty = { articles: [], examined: 0, oversizeSkipped: 0, invalidDateExcluded: 0 }
+    const empty = { articles: [], examined: 0, oversizeSkipped: 0, invalidDateExcluded: 0, notSearchedTooLarge: 0, notSearchedUnexpectedType: 0, textBytes: 0 }
 
     const bounds = entry !== undefined ? { lo: entry.state.lo, hi: entry.state.hi } : readIdBounds(db)
     // No article, or a group without members: nothing can match, nothing is scanned.
@@ -443,14 +491,15 @@ function scanPage(db: ReadOnlyDatabase, page: PageInput): PageResult {
      *    be read; the row is not evaluated and the page stops before it.
      */
     const resolvable = (row: EvaluatedRow): number | null => (row.sourceType === "integer" ? row.source : null)
-    const sourceCheck = (rows: readonly EvaluatedRow[], pre: readonly (boolean | "invalidDate")[], i: number): "visible" | "excluded" | "unresolved" => {
+    /** `eligible[j]`: row j needs its source checked (it passed the filters and, in a search, did not fail the text). */
+    const sourceCheck = (rows: readonly EvaluatedRow[], eligible: readonly boolean[], i: number): "visible" | "excluded" | "unresolved" => {
         const row = rows[i] as EvaluatedRow
         if (row.sourceType !== "integer") return "visible"
         if (row.source === null) return binding.includeHiddenSources ? "visible" : "excluded"
         if (!sources.has(row.source)) {
             const ahead: number[] = [row.source]
             for (let j = i + 1; j < rows.length && ahead.length < SOURCE_LOOKAHEAD; j++) {
-                const sid = pre[j] === true ? resolvable(rows[j] as EvaluatedRow) : null
+                const sid = eligible[j] === true ? resolvable(rows[j] as EvaluatedRow) : null
                 if (sid !== null && !sources.has(sid) && !ahead.includes(sid)) ahead.push(sid)
             }
             resolveSources(ahead)
@@ -461,25 +510,35 @@ function scanPage(db: ReadOnlyDatabase, page: PageInput): PageResult {
         return info.kind === "found" && info.row.hiddenType === "integer" && info.row.hidden === 0 ? "visible" : "excluded"
     }
 
-    const articles: ListedArticle[] = []
+    const articles: ScannedArticle[] = []
     const started = limits.clock()
     let upper = entry !== undefined ? entry.state.nextUpper : hi
     let examined = 0
     let oversizeSkipped = 0
+    let notSearchedTooLarge = 0
+    let notSearchedUnexpectedType = 0
     let bytesUsed = 0
+    let textUsed = 0
     let windows = 0
     let lastConsumed: number | null = null
-    const counters = () => ({ articles, examined, oversizeSkipped, invalidDateExcluded })
+    const counters = () => ({ articles, examined, oversizeSkipped, invalidDateExcluded, notSearchedTooLarge, notSearchedUnexpectedType, textBytes: textUsed })
+    /** Searchable bytes phase B will load for a candidate (always 0 for list_articles). */
+    const textOf = (c: { readonly textBytes?: number }): number => (search === undefined ? 0 : (c.textBytes ?? 0))
 
     for (;;) {
         if (windows > 0) {
-            if (examined >= limits.callRows || bytesUsed >= limits.callBytes || windows >= limits.callWindows) {
+            if (
+                examined >= limits.callRows ||
+                bytesUsed >= limits.callBytes ||
+                windows >= limits.callWindows ||
+                (search !== undefined && textUsed >= limits.searchCallBytes)
+            ) {
                 return result(false, "scanBudget", counters(), lastConsumed, lo, hi)
             }
             if (limits.clock() - started >= limits.timeBudgetMs) return result(false, "timeBudget", counters(), lastConsumed, lo, hi)
         }
         const asked = Math.min(limits.windowRows, limits.callRows - examined)
-        const candidates = readScanCandidates(db, lo, upper, asked)
+        const candidates = readScanCandidates(db, lo, upper, asked, search?.fields)
         windows++
         if (candidates.length === 0) return result(true, "exhausted", counters(), lastConsumed, lo, hi)
         const short = candidates.length < asked
@@ -496,43 +555,57 @@ function scanPage(db: ReadOnlyDatabase, page: PageInput): PageResult {
         }
         // The first record of the call always fits; later windows stop before a record over the call budget.
         if (bytesUsed > 0 && bytesUsed + first.bytes > limits.callBytes) return result(false, "scanBudget", counters(), lastConsumed, lo, hi)
+        if (textUsed > 0 && textUsed + textOf(first) > limits.searchCallBytes) return result(false, "scanBudget", counters(), lastConsumed, lo, hi)
         const room = Math.min(limits.windowBytes, limits.callBytes - bytesUsed)
+        const textRoom = Math.min(limits.searchWindowBytes, limits.searchCallBytes - textUsed)
         let accepted = 1
         let windowBytes = first.bytes
+        let windowText = textOf(first)
         for (; accepted < candidates.length; accepted++) {
             const c = candidates[accepted] as (typeof candidates)[number]
             if (c.bytes > ARTICLE_RECORD_BYTES_MAX || windowBytes + c.bytes > room) break
+            if (search !== undefined && windowText + textOf(c) > textRoom) break
             windowBytes += c.bytes
+            windowText += textOf(c)
         }
         bytesUsed += windowBytes
+        textUsed += windowText
         const lower = (candidates[accepted - 1] as (typeof candidates)[number]).id
-        const rows = readEvaluation(db, lower, first.id)
+        const rows = readEvaluation(db, lower, first.id, search?.fields)
         // Same transaction as phase A: exactly the accepted candidates, in the same order.
         if (rows.length !== accepted || rows.some((row, i) => row.id !== candidates[i]?.id)) throw new FrMcpError("INTERNAL_ERROR", "unexpected")
 
         const pre = rows.map(preMatch)
+        // Search: the text of the rows that passed the filters, compared once per window (bounded by textRoom).
+        const text = search === undefined ? undefined : rows.map((row, j): TextOutcome => (pre[j] === true ? search.match(row) : "none"))
+        const eligible = rows.map((_, j) => pre[j] === true && (text === undefined || text[j] !== "none"))
+        /** Rows that enter the page if their source is visible. */
+        const wanted = rows.map((_, j) => eligible[j] === true && (text === undefined || (text[j] !== "tooLarge" && text[j] !== "unexpectedType")))
         let projection: Map<number, ProjectedRow> | undefined
 
         for (let i = 0; i < rows.length; i++) {
             const row = rows[i] as EvaluatedRow
             let matched = false
-            if (pre[i] === true) {
-                const check = sourceCheck(rows, pre, i)
+            let visible = false
+            if (eligible[i] === true) {
+                const check = sourceCheck(rows, eligible, i)
                 // Not evaluated: not consumed either, the next call starts with this row.
                 if (check === "unresolved") return result(false, "scanBudget", counters(), lastConsumed, lo, hi)
-                matched = check === "visible"
+                visible = check === "visible"
+                matched = visible && wanted[i] === true
             }
             if (matched) {
                 if (projection === undefined || !projection.has(row.id)) {
                     // The candidates of this window that can still enter the page, from this one on.
-                    const ids = rows.filter((_, j) => j >= i && pre[j] === true).slice(0, binding.pageSize - articles.length).map((r) => r.id)
+                    const ids = rows.filter((_, j) => j >= i && wanted[j] === true).slice(0, binding.pageSize - articles.length).map((r) => r.id)
                     projection = readProjection(db, ids, binding.excerptChars)
                 }
                 const projected = projection.get(row.id)
                 // Same transaction as phase B: the row exists and passed the same record limit.
                 if (projected === undefined) throw new FrMcpError("INTERNAL_ERROR", "unexpected")
                 const sid = resolvable(row)
-                const article = toArticle(row, projected, sid === null ? undefined : sources.get(sid), binding.excerptChars)
+                const listed = toArticle(row, projected, sid === null ? undefined : sources.get(sid), binding.excerptChars)
+                const article: ScannedArticle = text === undefined ? listed : { ...listed, matchedIn: text[i] as SearchColumn }
                 if (!page.budget.tryAdd(JSON.stringify(article))) {
                     // A single article that cannot be returned even alone: stable error, no progress.
                     if (articles.length === 0) throw new FrMcpError("LIMIT_EXCEEDED", "response-too-large")
@@ -541,6 +614,10 @@ function scanPage(db: ReadOnlyDatabase, page: PageInput): PageResult {
                 articles.push(article)
             } else if (pre[i] === "invalidDate") {
                 invalidDateExcluded++
+            } else if (visible && text?.[i] === "tooLarge") {
+                notSearchedTooLarge++
+            } else if (visible && text?.[i] === "unexpectedType") {
+                notSearchedUnexpectedType++
             }
             examined++
             lastConsumed = row.id
@@ -657,7 +734,7 @@ async function run(context: ToolContext, input: ListArticlesInput, limits: ScanL
     if (input.cursor !== undefined) {
         entry = context.cursors.resolve<ScanState>(input.cursor, LIST_ARTICLES)
         binding = entry.binding as Binding
-        checkBinding(input, binding)
+        checkBinding(input, normalize(input), binding)
         if (entry.response !== undefined) return JSON.parse(entry.response) as CallToolResult
     } else {
         binding = normalize(input)

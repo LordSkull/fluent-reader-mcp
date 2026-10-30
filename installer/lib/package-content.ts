@@ -21,8 +21,8 @@ export const MANIFEST = "manifest.json"
 export const INFO = "PACKAGING-INFO.md"
 /** P-INS-05; still subject to the owner's approval. */
 export const DEFAULT_INSTALL_DIR = "%LOCALAPPDATA%\\FluentReaderMCP"
-/** The eight read-only tools (FR-MCP-02A and list_articles of FR-MCP-02B-01), sorted; the self-test requires exactly these. */
-export const TOOLS = ["get_article", "get_group", "get_rule_chain", "get_source", "list_articles", "list_groups", "list_rules", "list_sources"] as const
+/** The nine read-only tools (FR-MCP-02A, list_articles of FR-MCP-02B-01 and search_articles of FR-MCP-02B-02), sorted; the self-test requires exactly these. */
+export const TOOLS = ["get_article", "get_group", "get_rule_chain", "get_source", "list_articles", "list_groups", "list_rules", "list_sources", "search_articles"] as const
 /** Top-level entries owned by the product (for a future uninstaller). */
 export const OWNED_ENTRIES = ["runtime/", "server/", "licenses/", MANIFEST, INFO] as const
 export const KOFFI_NATIVE = "server/node_modules/@koromix/koffi-win32-x64/win32_x64/koffi.node"

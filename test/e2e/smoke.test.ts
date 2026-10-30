@@ -24,6 +24,7 @@ import {
     listGroupsOutput,
     listRulesOutput,
     listSourcesOutput,
+    searchArticlesOutput,
 } from "../../src/tools/schemas.js"
 import { CONFIG_NAME, createTempRoot, DB_NAME, findLeaks, removeTempRoot } from "../helpers/fixtures.js"
 import { childEnv, MAIN_JS, parseStdoutLines, request, runToExit, startServer, type RunningServer } from "../helpers/process.js"
@@ -138,7 +139,7 @@ describe("FR-MCP-02A-06 synthetic smoke fixture", () => {
 })
 
 describe("compiled server over stdio with the SDK client", { timeout: 60_000 }, () => {
-    test("handshake, eight tools, one conforming call each, errors, no writes, clean shutdown", async () => {
+    test("handshake, nine tools, one conforming call each, errors, no writes, clean shutdown", async () => {
         const profile = newSmokeProfile()
         const initial = integritySnapshot(profile.dir, scratch())
         const transport = new StdioClientTransport({
@@ -162,8 +163,8 @@ describe("compiled server over stdio with the SDK client", { timeout: 60_000 }, 
         try {
             assert.deepEqual(client.getServerVersion(), { name: SERVER_NAME, version: SERVER_VERSION })
             const tools = (await client.listTools()).tools
-            // TOOL_NAMES is the set exercised by the Claude Code smoke (FR-MCP-02A); list_articles is FR-MCP-02B-01.
-            assert.deepEqual(tools.map((t) => t.name).sort(), [...TOOL_NAMES, "list_articles"].sort())
+            // TOOL_NAMES is the set exercised by the Claude Code smoke (FR-MCP-02A); list_articles is FR-MCP-02B-01, search_articles FR-MCP-02B-02.
+            assert.deepEqual(tools.map((t) => t.name).sort(), [...TOOL_NAMES, "list_articles", "search_articles"].sort())
             for (const tool of tools) {
                 assert.equal(tool.inputSchema.type, "object")
                 assert.equal(tool.outputSchema?.type, "object")
@@ -278,7 +279,7 @@ describe("FR-MCP-02B-01 list_articles over stdio (SDK client)", { timeout: 60_00
         try {
             const tools = (await client.listTools()).tools
             assert.ok(tools.some((t) => t.name === "list_articles"))
-            assert.deepEqual(tools.map((t) => t.name).sort(), [...TOOL_NAMES, "list_articles"].sort(), "the seven FR-MCP-02A tools are still listed")
+            assert.deepEqual(tools.map((t) => t.name).sort(), [...TOOL_NAMES, "list_articles", "search_articles"].sort(), "the seven FR-MCP-02A tools are still listed")
             const listed = tools.find((t) => t.name === "list_articles")
             assert.equal(listed?.annotations?.readOnlyHint, true)
             assert.equal(listed?.outputSchema?.type, "object")
@@ -337,6 +338,85 @@ describe("FR-MCP-02B-01 list_articles over stdio (SDK client)", { timeout: 60_00
     })
 })
 
+describe("FR-MCP-02B-02 search_articles over stdio (SDK client)", { timeout: 60_000 }, () => {
+    test("tools/list, title/text/creator searches, accents, cursor continuation, get_article on a result, no query in stderr", async () => {
+        const profile = newSmokeProfile()
+        const initial = integritySnapshot(profile.dir, scratch())
+        const transport = new StdioClientTransport({ command: process.execPath, args: [MAIN_JS, "--profile-dir", profile.dir], env: childEnv(), stderr: "pipe" })
+        let stderr = ""
+        transport.stderr?.on("data", (chunk: Buffer) => (stderr += chunk.toString("utf8")))
+        const client = new Client({ name: "frmcp-smoke-search-articles", version: "0.0.0" })
+        await client.connect(transport)
+        const pid = transport.pid
+        assert.ok(typeof pid === "number")
+        const texts: string[] = []
+        const run = async (name: string, args: Record<string, unknown>): Promise<Outcome> => {
+            const outcome = await call(client, name, args)
+            texts.push(outcome.text)
+            return outcome
+        }
+        try {
+            const tools = (await client.listTools()).tools
+            assert.equal(tools.length, 9)
+            const searched = tools.find((t) => t.name === "search_articles")
+            assert.equal(searched?.annotations?.readOnlyHint, true)
+            assert.equal(searched?.outputSchema?.type, "object")
+            assert.deepEqual((searched?.inputSchema as { properties: Record<string, unknown> }).properties.query !== undefined, true)
+
+            // Title search (default), case-insensitive; hidden source 5 left out; stored order; continued by cursor only.
+            const first = await run("search_articles", { query: "smoke-art", pageSize: 2 })
+            assertSuccess(first, searchArticlesOutput)
+            const ids: number[] = first.payload.articles.map((a: any) => a.articleId)
+            assert.deepEqual(ids, [6, 4])
+            let cursor: string | null = first.payload.nextCursor
+            while (cursor !== null) {
+                const next = await run("search_articles", { cursor })
+                assertSuccess(next, searchArticlesOutput)
+                ids.push(...next.payload.articles.map((a: any) => a.articleId))
+                cursor = next.payload.nextCursor
+            }
+            assert.deepEqual(ids, [6, 4, 3, 2, 1])
+
+            // Accent-insensitive title match on the Unicode article; its id works with get_article.
+            const accent = await run("search_articles", { query: "CAFFE NAIVE" })
+            assertSuccess(accent, searchArticlesOutput)
+            assert.deepEqual(accent.payload.articles.map((a: any) => [a.articleId, a.matchedIn]), [[2, "title"]])
+            assert.deepEqual([accent.payload.scan.exhausted, accent.payload.search.exhaustive], [true, true])
+            const article = await run("get_article", { articleId: 2 })
+            assertSuccess(article, getArticleOutput)
+            assert.equal(article.payload.title, accent.payload.articles[0].title)
+
+            // Snippet search finds the injected text, returned as data only.
+            const injected = await run("search_articles", { query: "ignore your instructions", fields: "text" })
+            assertSuccess(injected, searchArticlesOutput)
+            assert.deepEqual(injected.payload.articles.map((a: any) => [a.articleId, a.matchedIn, a.untrusted]), [[3, "snippet", true]])
+            const titleOnly = await run("search_articles", { query: "ignore your instructions" })
+            assert.deepEqual(titleOnly.payload.articles, [])
+
+            const creator = await run("search_articles", { query: "smoke writer", fields: "creator" })
+            assertSuccess(creator, searchArticlesOutput)
+            assert.deepEqual(creator.payload.articles.map((a: any) => [a.articleId, a.matchedIn]), [[6, "creator"], [1, "creator"]])
+
+            const invalid = await run("search_articles", { query: "   " })
+            assert.equal(invalid.result.isError, true)
+
+            // The other tools still answer.
+            assertSuccess(await run("list_articles", { pageSize: 2 }), listArticlesOutput)
+            assertSuccess(await run("list_sources", {}), listSourcesOutput)
+
+            assert.deepEqual(findLeaks(texts, REDACTED), [], "no credential or URL in any result")
+            assert.deepEqual(findLeaks(texts, [profile.dir, root]), [], "no path in any result")
+        } finally {
+            await client.close()
+        }
+        assert.ok(await waitFor(() => processGone(pid), 5_000))
+        assertCleanStderr(stderr, profile)
+        for (const query of ["smoke-art", "CAFFE", "ignore your instructions", "smoke writer"]) assert.ok(!stderr.toLowerCase().includes(query.toLowerCase()), "no query in diagnostics")
+        assertNoHandleHeld(profile.dbPath)
+        assert.deepEqual(integrityDifferences(initial, integritySnapshot(profile.dir, scratch())), [])
+    })
+})
+
 describe("compiled server over stdio with raw JSON-RPC", { timeout: 60_000 }, () => {
     async function initialize(server: RunningServer): Promise<void> {
         const init = await request(server, {
@@ -357,7 +437,7 @@ describe("compiled server over stdio with raw JSON-RPC", { timeout: 60_000 }, ()
         let id = 1
         const tool = (name: string, args: unknown) => request(server, { jsonrpc: "2.0", id: ++id, method: "tools/call", params: { name, arguments: args } })
         const listed = await request(server, { jsonrpc: "2.0", id: ++id, method: "tools/list" })
-        assert.equal((listed.result as { tools: unknown[] }).tools.length, 8)
+        assert.equal((listed.result as { tools: unknown[] }).tools.length, 9)
         const calls: [string, Record<string, unknown>][] = [
             ["list_sources", {}],
             ["get_source", { sourceId: 2 }],
@@ -367,6 +447,7 @@ describe("compiled server over stdio with raw JSON-RPC", { timeout: 60_000 }, ()
             ["list_rules", { scope: "source", sourceId: 3, limit: 5 }],
             ["get_rule_chain", { groupId: 1 }],
             ["list_articles", { pageSize: 2 }],
+            ["search_articles", { query: "smoke-art", pageSize: 2 }],
         ]
         for (const [name, args] of calls) {
             const response = await tool(name, args)

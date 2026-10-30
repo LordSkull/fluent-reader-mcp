@@ -9,6 +9,7 @@ import { z } from "zod"
 import { SAMPLE_MAX } from "../domain/group-catalog.js"
 import { NOTE_ORDERS_MAX, NOTES_PER_PAGE_MAX, RULE_DIAGNOSTICS } from "../domain/rules.js"
 import { OPEN_TARGETS, TEXT_DIRECTIONS } from "../domain/sources.js"
+import { normalizeQuery, QUERY_CODE_POINTS_MAX } from "../domain/text-match.js"
 
 export const LIST_LIMIT_MAX = 500
 export const LIST_LIMIT_DEFAULT = 200
@@ -425,43 +426,43 @@ export const listArticlesInput = z
         }
     })
 
+const listedArticle = z.strictObject({
+    articleId: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+    sourceId: sourceId.nullable(),
+    sourceName: z.string().nullable(),
+    sourceNameTruncated: z.literal(true).optional(),
+    orphan: z.boolean().nullable(),
+    title: z.string().nullable(),
+    titleTruncated: z.boolean(),
+    date: z.string().nullable(),
+    dateValid: z.boolean(),
+    fetchedDate: z.string().nullable(),
+    creator: z.string().nullable(),
+    creatorTruncated: z.literal(true).optional(),
+    read: z.boolean().nullable(),
+    starred: z.boolean().nullable(),
+    hidden: z.boolean().nullable(),
+    excerpt: z.string().nullable(),
+    excerptTruncated: z.boolean(),
+    untrusted: z.literal(true),
+    fieldIssues: z.array(articleFieldIssue).optional(),
+})
+
+const articleScan = z.strictObject({
+    examined: count,
+    exhausted: z.boolean(),
+    stoppedBy: z.enum(["exhausted", "pageFull", "responseBudget", "scanBudget", "timeBudget"]),
+    oversizeSkipped: count,
+    invalidDateExcluded: count,
+})
+
 export const listArticlesOutput = z.strictObject({
-    articles: z
-        .array(
-            z.strictObject({
-                articleId: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
-                sourceId: sourceId.nullable(),
-                sourceName: z.string().nullable(),
-                sourceNameTruncated: z.literal(true).optional(),
-                orphan: z.boolean().nullable(),
-                title: z.string().nullable(),
-                titleTruncated: z.boolean(),
-                date: z.string().nullable(),
-                dateValid: z.boolean(),
-                fetchedDate: z.string().nullable(),
-                creator: z.string().nullable(),
-                creatorTruncated: z.literal(true).optional(),
-                read: z.boolean().nullable(),
-                starred: z.boolean().nullable(),
-                hidden: z.boolean().nullable(),
-                excerpt: z.string().nullable(),
-                excerptTruncated: z.boolean(),
-                untrusted: z.literal(true),
-                fieldIssues: z.array(articleFieldIssue).optional(),
-            }),
-        )
-        .max(ARTICLE_PAGE_SIZE_MAX),
+    articles: z.array(listedArticle).max(ARTICLE_PAGE_SIZE_MAX),
     sort: z.literal("stored"),
     pageSize: z.number().int().min(1).max(ARTICLE_PAGE_SIZE_MAX),
     hasMore: z.boolean(),
     nextCursor: z.string().nullable(),
-    scan: z.strictObject({
-        examined: count,
-        exhausted: z.boolean(),
-        stoppedBy: z.enum(["exhausted", "pageFull", "responseBudget", "scanBudget", "timeBudget"]),
-        oversizeSkipped: count,
-        invalidDateExcluded: count,
-    }),
+    scan: articleScan,
     consistency: z.literal(ARTICLE_LIST_CONSISTENCY),
     meta: groupMeta.extend({ urlsRedacted: z.literal(true) }),
 })
@@ -469,6 +470,70 @@ export const listArticlesOutput = z.strictObject({
 export type ListArticlesInput = z.output<typeof listArticlesInput>
 export type ListArticlesOutput = z.output<typeof listArticlesOutput>
 export type ListedArticle = ListArticlesOutput["articles"][number]
+
+// ---- Article search (FR-MCP-02B-02) ----
+
+/** Fixed description of the comparison (returned with every search_articles page; see domain/text-match.ts). */
+export const SEARCH_MATCHING =
+    "Literal substring, no regex, wildcard, ranking, stemming or synonyms. Query and text are compared after: default Unicode lowercase, NFD, " +
+    "removal of U+0300-U+036F combining diacritics, final sigma as sigma, whitespace runs as one space (query trimmed). " +
+    "So ECONOMIA = economia and citta = città, but ss != ß and oe != œ. " +
+    "fields title: title only; text: title or snippet (stored plain text, possibly a feed excerpt), each matched on its own; creator: creator only. " +
+    "The HTML content is not searched."
+
+export const searchArticlesInput = z
+    .strictObject({
+        query: z
+            .string()
+            .min(1)
+            .max(QUERY_CODE_POINTS_MAX * 2)
+            .refine((q) => normalizeQuery(q) !== null)
+            .optional()
+            .describe(
+                `Text to find, matched literally after normalization (see matching). 1..${QUERY_CODE_POINTS_MAX} Unicode code points, not only spaces, no control characters. ` +
+                    "Required without cursor; with a cursor it may be omitted, and if given must normalize to the same text.",
+            ),
+        fields: z
+            .enum(["title", "text", "creator"])
+            .optional()
+            .describe("Where to search: title (default), text (title or the stored plain-text snippet), creator."),
+        ...listArticlesInput.shape,
+    })
+    .superRefine((v, ctx) => {
+        if (v.query === undefined && v.cursor === undefined) ctx.addIssue({ code: "custom", message: "query" })
+        if (v.sourceIds !== undefined && v.groupId !== undefined) ctx.addIssue({ code: "custom", message: "sourceIds and groupId" })
+        if (v.dateFrom !== undefined && v.dateTo !== undefined && (parseInstant(v.dateFrom) ?? 0) >= (parseInstant(v.dateTo) ?? 0)) {
+            ctx.addIssue({ code: "custom", message: "date range" })
+        }
+    })
+
+export const searchArticlesOutput = z.strictObject({
+    articles: z.array(listedArticle.extend({ matchedIn: z.enum(["title", "snippet", "creator"]) })).max(ARTICLE_PAGE_SIZE_MAX),
+    sort: z.literal("stored"),
+    pageSize: z.number().int().min(1).max(ARTICLE_PAGE_SIZE_MAX),
+    hasMore: z.boolean(),
+    nextCursor: z.string().nullable(),
+    scan: articleScan,
+    search: z.strictObject({
+        fields: z.enum(["title", "text", "creator"]),
+        /** Bytes of searchable values loaded by this call. */
+        textBytesLoaded: count,
+        /** Articles examined by this call that passed every filter but whose value to search was too large or not text (and matched nowhere else). */
+        notSearchedTooLarge: count,
+        notSearchedUnexpectedType: count,
+        /** Since the first page: notSearched* plus scan.oversizeSkipped of every page. */
+        incompleteSoFar: count,
+        /** The search is over (scan.exhausted) and every article of the scan was fully searched (incompleteSoFar 0). */
+        exhaustive: z.boolean(),
+    }),
+    matching: z.literal(SEARCH_MATCHING),
+    consistency: z.literal(ARTICLE_LIST_CONSISTENCY),
+    meta: groupMeta.extend({ urlsRedacted: z.literal(true) }),
+})
+
+export type SearchArticlesInput = z.output<typeof searchArticlesInput>
+export type SearchArticlesOutput = z.output<typeof searchArticlesOutput>
+export type SearchedArticle = SearchArticlesOutput["articles"][number]
 
 // ---- Rule tools (FR-MCP-02A-05) ----
 

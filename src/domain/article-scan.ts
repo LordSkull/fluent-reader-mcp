@@ -1,6 +1,7 @@
 /**
  * Windowed scan of `items` for list_articles (FR-MCP-01 §11.3, §14.5,
- * adapted to the FR-MCP-02B-01 contract). Every statement is static,
+ * adapted to the FR-MCP-02B-01 contract) and search_articles (§12.2,
+ * §14.7, FR-MCP-02B-02; see SEARCH_SQL). Every statement is static,
  * parameterized and addressed by the primary key `_id` (rowid alias): range
  * lookups bounded by LIMIT or by a closed range already measured, or point
  * lookups through json_each. Never OFFSET, COUNT, a join, a sort on another
@@ -108,6 +109,15 @@ function boundedPrefix(column: string, chars: string, bytesMax: string | number)
     )
 }
 
+/** Phase A columns and range (shared by list and search). */
+const CANDIDATE_COLUMNS = `_id AS id, ${HEADER_BYTES} AS bytes`
+const CANDIDATE_RANGE = `FROM items WHERE _id BETWEEN ? AND ? ORDER BY _id DESC LIMIT ?`
+/** Phase B columns and range (shared by list and search). */
+const EVALUATED_COLUMNS =
+    `_id AS id, ${safeInteger("source")}, ${safeInteger("date")}, ${safeInteger("fetchedDate")}, ` +
+    `${safeInteger("hasRead")}, ${safeInteger("starred")}, ${safeInteger("hidden")}`
+const EVALUATED_RANGE = `FROM items WHERE _id BETWEEN ? AND ? AND ${HEADER_BYTES} <= ${ARTICLE_RECORD_BYTES_MAX} ORDER BY _id DESC`
+
 /** Static SQL of this module (exported for plan and audit tests). */
 export const SCAN_SQL = {
     schemaVersion: "PRAGMA schema_version",
@@ -117,11 +127,8 @@ export const SCAN_SQL = {
         `CASE WHEN b.lo >= 1 AND b.hi <= ${MAX_SAFE} THEN b.lo END AS lo, ` +
         `CASE WHEN b.lo >= 1 AND b.hi <= ${MAX_SAFE} THEN b.hi END AS hi ` +
         `FROM (SELECT (SELECT MIN(_id) FROM items) AS lo, (SELECT MAX(_id) FROM items) AS hi) AS b`,
-    candidates: `SELECT _id AS id, ${HEADER_BYTES} AS bytes FROM items WHERE _id BETWEEN ? AND ? ORDER BY _id DESC LIMIT ?`,
-    evaluate:
-        `SELECT _id AS id, ${safeInteger("source")}, ${safeInteger("date")}, ${safeInteger("fetchedDate")}, ` +
-        `${safeInteger("hasRead")}, ${safeInteger("starred")}, ${safeInteger("hidden")} ` +
-        `FROM items WHERE _id BETWEEN ? AND ? AND ${HEADER_BYTES} <= ${ARTICLE_RECORD_BYTES_MAX} ORDER BY _id DESC`,
+    candidates: `SELECT ${CANDIDATE_COLUMNS} ${CANDIDATE_RANGE}`,
+    evaluate: `SELECT ${EVALUATED_COLUMNS} ${EVALUATED_RANGE}`,
     project:
         `SELECT _id AS id, ` +
         `${boundedPrefix("title", String(TITLE_CHARS_MAX), FIELD_BYTES_MAX)}, ` +
@@ -166,10 +173,66 @@ export const SCAN_SQL = {
         `AND typeof(url) IN ('text', 'blob') AND octet_length(url) <= ${URL_DIGEST_BYTES_MAX}`,
 } as const
 
+// ---- search_articles (FR-MCP-02B-02) ----
+
+export type SearchFields = "title" | "text" | "creator"
+export type SearchColumn = "title" | "snippet" | "creator"
+
+/** Columns searched for each `fields` value, in precedence order (the first match is reported). */
+export const SEARCH_COLUMNS: Readonly<Record<SearchFields, readonly SearchColumn[]>> = {
+    title: ["title"],
+    text: ["title", "snippet"],
+    creator: ["creator"],
+}
+
+/**
+ * A searchable value is loaded only when it is TEXT and at most this many
+ * bytes; a larger one is never loaded, wholly or in part, and its article
+ * is counted as not searched. Title and creator share the field limit of
+ * the projection; the snippet is the article's plain text and can be long.
+ */
+export const SEARCH_COLUMN_BYTES_MAX: Readonly<Record<SearchColumn, number>> = {
+    title: FIELD_BYTES_MAX,
+    snippet: 256 * 1024,
+    creator: FIELD_BYTES_MAX,
+}
+
+function loadable(column: SearchColumn): string {
+    return `typeof(${column}) = 'text' AND octet_length(${column}) <= ${SEARCH_COLUMN_BYTES_MAX[column]}`
+}
+
+function searchSql(fields: SearchFields): { candidates: string; evaluate: string } {
+    const columns = SEARCH_COLUMNS[fields]
+    // Bytes the evaluation will load, from the header only (a value over its limit counts 0: it is not loaded).
+    const textBytes = columns.map((c) => `(CASE WHEN ${loadable(c)} THEN octet_length(${c}) ELSE 0 END)`).join(" + ")
+    const text = columns
+        .map((c) => `typeof(${c}) AS ${c}Type, octet_length(${c}) AS ${c}Bytes, CASE WHEN ${loadable(c)} THEN ${c} END AS ${c}Text`)
+        .join(", ")
+    return {
+        candidates: `SELECT ${CANDIDATE_COLUMNS}, ${textBytes} AS textBytes ${CANDIDATE_RANGE}`,
+        evaluate: `SELECT ${EVALUATED_COLUMNS}, ${text} ${EVALUATED_RANGE}`,
+    }
+}
+
+/**
+ * Static SQL of search_articles, one pair per `fields` value. Phases A and B
+ * of SCAN_SQL with, in A, the bytes of the searchable values that B will
+ * load (header only) and, in B, those values in the same traversal as the
+ * flags. Same ranges, same primary-key plans; no pattern ever reaches SQL:
+ * the comparison runs in JavaScript (domain/text-match.ts).
+ */
+export const SEARCH_SQL: Readonly<Record<SearchFields, { readonly candidates: string; readonly evaluate: string }>> = {
+    title: searchSql("title"),
+    text: searchSql("text"),
+    creator: searchSql("creator"),
+}
+
 export interface ScanCandidate {
     readonly id: number
     /** Estimated bytes of the record (phase A). */
     readonly bytes: number
+    /** Search only: bytes of the searchable values phase B will load. */
+    readonly textBytes?: number
 }
 
 /** One row of phase B. */
@@ -187,6 +250,16 @@ export interface EvaluatedRow {
     readonly starred: number | null
     readonly hiddenType: StorageClass
     readonly hidden: number | null
+    /** Search only (SEARCH_SQL): type, size and, when loadable, value of each searched column. */
+    readonly titleType?: StorageClass
+    readonly titleBytes?: number | null
+    readonly titleText?: string | null
+    readonly snippetType?: StorageClass
+    readonly snippetBytes?: number | null
+    readonly snippetText?: string | null
+    readonly creatorType?: StorageClass
+    readonly creatorBytes?: number | null
+    readonly creatorText?: string | null
 }
 
 /** One row of phase C. */
@@ -248,14 +321,16 @@ export function readIdBounds(db: ReadOnlyDatabase): { lo: number; hi: number } |
     return { lo: row.lo, hi: row.hi }
 }
 
-/** Phase A: at most `limit` ids of [lower, upper], descending, with their estimated bytes. */
-export function readScanCandidates(db: ReadOnlyDatabase, lower: number, upper: number, limit: number): ScanCandidate[] {
-    return db.prepare(SCAN_SQL.candidates).all(lower, upper, limit) as unknown as ScanCandidate[]
+/** Phase A: at most `limit` ids of [lower, upper], descending, with their estimated bytes (and searchable bytes when `fields` is given). */
+export function readScanCandidates(db: ReadOnlyDatabase, lower: number, upper: number, limit: number, fields?: SearchFields): ScanCandidate[] {
+    const sql = fields === undefined ? SCAN_SQL.candidates : SEARCH_SQL[fields].candidates
+    return db.prepare(sql).all(lower, upper, limit) as unknown as ScanCandidate[]
 }
 
-/** Phase B on the closed range [lower, upper], descending. */
-export function readEvaluation(db: ReadOnlyDatabase, lower: number, upper: number): EvaluatedRow[] {
-    return db.prepare(SCAN_SQL.evaluate).all(lower, upper) as unknown as EvaluatedRow[]
+/** Phase B on the closed range [lower, upper], descending (with the searchable values when `fields` is given). */
+export function readEvaluation(db: ReadOnlyDatabase, lower: number, upper: number, fields?: SearchFields): EvaluatedRow[] {
+    const sql = fields === undefined ? SCAN_SQL.evaluate : SEARCH_SQL[fields].evaluate
+    return db.prepare(sql).all(lower, upper) as unknown as EvaluatedRow[]
 }
 
 /** Phase C for the given ids (point lookups); `chars` 0 reads no excerpt. */
