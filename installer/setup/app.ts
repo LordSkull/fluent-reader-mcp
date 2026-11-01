@@ -107,7 +107,7 @@ export const HELPER_FILES = ["app/runtime/node.exe", "setup/installer/setup/fr-s
  * and the runtime), the inventory last, so that a failure part-way leaves a
  * helper and an inventory for the next attempt.
  */
-export function removalPlan(root: string): string[] {
+export function removalPlan(root: string, verifyContent = false): string[] {
     let actual: string[]
     try {
         actual = listFiles(root)
@@ -121,6 +121,16 @@ export function removalPlan(root: string): string[] {
     const foreign = actual.filter((f) => !listed.has(f))
     if (foreign.length > 0) throw new SetupRefusal(`in ${path.basename(root)} ci sono file che non appartengono all'installazione: ${foreign.slice(0, 5).join(", ")}${foreign.length > 5 ? ` e altri ${foreign.length - 5}` : ""}. Spostali altrove e ripeti: nulla è stato rimosso`)
     const present = actual.filter((f) => f !== INVENTORY)
+    // FR-MCP-04-BETA-03A-SIMPLE-01 (the transaction's removals): every listed file must also have the size and SHA-256 its inventory states
+    if (verifyContent) {
+        const listedFiles = new Map(inventory.files.map((f) => [f.path, f]))
+        const changed = present.filter((f) => {
+            const e = listedFiles.get(f)
+            const full = safeJoin(root, f)
+            return e === undefined || fs.statSync(full).size !== e.size || sha256FileSync(full) !== e.sha256
+        })
+        if (changed.length > 0) throw new SetupRefusal(`in ${path.basename(root)} ci sono file che non corrispondono all'inventario (modificati): ${changed.slice(0, 5).join(", ")}. Nulla è stato rimosso`)
+    }
     const helper = (f: string): boolean => f.startsWith("setup/") || (HELPER_FILES as readonly string[]).includes(f)
     return [...present.filter((f) => !helper(f)), ...present.filter(helper), ...(actual.includes(INVENTORY) ? [INVENTORY] : [])]
 }
@@ -131,8 +141,8 @@ export function removalPlan(root: string): string[] {
  * files in plan order and stops at the first failure, then removes the
  * directories left empty.
  */
-export function removeTree(root: string, unlink: (file: string) => void = fs.unlinkSync): { removed: number } {
-    const order = removalPlan(root)
+export function removeTree(root: string, unlink: (file: string) => void = fs.unlinkSync, verifyContent = false): { removed: number } {
+    const order = removalPlan(root, verifyContent)
     let removed = 0
     for (const f of order) {
         try {

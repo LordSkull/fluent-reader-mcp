@@ -17,7 +17,7 @@ const CODE = SCRIPT.split(/\r?\n/).filter((line) => !/^\s*;/.test(line)).join("\
 
 describe("NSIS script", () => {
     test("NSIS 3 Unicode, Modern UI 2, per-user, no elevation", () => {
-        for (const required of ["Unicode true", "RequestExecutionLevel user", '!include "MUI2.nsh"', 'InstallDir "$LOCALAPPDATA\\FluentReaderMCP"', "${IsNativeAMD64}", "${AtLeastWin10}"]) {
+        for (const required of ["Unicode true", "RequestExecutionLevel user", '!include "MUI2.nsh"', 'InstallDir "$LOCALAPPDATA\\FluentReaderMCP\\"', "AllowRootDirInstall true", "${IsNativeAMD64}", "${AtLeastWin10}"]) {
             assert.ok(CODE.includes(required), required)
         }
         assert.doesNotMatch(CODE, /\bHKLM\b|HKEY_LOCAL_MACHINE|\$PROGRAMFILES|\$WINDIR|\$SYSDIR|RequestExecutionLevel (admin|highest)|UAC/i)
@@ -71,6 +71,15 @@ describe("NSIS script", () => {
         assert.equal(beforeCommit.includes("$FinishText"), false, "nothing is declared installed before the commit")
         assert.doesNotMatch(MAIN, /\bRename\b|\bRMDir\b|\bDeleteRegKey\b|\bDelete\b/, "no direct rename, delete or key removal in the install section: only the journal-driven helper")
         assert.doesNotMatch(MAIN, /RemoveOwnTree/, "no tree is removed by name during the installation")
+    })
+
+    test("FR-MCP-04-BETA-03A-SIMPLE-01: the recovery is told which transaction this run created ($TxId, empty at the start); tx-cleanup gets tx-commit's request", () => {
+        const recover = CODE.slice(CODE.indexOf("!macro TxRecover"), CODE.indexOf("!macroend", CODE.indexOf("!macro TxRecover")))
+        assert.equal(recover.match(/RequestPut "payloadInventory" "\$PLUGINSDIR\\helper\\installer-files\.json"\s+!insertmacro RequestPut "sessionTransactionId" "\$TxId"/g)?.length, 2, "tx-recover and tx-recover-finish")
+        assert.ok(CODE.indexOf("Var TxId") < CODE.indexOf("!macro TxRecover"))
+        assert.ok(MAIN.indexOf("!insertmacro TxRecover") < MAIN.indexOf("Pop $TxId"), "the recovery at the start runs before $TxId is set")
+        const commitToCleanup = MAIN.slice(MAIN.indexOf('RunHelper "tx-commit"'), MAIN.indexOf('RunHelper "tx-cleanup"'))
+        assert.doesNotMatch(commitToCleanup, /RequestBegin/, "tx-cleanup reads tx-commit's request: its transactionId is this run's")
     })
 
     test("every failure after tx-begin goes to the rollback, which is the recovery; success is never declared there", () => {
@@ -171,6 +180,29 @@ describe("NSIS script", () => {
         assert.match(leave, /directory_check:\s+!insertmacro RequestBegin[\s\S]*RunHelper "check-install-dir"\s+\$\{If\} \$HelperExit != "0"\s+Push "pendingUninstall"\s+Call ResultGet\s+Pop \$0\s+\$\{If\} \$0 == "yes"\s+\$\{AndIf\} \$R6 == "0"/)
         assert.match(leave, /MessageBox MB_ICONQUESTION\|MB_YESNO "[^"]+" IDNO directory_refused\s+StrCpy \$R6 "1"[\s\S]*RunHelper "finish-uninstall"\s+\$\{If\} \$HelperExit == "0"\s+Goto directory_check\s+\$\{EndIf\}\s+Call ShowHelperMessage\s+Abort/)
         assert.match(leave, /directory_refused:\s+Abort/)
+    })
+
+    test("FR-MCP-04-BETA-03A-SIMPLE-01: the directory page shows the ONE effective destination and uses it only after an explicit OK", () => {
+        const leave = CODE.slice(CODE.indexOf("Function DirectoryLeave"), CODE.indexOf("FunctionEnd", CODE.indexOf("Function DirectoryLeave")))
+        assert.match(leave, /Push "canonical"\s+Call ResultGet\s+Pop \$1\s+Push "adjusted"\s+Call ResultGet\s+Pop \$2\s+Push "outsideProfile"\s+Call ResultGet\s+Pop \$3\s+Push "mode"\s+Call ResultGet\s+Pop \$4\s+Push "installedVersion"\s+Call ResultGet\s+Pop \$5/)
+        // the root and not-empty cases explain the proposal; every case shows the effective path $1
+        assert.match(leave, /\$\{If\} \$2 == "root"\s+StrCpy \$9 "Hai scelto la radice dell'unità \(\$INSTDIR\)[^"]*"\s+\$\{ElseIf\} \$2 == "not-empty"\s+StrCpy \$9 "La cartella scelta \(\$INSTDIR\) contiene già altri file, che non vengono toccati[^"]*"\s+\$\{Else\}/)
+        assert.equal([...leave.matchAll(/StrCpy \$9 "\$9\$\\r\$\\n\$\\r\$\\n\$1/g)].length, 3, "upgrade, repair and new all show the destination")
+        assert.match(leave, /MessageBox MB_ICONQUESTION\|MB_OKCANCEL "\$9\$8\$\\r\$\\n\$\\r\$\\nContinuare con questa cartella\?" IDOK directory_confirmed\s+Abort\s+directory_confirmed:\s+StrCpy \$INSTDIR \$1\s+StrCpy \$Mode \$4\s+StrCpy \$InstalledVersion \$5/)
+        assert.equal([...CODE.matchAll(/(StrCpy|Pop) \$INSTDIR\b/g)].length, 1, "$INSTDIR changes in one place only: after the confirmation, to the helper's destination")
+        assert.doesNotMatch(leave, /FluentReaderMCP/, "the wizard never builds a destination: only the helper proposes one")
+        // the volume: network refused, removable and outside-profile stated (no permission is changed)
+        assert.match(leave, /StrCpy \$6 \$1 3\s+System::Call 'kernel32::GetDriveTypeW\(w r6\) i \.r7'\s+\$\{If\} \$7 == 4\s+MessageBox MB_ICONSTOP\|MB_OK "[^"]*unità di rete[^"]*"\s+Abort/)
+        assert.match(leave, /\$\{If\} \$7 == 2\s+StrCpy \$8 "\$8[^"]*rimovibile: deve essere collegata[^"]*"/)
+        assert.match(leave, /\$\{If\} \$3 == "yes"\s+StrCpy \$8 "\$8[^"]*fuori dalla tua cartella utente[^"]*Il setup non modifica i permessi\."/)
+    })
+
+    test("FR-MCP-04-BETA-03A-SIMPLE-01: the installation creates and checks the confirmed directory first, and tx-begin is bound to the confirmed mode", () => {
+        assert.match(MAIN, /CreateDirectory "\$INSTDIR"\s+\$\{IfNot\} \$\{FileExists\} "\$INSTDIR\\\*\.\*"\s+MessageBox MB_ICONSTOP\|MB_OK "Impossibile creare la cartella di installazione[^"]*"\s+Abort "[^"]*"\s+\$\{EndIf\}\s+SetOutPath "\$INSTDIR"\s+!insertmacro TxRecover/)
+        assert.match(MAIN, /RequestPut "expectMode" "\$Mode"\s+!insertmacro RequestEnd\s+!insertmacro RunHelper "tx-begin"/)
+        const text = /MUI_DIRECTORYPAGE_TEXT_TOP "([^"]*)"/.exec(CODE)?.[1] ?? ""
+        for (const fact of ["qualsiasi unità locale", "radice di un'unità", "sottocartella FluentReaderMCP", "destinazione effettiva ti viene sempre mostrata"]) assert.ok(text.includes(fact), fact)
+        assert.doesNotMatch(text, /dentro la tua cartella utente/)
     })
 
     test("leaving the Claude Code entry: the consequences are explained and No is the default (Minor)", () => {

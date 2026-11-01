@@ -33,8 +33,12 @@ SetDatablockOptimize on
 
 Name "${PRODUCT_NAME} ${PRODUCT_VERSION} beta"
 OutFile "${OUTFILE}"
-InstallDir "$LOCALAPPDATA\FluentReaderMCP"
+; The trailing backslash stops NSIS from appending "FluentReaderMCP" to a folder chosen with Browse: the
+; helper alone turns the choice into the effective destination (check-install-dir), shown for confirmation.
+InstallDir "$LOCALAPPDATA\FluentReaderMCP\"
 InstallDirRegKey HKCU "${SETTINGS_KEY}" "InstallDir"
+; A drive root may be chosen: the helper never installs there, it proposes <root>\FluentReaderMCP.
+AllowRootDirInstall true
 ShowInstDetails show
 ShowUninstDetails show
 BrandingText "${PRODUCT_NAME} ${PRODUCT_VERSION} - beta privata"
@@ -68,7 +72,7 @@ Var ReplaceCheck
 !define MUI_WELCOMEPAGE_TITLE "${PRODUCT_NAME} ${PRODUCT_VERSION} (beta privata)"
 !define MUI_WELCOMEPAGE_TEXT "Questo programma installa Fluent Reader MCP, un server MCP in SOLA LETTURA che permette a Claude Code di consultare un tuo profilo locale di Fluent Reader.$\r$\n$\r$\nLa beta offre otto strumenti di sola lettura (fonti, gruppi, regole, elenco degli articoli e singoli articoli). Include il proprio runtime Node.js: non serve installare altro.$\r$\n$\r$\nNon vengono installati servizi, porte di rete o processi residenti. Puoi scegliere se registrare il server in Claude Code: prima vedrai un'anteprima esatta della modifica."
 !insertmacro MUI_PAGE_WELCOME
-!define MUI_DIRECTORYPAGE_TEXT_TOP "Cartella proposta: %LOCALAPPDATA%\FluentReaderMCP. Puoi sceglierne un'altra purché sia dentro la tua cartella utente, fuori da OneDrive e dalla cartella Roaming, e vuota (oppure una precedente installazione di Fluent Reader MCP)."
+!define MUI_DIRECTORYPAGE_TEXT_TOP "Cartella proposta: %LOCALAPPDATA%\FluentReaderMCP. Puoi sceglierne un'altra su qualsiasi unità locale (C:, D:, H:...), nuova, vuota oppure una precedente installazione di Fluent Reader MCP. Se scegli la radice di un'unità o una cartella che contiene già altri file, ti verrà proposta una sottocartella FluentReaderMCP: la destinazione effettiva ti viene sempre mostrata prima di continuare."
 !define MUI_PAGE_CUSTOMFUNCTION_LEAVE DirectoryLeave
 !insertmacro MUI_PAGE_DIRECTORY
 Page custom ProfilePageShow ProfilePageLeave
@@ -266,27 +270,62 @@ Function DirectoryLeave
     directory_refused:
     Abort
   ${EndIf}
+  ; the effective destination: the only path used from here on, by every page and every helper command
   Push "canonical"
   Call ResultGet
-  Pop $INSTDIR
+  Pop $1
+  Push "adjusted"
+  Call ResultGet
+  Pop $2
+  Push "outsideProfile"
+  Call ResultGet
+  Pop $3
   Push "mode"
   Call ResultGet
-  Pop $Mode
+  Pop $4
   Push "installedVersion"
   Call ResultGet
-  Pop $InstalledVersion
+  Pop $5
+  ; the volume: a network drive is not supported; a removable one must be connected whenever the server is used
+  StrCpy $6 $1 3
+  System::Call 'kernel32::GetDriveTypeW(w r6) i .r7'
+  ${If} $7 == 4
+    MessageBox MB_ICONSTOP|MB_OK "La cartella $1 è su un'unità di rete: non è supportata. Scegli una cartella su un'unità locale."
+    Abort
+  ${EndIf}
+  StrCpy $8 ""
+  ${If} $7 == 2
+    StrCpy $8 "$8$\r$\n$\r$\nL'unità $6 è rimovibile: deve essere collegata, con la stessa lettera, ogni volta che Claude Code avvia il server e per aggiornarlo o disinstallarlo."
+  ${EndIf}
+  ${If} $3 == "yes"
+    StrCpy $8 "$8$\r$\n$\r$\nLa cartella è fuori dalla tua cartella utente: a seconda dei permessi di quella posizione, altri account di questo computer potrebbero leggere o modificare i file installati. Il setup non modifica i permessi."
+  ${EndIf}
+  ${If} $2 == "root"
+    StrCpy $9 "Hai scelto la radice dell'unità ($INSTDIR): i file non vengono installati direttamente lì, ma nella cartella:"
+  ${ElseIf} $2 == "not-empty"
+    StrCpy $9 "La cartella scelta ($INSTDIR) contiene già altri file, che non vengono toccati. Fluent Reader MCP verrà installato nella sottocartella:"
+  ${Else}
+    StrCpy $9 "Fluent Reader MCP verrà installato nella cartella:"
+  ${EndIf}
+  ${If} $4 == "upgrade"
+    StrCpy $9 "$9$\r$\n$\r$\n$1$\r$\n$\r$\nVi è installata la versione $5: verrà aggiornata alla ${PRODUCT_VERSION}. Se l'aggiornamento non riesce, la versione attuale resta com'è."
+  ${ElseIf} $4 == "repair"
+    StrCpy $9 "$9$\r$\n$\r$\n$1$\r$\n$\r$\nLa versione ${PRODUCT_VERSION} vi è già installata: i suoi file verranno reinstallati (riparazione). I tuoi dati non vengono toccati."
+  ${Else}
+    StrCpy $9 "$9$\r$\n$\r$\n$1"
+  ${EndIf}
+  ; explicit confirmation of the effective destination; Cancel keeps the page and the choice as typed
+  MessageBox MB_ICONQUESTION|MB_OKCANCEL "$9$8$\r$\n$\r$\nContinuare con questa cartella?" IDOK directory_confirmed
+  Abort
+  directory_confirmed:
+  StrCpy $INSTDIR $1
+  StrCpy $Mode $4
+  StrCpy $InstalledVersion $5
   Push "previousProfile"
   Call ResultGet
   Pop $0
   ${If} $ProfileDir == ""
     StrCpy $ProfileDir $0
-  ${EndIf}
-  ${If} $Mode == "upgrade"
-    MessageBox MB_ICONQUESTION|MB_OKCANCEL "In questa cartella è installata la versione $InstalledVersion: verrà aggiornata alla ${PRODUCT_VERSION}. Se l'aggiornamento non riesce, la versione attuale resta com'è." IDOK +2
-    Abort
-  ${ElseIf} $Mode == "repair"
-    MessageBox MB_ICONQUESTION|MB_OKCANCEL "La versione ${PRODUCT_VERSION} è già installata in questa cartella: i suoi file verranno reinstallati (riparazione). I tuoi dati non vengono toccati." IDOK +2
-    Abort
   ${EndIf}
 FunctionEnd
 
@@ -771,6 +810,8 @@ Var CleanFail
   !insertmacro RequestBegin
   !insertmacro RequestPut "installDir" "$INSTDIR"
   !insertmacro RequestPut "payloadInventory" "$PLUGINSDIR\helper\installer-files.json"
+  ; empty before tx-begin: only a journal created by this run of the setup is trusted as such
+  !insertmacro RequestPut "sessionTransactionId" "$TxId"
   !insertmacro RequestEnd
   !insertmacro RunHelper "tx-recover"
   ${If} $HelperExit != "0"
@@ -796,6 +837,7 @@ Var CleanFail
       !insertmacro RequestBegin
       !insertmacro RequestPut "installDir" "$INSTDIR"
       !insertmacro RequestPut "payloadInventory" "$PLUGINSDIR\helper\installer-files.json"
+      !insertmacro RequestPut "sessionTransactionId" "$TxId"
       ${If} $RestoreOk == "1"
         !insertmacro RequestPut "registryRestored" "yes"
       ${Else}
@@ -815,6 +857,10 @@ Section "Fluent Reader MCP" SectionMain
   SectionIn RO
   !define UN ""
   CreateDirectory "$INSTDIR"
+  ${IfNot} ${FileExists} "$INSTDIR\*.*"
+    MessageBox MB_ICONSTOP|MB_OK "Impossibile creare la cartella di installazione $INSTDIR (accesso negato, unità scollegata o di sola lettura). Nulla è stato installato: esegui di nuovo il setup e scegli un'altra cartella. Il setup non modifica i permessi delle cartelle."
+    Abort "Installazione non avviata: cartella di installazione non disponibile."
+  ${EndIf}
   SetOutPath "$INSTDIR"
 
   ; 0. an earlier transaction that did not finish: undone (or, if committed, only cleaned up).
@@ -831,6 +877,8 @@ Section "Fluent Reader MCP" SectionMain
   !insertmacro RequestPut "maxRelative" "${MAX_RELATIVE}"
   !insertmacro RequestPut "bundleSha256" "${BUNDLE_SHA256}"
   !insertmacro RequestPut "profileDir" "$ProfileDir"
+  ; what the user confirmed: a directory that changed since then is not used (checked again before any write)
+  !insertmacro RequestPut "expectMode" "$Mode"
   !insertmacro RequestEnd
   !insertmacro RunHelper "tx-begin"
   ${If} $HelperExit != "0"
@@ -1300,12 +1348,12 @@ Section "Uninstall"
   ClearErrors
   Delete "$INSTDIR\uninstall.exe"
   ${If} ${Errors}
-    MessageBox MB_ICONINFORMATION|MB_OK "Fluent Reader MCP è stato rimosso. Il file $INSTDIR\uninstall.exe non è stato cancellato: puoi cancellarlo a mano; non impedisce una nuova installazione e non serve più."
+    MessageBox MB_ICONINFORMATION|MB_OK "Fluent Reader MCP è stato rimosso. Il file $INSTDIR\uninstall.exe non è stato cancellato: non serve più, cancellalo a mano. Finché è presente, senza un registro di installazione il setup non lo considera suo e non riusa questa cartella per una nuova installazione."
   ${EndIf}
   RMDir "$INSTDIR\state"
   RMDir "$INSTDIR"
   ${If} ${FileExists} "$INSTDIR\state\claude-config-backups\*"
-    MessageBox MB_ICONINFORMATION|MB_OK "Le copie della configurazione di Claude Code prese durante l'installazione restano in $INSTDIR\state\claude-config-backups: cancellale quando non ti servono più."
+    MessageBox MB_ICONINFORMATION|MB_OK "Le copie della configurazione di Claude Code prese durante l'installazione restano in $INSTDIR\state\claude-config-backups: cancellale quando non ti servono più. Finché sono presenti, il setup non riusa questa cartella per una nuova installazione."
   ${EndIf}
   !undef UN
 SectionEnd

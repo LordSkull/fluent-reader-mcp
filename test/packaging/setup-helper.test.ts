@@ -9,6 +9,7 @@
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
 import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
 import { after, before, describe, test } from "node:test"
 import { fileURLToPath } from "node:url"
@@ -17,6 +18,7 @@ import { buildManifest, MANIFEST, type LicenseRecord } from "../../installer/lib
 import { parseRuntimeLock } from "../../installer/lib/runtime-lock.js"
 import { setupClosure } from "../../installer/lib/installer-build.js"
 import { buildInventory, INVENTORY, removalPlan, removeTree, verifyTree } from "../../installer/setup/app.js"
+import { DEFAULT_SUBDIR, otherProfileLocation, writeProbe } from "../../installer/setup/checks.js"
 import { desiredEntry, SERVER_NAME } from "../../installer/setup/claude.js"
 import { main, type HelperDeps } from "../../installer/setup/fr-setup.js"
 import { decodeResult } from "../../installer/setup/protocol.js"
@@ -62,9 +64,9 @@ interface FakeClaude {
     addsMeta?: boolean
 }
 
-function world(config?: unknown | string): World {
+function world(config?: unknown | string, homeDir?: string): World {
     counter++
-    const home = path.join(root, `user ${counter} é`)
+    const home = homeDir ?? path.join(root, `user ${counter} é`)
     fs.mkdirSync(path.join(home, "AppData", "Roaming"), { recursive: true })
     fs.mkdirSync(path.join(home, "AppData", "Local"), { recursive: true })
     const claudeExe = path.join(home, ".vscode", "extensions", `anthropic.claude-code-${CLAUDE_VERSION}-win32-x64`, "resources", "native-binary", "claude.exe")
@@ -182,7 +184,38 @@ function installRequest(w: World, extra: Record<string, string> = {}): Record<st
 }
 
 /** The state after a committed installation: the layout plus the record as tx-metadata writes it (registration kept). */
+/** Whether `child` is strictly below `base` (lexically, after resolution, case-insensitive on Windows): no "..", no sibling sharing a prefix. */
+function strictlyInside(child: string, base: string): boolean {
+    const relative = path.win32.relative(path.win32.resolve(base).toLowerCase(), path.win32.resolve(child).toLowerCase())
+    return relative !== "" && relative !== ".." && !relative.startsWith(`..${path.win32.sep}`) && !path.win32.isAbsolute(relative)
+}
+
+/**
+ * The guard of every fixture that writes: `dir` must be an absolute drive path strictly inside one of the
+ * test areas (by default the temp root and the synthetic machines' base), never the area itself, never the
+ * working directory. The part of `dir` that already exists is resolved (realpath) and must still be inside
+ * the same area: a junction or link there does not lead the fixture out.
+ */
+function assertInTestArea(dir: string, areas: readonly (string | null)[] = [root, awayRoot]): void {
+    const fail = (why: string): never => assert.fail(`fixture outside the test area (${why}): ${JSON.stringify(dir)}`)
+    if (typeof dir !== "string" || dir.length === 0) fail("empty")
+    if (!/^[A-Za-z]:[\\/]/.test(dir) || !path.win32.isAbsolute(dir)) fail("not an absolute drive path")
+    const resolved = path.win32.resolve(dir)
+    const area = areas.find((a): a is string => a !== null && strictlyInside(resolved, a))
+    if (area === undefined) fail("not strictly inside a test area")
+    let existing = resolved
+    while (!fs.existsSync(existing)) existing = path.win32.dirname(existing)
+    const real = fs.realpathSync.native(existing)
+    if (!(samePathCI(real, fs.realpathSync.native(area as string)) || strictlyInside(real, fs.realpathSync.native(area as string)))) fail(`resolves to ${real}`)
+}
+
+function samePathCI(a: string, b: string): boolean {
+    return path.win32.resolve(a).toLowerCase() === path.win32.resolve(b).toLowerCase()
+}
+
 async function installed(w: World, dir = w.installDir): Promise<void> {
+    // never relative, never outside the fixtures: an empty path would write into the working directory (the repository)
+    assertInTestArea(dir)
     fs.mkdirSync(path.join(dir, "current"), { recursive: true })
     const file = path.join(dir, RECORD_NAME)
     const previous = fs.existsSync(file) ? readRecord(file) : null
@@ -245,15 +278,14 @@ describe("setup helper: installation directory", () => {
         const oneDrive = path.join(w.home, "OneDrive")
         fs.mkdirSync(oneDrive)
         const cases: [string, RegExp, Record<string, string>?][] = [
-            [outside, /dentro la cartella del tuo utente/],
-            [w.home, /dentro la cartella del tuo utente/],
+            // in this fixture the parent of the user's folder plays C:\Users: other users' folders are refused
+            [outside, /cartella di un altro utente/],
             ["\\\\server\\share\\FluentReaderMCP", /unità locale/],
             ["relative\\dir", /unità locale/],
             [path.join(w.home, "AppData", "Roaming", "FluentReaderMCP"), /Roaming/],
             [path.join(oneDrive, "FluentReaderMCP"), /OneDrive/],
             [path.join(w.home, ".claude", "FluentReaderMCP"), /configurazione di Claude Code/],
             [path.join(junction, "FluentReaderMCP"), /collegamento, una junction o un nome breve/],
-            [foreign, /contiene già altri file/],
             [file, /non è una cartella/],
             [path.join(w.home, "AppData", "Local", "NUL"), /non è ammesso/],
             [path.join(w.home, "AppData", "Local", "trailing."), /non è ammesso/],
@@ -904,8 +936,8 @@ describe("setup helper: remove-tree confined to the authorised installation (Maj
         const outsideBefore = snapshotDir(external)
         const homeTreeBefore = snapshotDir(inHome)
         const cases: [Record<string, string>, RegExp][] = [
-            [{ installDir: external, tree: "current" }, /dentro la cartella del tuo utente/],
-            [{ installDir: external, tree: "previous" }, /dentro la cartella del tuo utente/],
+            [{ installDir: external, tree: "current" }, /cartella di un altro utente/],
+            [{ installDir: external, tree: "previous" }, /cartella di un altro utente/],
             [{ installDir: inHome, tree: "current" }, /non ha un registro di installazione/],
             [{ installDir: inHome, tree: "previous" }, /non ha un registro di installazione/],
             [{ installDir: copied, tree: "current" }, /appartiene a un'altra cartella/],
@@ -1060,5 +1092,605 @@ describe("setup helper: process protocol", () => {
         assert.deepEqual(fields.get("canonical"), [w.profile])
         const bad = spawnSync(process.execPath, [helper, "check-profile", request], { encoding: "utf8", windowsHide: true })
         assert.equal(bad.status, 2, "wrong arguments: internal error code")
+    })
+})
+
+// ------------------------------------------------------------------ FR-MCP-04-BETA-03A-SIMPLE-01: any drive, one effective destination
+
+/**
+ * Where synthetic machines live: a directory that is not itself under a
+ * conventional profile path (X:\Users\...), which the location rules refuse
+ * outside the current profile. The system temp usually is under one; the
+ * build directory (dist-test, ignored by Git) usually is not.
+ */
+const underProfiles = (p: string): boolean => /^[A-Za-z]:\\users(\\|$)/i.test(p)
+const AWAY_SKIP = underProfiles(fs.realpathSync.native(os.tmpdir())) && underProfiles(COMPILED_ROOT) ? "no directory outside X:\\Users\\... for a synthetic machine (temp and build both under a profile)" : false
+let awayRoot: string | null = null
+function awayBase(): string {
+    if (awayRoot === null) awayRoot = underProfiles(root) ? fs.realpathSync.native(fs.mkdtempSync(path.join(COMPILED_ROOT, "frmcp-away-"))) : root
+    return awayRoot
+}
+after(() => {
+    if (awayRoot !== null && awayRoot !== root) removeTempRoot(awayRoot)
+})
+
+/**
+ * A synthetic machine: the user's folder is <machine>\Users\<user> and
+ * <machine>\Volume D é plays another drive, outside the profile. Real drive
+ * roots are only inspected (lstat, realpath), never written.
+ */
+function away(config?: unknown): { w: World; volume: string; machine: string } {
+    counter++
+    const machine = path.join(awayBase(), `machine ${counter}`)
+    const w = world(config, path.join(machine, "Users", "utente é"))
+    const volume = path.join(machine, "Volume D é")
+    fs.mkdirSync(volume, { recursive: true })
+    return { w, volume, machine }
+}
+
+/** deps whose write check records the directories it is asked about (and really probes them unless told otherwise). */
+function probing(w: World, probe: (dir: string) => void = writeProbe): { d: HelperDeps; probes: string[] } {
+    const probes: string[] = []
+    return {
+        d: {
+            ...deps(w),
+            writeProbe: (dir) => {
+                probes.push(dir)
+                probe(dir)
+            },
+        },
+        probes,
+    }
+}
+
+const tempDrive = (): string => root.slice(0, 3)
+
+describe("setup helper: destination on any drive (FR-MCP-04-BETA-03A-SIMPLE-01)", { skip: AWAY_SKIP }, () => {
+    test("drive roots C:\\, D:\\, H:\\ become <root>\\FluentReaderMCP, shown before anything is created; an absent drive is refused", async () => {
+        const { w } = away()
+        for (const letter of ["C", "D", "H"]) {
+            const rootDir = `${letter}:\\`
+            const target = `${letter}:\\${DEFAULT_SUBDIR}`
+            if (fs.existsSync(rootDir) && fs.existsSync(target)) continue // a real one on this machine: never checked by a test
+            const { d, probes } = probing(w, () => assert.fail("no write check on a destination that does not exist"))
+            const r = await call(w, "check-install-dir", installRequest(w, { installDir: rootDir }), d)
+            if (!fs.existsSync(rootDir)) {
+                assert.equal(r.code, 1)
+                assert.match(r.one("message"), new RegExp(`l'unità ${letter}: non è disponibile`))
+                continue
+            }
+            if (r.code !== 0) {
+                // a drive of this machine that is not a plain local volume (mapped or substituted): refused, never used
+                assert.match(r.one("message"), /cartella di rete|collegamento/, rootDir)
+                continue
+            }
+            assert.equal(r.one("canonical").toLowerCase(), target.toLowerCase())
+            assert.equal(r.one("adjusted"), "root")
+            assert.equal(r.one("mode"), "new")
+            assert.equal(r.one("outsideProfile"), "yes")
+            assert.equal(fs.existsSync(target), false, "checking creates nothing")
+            assert.deepEqual(probes, [])
+        }
+        const absent = [..."ZYXWVUTSRQPONMLKJI"].find((l) => !fs.existsSync(`${l}:\\`))
+        if (absent !== undefined) {
+            for (const dir of [`${absent}:\\`, `${absent}:\\Programmi\\Reader`]) {
+                const r = await call(w, "check-install-dir", installRequest(w, { installDir: dir }))
+                assert.equal(r.code, 1)
+                assert.match(r.one("message"), new RegExp(`l'unità ${absent}: non è disponibile`))
+            }
+        }
+    })
+
+    test("a new directory outside the user's folder, with spaces and Unicode, is used exactly as chosen (nothing appended)", async () => {
+        const { w, volume } = away()
+        const chosen = path.join(volume, "Miei Programmi", "Reader MCP 😀 è")
+        const { d, probes } = probing(w)
+        const r = await call(w, "check-install-dir", installRequest(w, { installDir: chosen }), d)
+        assert.equal(r.code, 0, r.one("message"))
+        assert.equal(r.one("canonical"), chosen)
+        assert.equal(r.one("adjusted"), "")
+        assert.equal(r.one("mode"), "new")
+        assert.equal(r.one("outsideProfile"), "yes")
+        assert.equal(fs.existsSync(path.join(volume, "Miei Programmi")), false, "checking creates nothing")
+        assert.deepEqual(probes, [])
+        const inside = await call(w, "check-install-dir", installRequest(w))
+        assert.equal(inside.one("outsideProfile"), "no")
+    })
+
+    test("an existing empty directory is used directly; the write check leaves nothing behind", async () => {
+        const { w, volume } = away()
+        const empty = path.join(volume, "Vuota é")
+        fs.mkdirSync(empty)
+        const { d, probes } = probing(w)
+        const r = await call(w, "check-install-dir", installRequest(w, { installDir: empty }), d)
+        assert.equal(r.code, 0, r.one("message"))
+        assert.equal(r.one("canonical"), empty)
+        assert.equal(r.one("adjusted"), "")
+        assert.deepEqual(probes, [empty])
+        assert.deepEqual(fs.readdirSync(empty), [])
+    })
+
+    test("a directory with other files: the FluentReaderMCP subdirectory is proposed and the files are untouched; going back with it changes nothing; an occupied proposal is refused, never nested further", async () => {
+        const { w, volume } = away()
+        const apps = path.join(volume, "Applicazioni")
+        fs.mkdirSync(path.join(apps, "Altro programma"), { recursive: true })
+        fs.writeFileSync(path.join(apps, "Altro programma", "app.exe"), "someone else's program")
+        fs.writeFileSync(path.join(apps, "leggimi.txt"), "mine")
+        const before = snapshotDir(apps)
+        const proposal = path.join(apps, DEFAULT_SUBDIR)
+        const r = await call(w, "check-install-dir", installRequest(w, { installDir: apps }))
+        assert.equal(r.code, 0, r.one("message"))
+        assert.equal(r.one("canonical"), proposal)
+        assert.equal(r.one("adjusted"), "not-empty")
+        assert.equal(r.one("mode"), "new")
+        assert.deepEqual(snapshotDir(apps), before, "nothing created or changed in the chosen directory")
+        // Back, then Next with the destination now shown in the field: the same destination, nothing appended again
+        const again = await call(w, "check-install-dir", installRequest(w, { installDir: proposal }))
+        assert.equal(again.one("canonical"), proposal)
+        assert.equal(again.one("adjusted"), "")
+        // the proposal is occupied by something else: refused, no FluentReaderMCP\FluentReaderMCP
+        fs.mkdirSync(proposal)
+        fs.writeFileSync(path.join(proposal, "altro.txt"), "not ours")
+        for (const chosen of [apps, proposal]) {
+            const refused = await call(w, "check-install-dir", installRequest(w, { installDir: chosen }))
+            assert.equal(refused.code, 1, chosen)
+            assert.match(refused.one("message"), /contiene già altri file e non è un'installazione di Fluent Reader MCP: scegli un'altra cartella/)
+            assert.equal(refused.one("message").includes(`${DEFAULT_SUBDIR}\\${DEFAULT_SUBDIR}`), false, "never nested further")
+        }
+        assert.deepEqual(fs.readdirSync(proposal), ["altro.txt"])
+    })
+
+    test("the user's own folder is not a destination: its FluentReaderMCP subdirectory is proposed", async () => {
+        const { w } = away()
+        const r = await call(w, "check-install-dir", installRequest(w, { installDir: w.home }))
+        assert.equal(r.code, 0, r.one("message"))
+        assert.equal(r.one("canonical"), path.join(w.home, DEFAULT_SUBDIR))
+        assert.equal(r.one("adjusted"), "not-empty")
+        assert.equal(r.one("outsideProfile"), "no")
+        const direct = await call(w, "tx-begin", installRequest(w, { installDir: w.home, bundleSha256: "a".repeat(64), profileDir: w.profile, expectMode: "new" }))
+        assert.match(direct.one("message"), /non può essere direttamente la tua cartella utente/)
+    })
+
+    test("an installation outside the profile is recognised directly or through its parent; layout names alone prove nothing", async () => {
+        const { w, volume } = away()
+        const parent = path.join(volume, "Programmi")
+        const dir = path.join(parent, DEFAULT_SUBDIR)
+        await installed(w, dir)
+        const direct = await call(w, "check-install-dir", installRequest(w, { installDir: dir }))
+        assert.deepEqual([direct.one("canonical"), direct.one("mode"), direct.one("adjusted")], [dir, "repair", ""])
+        const viaParent = await call(w, "check-install-dir", installRequest(w, { installDir: parent, version: "0.2.0" }))
+        assert.deepEqual([viaParent.one("canonical"), viaParent.one("mode"), viaParent.one("adjusted")], [dir, "upgrade", "not-empty"])
+        assert.match((await call(w, "check-install-dir", installRequest(w, { installDir: path.join(dir, "current", "x") }))).one("message"), /dentro un'altra installazione/)
+        // a current tree without record or journal: not attributable, not used (it would be moved and removed otherwise)
+        const fake = path.join(volume, "Sembra nostra")
+        fs.mkdirSync(path.join(fake, "current", "app"), { recursive: true })
+        fs.writeFileSync(path.join(fake, "current", "app", "file.txt"), "someone else's")
+        fs.mkdirSync(path.join(fake, "state"))
+        const before = snapshotDir(fake)
+        const r = await call(w, "check-install-dir", installRequest(w, { installDir: fake }))
+        assert.deepEqual([r.one("canonical"), r.one("adjusted")], [path.join(fake, DEFAULT_SUBDIR), "not-empty"], "a subfolder is proposed, the directory itself is not used")
+        const begin = await call(w, "tx-begin", installRequest(w, { installDir: fake, bundleSha256: "a".repeat(64), profileDir: w.profile, expectMode: "new" }))
+        assert.match(begin.one("message"), /nomi usati da Fluent Reader MCP \(current\) ma nessun registro/)
+        assert.deepEqual(snapshotDir(fake), before)
+    })
+
+    test("Windows, program, shared and other users' directories are refused on every drive", async () => {
+        const { w, machine } = away()
+        const sys = (name: string): string => {
+            const dir = path.join(machine, name)
+            fs.mkdirSync(dir, { recursive: true })
+            return dir
+        }
+        const systemRoot = sys("Win")
+        const programs = sys("Programs")
+        const programsX86 = sys("Programs x86")
+        const programData = sys("Data comuni")
+        const pub = sys(path.join("Users", "Public"))
+        const env = { ...w.env, SystemRoot: systemRoot, ProgramFiles: programs, "ProgramFiles(x86)": programsX86, ProgramData: programData, PUBLIC: pub }
+        const drive = tempDrive()
+        const cases: [string, RegExp][] = [
+            [path.join(systemRoot, "FluentReaderMCP"), /cartella di Windows/],
+            [path.join(programs, "FluentReaderMCP"), /cartella dei programmi/],
+            [path.join(programsX86, "FluentReaderMCP"), /cartella dei programmi/],
+            [path.join(programData, "FluentReaderMCP"), /ProgramData/],
+            [path.join(pub, "FluentReaderMCP"), /cartella di un altro utente, in quella pubblica/],
+            [path.join(machine, "Users", "altro utente", "FluentReaderMCP"), /cartella di un altro utente/],
+            [path.join(machine, "Users"), /cartella di un altro utente/],
+            [`${drive}Windows\\FluentReaderMCP`, /cartella di Windows o dei programmi installati per tutti gli utenti/],
+            [`${drive}Program Files\\FluentReaderMCP`, /cartella di Windows o dei programmi/],
+            [`${drive}Program Files (x86)\\FluentReaderMCP`, /cartella di Windows o dei programmi/],
+            [`${drive}ProgramData\\FluentReaderMCP`, /cartella di Windows o dei programmi/],
+            [`${drive}$Recycle.Bin\\FluentReaderMCP`, /cartella di Windows o dei programmi/],
+            [`${drive}System Volume Information\\FluentReaderMCP`, /cartella di Windows o dei programmi/],
+        ]
+        for (const [installDir, message] of cases) {
+            const r = await call(w, "check-install-dir", installRequest(w, { installDir }), { ...deps(w), env })
+            assert.equal(r.code, 1, installDir)
+            assert.match(r.one("message"), message, installDir)
+        }
+    })
+
+    test("malformed paths are refused", async () => {
+        const { w } = away()
+        const drive = tempDrive()
+        const cases: [string, RegExp][] = [
+            ["D:", /unità locale/],
+            ["D:relativo\\x", /unità locale/],
+            ["\\\\?\\D:\\x", /unità locale/],
+            ["\\\\.\\D:\\x", /unità locale/],
+            ["\\\\server\\share\\x", /unità locale/],
+            [`${drive}a\\..\\b`, /"\." o "\.\."/],
+            [`${drive}con\\x`, /non è ammesso/],
+            [`${drive}a|b`, /non è ammesso/],
+            [`${drive}fine. `, /non è ammesso/],
+            ["", /manca installDir/],
+        ]
+        for (const [installDir, message] of cases) {
+            const r = await call(w, "check-install-dir", installRequest(w, { installDir }))
+            assert.equal(r.code, 1, installDir)
+            assert.match(r.one("message"), message, installDir)
+        }
+    })
+
+    test("junctions on the way or as the destination are refused, their target untouched", async () => {
+        const { w, volume, machine } = away()
+        const target = path.join(machine, "Elsewhere é")
+        fs.mkdirSync(target)
+        fs.writeFileSync(path.join(target, "file.txt"), "elsewhere")
+        const link = path.join(volume, "Collegamento")
+        fs.symlinkSync(target, link, "junction")
+        const before = snapshotDir(target)
+        for (const installDir of [link, path.join(link, "FluentReaderMCP")]) {
+            for (const command of ["check-install-dir", "tx-begin"]) {
+                const r = await call(w, command, installRequest(w, { installDir, bundleSha256: "a".repeat(64), profileDir: w.profile, expectMode: "new" }))
+                assert.equal(r.code, 1, `${command} ${installDir}`)
+                assert.match(r.one("message"), /collegamento, una junction o un nome breve/)
+            }
+        }
+        assert.deepEqual(snapshotDir(target), before)
+    })
+
+    test("a destination that cannot be written is refused at the wizard, without touching permissions", async () => {
+        const { w, volume } = away()
+        const dir = path.join(volume, "Sola lettura")
+        fs.mkdirSync(dir)
+        const { d, probes } = probing(w, () => {
+            throw Object.assign(new Error("access denied"), { code: "EACCES" })
+        })
+        const r = await call(w, "check-install-dir", installRequest(w, { installDir: dir }), d)
+        assert.equal(r.code, 1)
+        assert.match(r.one("message"), /non è possibile scrivere in .*\(EACCES\); scegli un'altra cartella\. Il setup non modifica i permessi delle cartelle/)
+        assert.deepEqual(probes, [dir])
+    })
+
+    test("commands after the wizard never redirect: a drive root or a directory with other files is refused by tx-begin, plan and register; nothing written", async () => {
+        const { w, volume } = away(personalConfig())
+        const apps = path.join(volume, "Applicazioni")
+        fs.mkdirSync(apps)
+        fs.writeFileSync(path.join(apps, "altro.txt"), "not ours")
+        const before = snapshotDir(volume)
+        const extra = { bundleSha256: "a".repeat(64), profileDir: w.profile, expectMode: "new", claudeExe: w.claudeExe, planHash: "0".repeat(64), consent: "yes" }
+        for (const command of ["tx-begin", "plan", "register"]) {
+            const r = await call(w, command, installRequest(w, { installDir: apps, ...extra }))
+            assert.equal(r.code, 1, command)
+            assert.match(r.one("message"), /contiene già altri file/, command)
+            const atRoot = await call(w, command, installRequest(w, { installDir: tempDrive(), ...extra }))
+            assert.match(atRoot.one("message"), /non può essere la radice di un'unità/, command)
+        }
+        assert.deepEqual(snapshotDir(volume), before)
+        assert.deepEqual(mutating(w), [], "Claude Code untouched")
+    })
+
+    test("the destination changes after the confirmation: tx-begin re-checks it before writing anything", async () => {
+        const { w, volume, machine } = away()
+        const begin = (installDir: string, expectMode: string): Promise<Answer> => call(w, "tx-begin", installRequest(w, { installDir, bundleSha256: "a".repeat(64), profileDir: w.profile, expectMode }))
+        // confirmed as new; another process then fills it
+        const filled = path.join(volume, "Riempita")
+        assert.equal((await call(w, "check-install-dir", installRequest(w, { installDir: filled }))).one("mode"), "new")
+        fs.mkdirSync(filled)
+        fs.writeFileSync(path.join(filled, "altro.txt"), "not ours")
+        assert.match((await begin(filled, "new")).one("message"), /contiene già altri file/)
+        assert.deepEqual(fs.readdirSync(filled), ["altro.txt"])
+        // confirmed as new; an installation appears there
+        const raced = path.join(volume, "Concorrente")
+        assert.equal((await call(w, "check-install-dir", installRequest(w, { installDir: raced }))).one("mode"), "new")
+        await installed(w, raced)
+        const before = snapshotDir(raced)
+        assert.match((await begin(raced, "new")).one("message"), /cambiata dopo la conferma \(attesa: new, trovata: repair\)/)
+        assert.deepEqual(snapshotDir(raced), before)
+        // confirmed as new; it becomes a junction to another place
+        const swapped = path.join(volume, "Scambiata")
+        assert.equal((await call(w, "check-install-dir", installRequest(w, { installDir: swapped }))).one("mode"), "new")
+        const elsewhere = path.join(machine, "Altrove")
+        fs.mkdirSync(elsewhere)
+        fs.symlinkSync(elsewhere, swapped, "junction")
+        assert.match((await begin(swapped, "new")).one("message"), /collegamento, una junction o un nome breve/)
+        assert.deepEqual(fs.readdirSync(elsewhere), [])
+        // the destination cannot be created (a file stands where its parent should be): refused before any write
+        const blocker = path.join(volume, "un file.txt")
+        fs.writeFileSync(blocker, "a file, not a directory")
+        const r = await begin(path.join(blocker, "Reader"), "new")
+        assert.equal(r.code, 1)
+        assert.match(r.one("message"), /non è possibile scrivere nella cartella di installazione .*installazione non avviata, nulla è stato cambiato/)
+        assert.equal(fs.readFileSync(blocker, "utf8"), "a file, not a directory")
+        // and when the confirmed mode still matches, the transaction starts
+        assert.equal((await begin(path.join(volume, "Libera"), "new")).code, 0)
+    })
+
+    test("preview, record and registration use the effective destination outside the profile", async () => {
+        const { w: base, volume } = away(personalConfig())
+        const apps = path.join(volume, "Applicazioni")
+        fs.mkdirSync(apps)
+        fs.writeFileSync(path.join(apps, "altro.txt"), "not ours")
+        const choice = await call(base, "check-install-dir", installRequest(base, { installDir: apps }))
+        assert.equal(choice.code, 0, choice.one("message"))
+        const effective = choice.one("canonical")
+        const w: World = { ...base, installDir: effective }
+        await installed(w)
+        const { plan, register } = await planAndRegister(w)
+        const node = path.join(effective, "current", "app", "runtime", "node.exe")
+        assert.ok((plan.fields.get("preview") ?? []).includes(`Eseguibile: ${node}`), "the preview shows the effective destination")
+        assert.equal(register.code, 0, register.one("message"))
+        assert.equal(record(w).installDir, effective)
+        assert.equal(record(w).claude?.entry.command, node)
+        assert.equal((servers(w)[SERVER_NAME] as { command: string }).command, node)
+        assert.equal(fs.readFileSync(path.join(apps, "altro.txt"), "utf8"), "not ours")
+    })
+
+    test("no permission is changed: the shipped setup helper and the NSIS script contain no ACL, ownership or elevation operation, and none of the 03A1/03A2a modules", () => {
+        const shipped = setupClosure(COMPILED_ROOT)
+        for (const excluded of ["location.js", "win32-security.js", "location-facts.js"]) assert.equal(shipped.some((f) => /[\\/]setup[\\/]/.test(f) && f.endsWith(excluded) && path.basename(f) === excluded), false, excluded)
+        const forbidden = /icacls|\bcacls\b|takeown|SetSecurityInfo|SetNamedSecurityInfo|SetFileSecurity|SetKernelObjectSecurity|AccessControl::|\bchmod(Sync)?\b|\bchown(Sync)?\b|(from|import\(|require\()\s*"koffi"|runas|RequestExecutionLevel (admin|highest)/i
+        for (const f of shipped) assert.doesNotMatch(fs.readFileSync(path.join(COMPILED_ROOT, f), "utf8"), forbidden, f)
+        assert.doesNotMatch(fs.readFileSync(path.join(COMPILED_ROOT, "..", "installer", "nsis", "fluent-reader-mcp.nsi"), "utf8"), forbidden)
+    })
+})
+
+// ------------------------------------------------------------------ FR-MCP-04-BETA-03A-SIMPLE-01: corrections after the Codex review
+
+describe("review Major 1: a product name is not a proof of ownership", { skip: AWAY_SKIP }, () => {
+    const begin = (w: World, installDir: string, extra: Record<string, string> = {}): Promise<Answer> => call(w, "tx-begin", installRequest(w, { installDir, bundleSha256: "a".repeat(64), profileDir: w.profile, expectMode: "new", ...extra }))
+
+    test("Codex case: a directory holding only someone else's uninstall.exe is not a new installation; nothing is replaced, moved or deleted", async () => {
+        const { w, volume } = away()
+        const dir = path.join(volume, "Vecchio programma")
+        fs.mkdirSync(dir)
+        const foreign = Buffer.from("MZ someone else's uninstaller \u0000\u0001\u0002")
+        fs.writeFileSync(path.join(dir, "uninstall.exe"), foreign)
+        const before = snapshotDir(dir)
+        const check = await call(w, "check-install-dir", installRequest(w, { installDir: dir }))
+        assert.deepEqual([check.one("canonical"), check.one("adjusted"), check.one("mode")], [path.join(dir, DEFAULT_SUBDIR), "not-empty", "new"], "only a dedicated subfolder is proposed")
+        const r = await begin(w, dir)
+        assert.equal(r.code, 1)
+        assert.match(r.one("message"), /nomi usati da Fluent Reader MCP \(uninstall\.exe\) ma nessun registro di installazione né transazione che li attribuisca: non vengono usati, sostituiti né rimossi/)
+        assert.deepEqual(snapshotDir(dir), before, "no state, no journal, no copy, no new uninstaller")
+        assert.deepEqual(fs.readFileSync(path.join(dir, "uninstall.exe")), foreign, "byte for byte")
+        // a directory already named FluentReaderMCP is not nested further: refused
+        const named = path.join(volume, DEFAULT_SUBDIR)
+        fs.mkdirSync(named)
+        fs.writeFileSync(path.join(named, "uninstall.exe"), foreign)
+        assert.match((await call(w, "check-install-dir", installRequest(w, { installDir: named }))).one("message"), /contiene già altri file e non è un'installazione di Fluent Reader MCP: scegli un'altra cartella/)
+        assert.deepEqual(fs.readdirSync(named), ["uninstall.exe"])
+    })
+
+    test("every name of the layout without record or journal is unattributed; only an empty state directory and an empty directory are used as they are", async () => {
+        const { w, volume } = away()
+        const file = (dir: string, relative: string): void => {
+            fs.mkdirSync(path.dirname(path.join(dir, relative)), { recursive: true })
+            fs.writeFileSync(path.join(dir, relative), `content of ${relative}`)
+        }
+        const cases: [string, (dir: string) => void, "direct" | RegExp][] = [
+            ["vuota", () => undefined, "direct"],
+            ["solo state vuota", (d) => fs.mkdirSync(path.join(d, "state", "sub"), { recursive: true }), "direct"],
+            ["state con file", (d) => file(d, "state\\claude-config-backups\\claude.json.bak"), /\(state\) ma nessun registro/],
+            ["solo .staging", (d) => file(d, ".staging\\app\\x.js"), /\(\.staging\) ma nessun registro/],
+            ["solo .staging vuota", (d) => fs.mkdirSync(path.join(d, ".staging")), /\(\.staging\) ma nessun registro/],
+            ["solo previous", (d) => file(d, "previous\\installer-files.json"), /\(previous\) ma nessun registro/],
+            ["solo current", (d) => file(d, "current\\app\\x.js"), /\(current\) ma nessun registro/],
+            ["combinazione", (d) => { file(d, "uninstall.exe"); file(d, "state\\x"); file(d, "previous\\y"); file(d, ".staging\\z") }, /nomi usati da Fluent Reader MCP \(.*uninstall\.exe.*\) ma nessun registro/],
+            ["file estranei", (d) => file(d, "documento.txt"), /contiene già altri file; scegli una cartella vuota o nuova/],
+            ["state vuota e un file estraneo", (d) => { fs.mkdirSync(path.join(d, "state")); file(d, "documento.txt") }, /contiene già altri file; scegli una cartella vuota o nuova/],
+        ]
+        for (const [name, make, expected] of cases) {
+            const dir = path.join(volume, name)
+            fs.mkdirSync(dir)
+            make(dir)
+            const before = snapshotDir(dir)
+            const check = await call(w, "check-install-dir", installRequest(w, { installDir: dir }))
+            assert.equal(check.code, 0, `${name}: ${check.one("message")}`)
+            const r = await begin(w, dir)
+            if (expected === "direct") {
+                assert.deepEqual([check.one("canonical"), check.one("adjusted")], [dir, ""], name)
+                assert.equal(r.code, 0, `${name}: ${r.one("message")}`)
+                continue
+            }
+            assert.deepEqual([check.one("canonical"), check.one("adjusted")], [path.join(dir, DEFAULT_SUBDIR), "not-empty"], name)
+            assert.equal(r.code, 1, name)
+            assert.match(r.one("message"), expected, name)
+            assert.deepEqual(snapshotDir(dir), before, `${name}: untouched`)
+        }
+    })
+
+    test("a valid record or journal still attributes the layout: repair, upgrade and an interrupted first installation; an altered or copied journal is refused", async () => {
+        const { w, volume } = away()
+        const recorded = path.join(volume, "Installata")
+        await installed(w, recorded)
+        fs.writeFileSync(path.join(recorded, "uninstall.exe"), "our uninstaller")
+        assert.equal((await call(w, "check-install-dir", installRequest(w, { installDir: recorded }))).one("mode"), "repair")
+        assert.equal((await call(w, "check-install-dir", installRequest(w, { installDir: recorded, version: "0.2.0" }))).one("mode"), "upgrade")
+        // a first installation interrupted before its record: the journal describes .staging and state
+        const interrupted = path.join(volume, "Interrotta")
+        assert.equal((await begin(w, interrupted)).code, 0)
+        fs.mkdirSync(path.join(interrupted, ".staging", "app"), { recursive: true })
+        fs.writeFileSync(path.join(interrupted, ".staging", "app", "x.js"), "partial")
+        const resumed = await call(w, "check-install-dir", installRequest(w, { installDir: interrupted }))
+        assert.deepEqual([resumed.one("canonical"), resumed.one("mode"), resumed.one("adjusted")], [interrupted, "new", ""])
+        // the same journal copied next to someone else's files, or altered: incoherent, nothing used
+        const journal = fs.readFileSync(path.join(interrupted, "state", "install-journal.json"), "utf8")
+        const copied = path.join(volume, "Copiata")
+        fs.mkdirSync(path.join(copied, "state"), { recursive: true })
+        fs.writeFileSync(path.join(copied, "state", "install-journal.json"), journal)
+        fs.writeFileSync(path.join(copied, "uninstall.exe"), "someone else's")
+        fs.writeFileSync(path.join(interrupted, "state", "install-journal.json"), journal.replace('"phase": "staging"', '"phase": "committed"'))
+        for (const dir of [copied, interrupted]) {
+            const before = snapshotDir(dir)
+            const r = await call(w, "check-install-dir", installRequest(w, { installDir: dir }))
+            assert.equal(r.code, 1, dir)
+            assert.match(r.one("message"), /journal dell'installazione .* non è valido o è stato alterato/, dir)
+            assert.equal((await begin(w, dir)).code, 1, dir)
+            assert.deepEqual(snapshotDir(dir), before, dir)
+        }
+        // an incoherent uninstall marker keeps refusing as before
+        const marked = path.join(volume, "Marcatore")
+        fs.mkdirSync(path.join(marked, "state"), { recursive: true })
+        fs.writeFileSync(path.join(marked, "state", "uninstall.json"), "{}")
+        assert.match((await call(w, "check-install-dir", installRequest(w, { installDir: marked }))).one("message"), /disinstallazione non conclusa/)
+    })
+})
+
+describe("review Major 2: conventional profile locations on every drive (lexical precaution)", () => {
+    test("X:\\Users\\<account> is refused on any drive unless it is inside USERPROFILE; segment-aware, case-insensitive; other shapes allowed", () => {
+        const cases: [string, string, string | null][] = [
+            // home C:\Users\Bruno
+            ["C:\\Users\\Bruno", "C:\\Users\\Bruno\\FluentReaderMCP", null],
+            ["C:\\Users\\Bruno", "C:\\Users\\Bruno\\AppData\\Local\\FluentReaderMCP", null],
+            ["C:\\Users\\Bruno", "C:\\Users\\Alice\\FluentReaderMCP", "C:\\Users"],
+            ["C:\\Users\\Bruno", "C:\\Users\\Public\\FluentReaderMCP", "C:\\Users"],
+            ["C:\\Users\\Bruno", "C:\\Users", "C:\\Users"],
+            ["C:\\Users\\Bruno", "D:\\Users\\Alice\\FluentReaderMCP", "D:\\Users"],
+            ["C:\\Users\\Bruno", "H:\\Users\\Alice\\FluentReaderMCP", "H:\\Users"],
+            ["C:\\Users\\Bruno", "D:\\Users\\Bruno\\FluentReaderMCP", "D:\\Users"],
+            ["C:\\Users\\Bruno", "d:\\USERS\\alice\\FluentReaderMCP", "d:\\USERS"],
+            ["C:\\Users\\Bruno", "c:\\users\\bruno\\FluentReaderMCP", null],
+            ["C:\\Users\\Bruno", "D:\\UsersBackup\\FluentReaderMCP", null],
+            ["C:\\Users\\Bruno", "D:\\Users.old\\Alice\\FluentReaderMCP", null],
+            ["C:\\Users\\Bruno", "D:\\Dati\\Users\\Alice\\FluentReaderMCP", null],
+            ["C:\\Users\\Bruno", "D:\\Applicazioni\\FluentReaderMCP", null],
+            // the current profile on another letter
+            ["E:\\Users\\bruno", "E:\\Users\\bruno\\FluentReaderMCP", null],
+            ["E:\\Users\\bruno", "E:\\Users\\alice\\FluentReaderMCP", "E:\\Users"],
+            ["E:\\Users\\bruno", "C:\\Users\\bruno\\FluentReaderMCP", "C:\\Users"],
+            // a current profile under another root: its siblings on its own drive; the root name is not generalised
+            ["D:\\Profili\\bruno", "D:\\Profili\\alice\\FluentReaderMCP", "D:\\Profili"],
+            ["D:\\Profili\\bruno", "D:\\Profili\\bruno\\FluentReaderMCP", null],
+            ["D:\\Profili\\bruno", "C:\\Profili\\alice\\FluentReaderMCP", null],
+            ["D:\\Profili\\bruno", "D:\\ProfiliVecchi\\FluentReaderMCP", null],
+            ["D:\\Profili\\bruno", "C:\\Users\\alice\\FluentReaderMCP", "C:\\Users"],
+            // a profile directly under a drive root: no sibling rule (it would cover the whole drive)
+            ["D:\\bruno", "D:\\alice\\FluentReaderMCP", null],
+        ]
+        for (const [home, dir, expected] of cases) assert.equal(otherProfileLocation(dir, home), expected, `${home} | ${dir}`)
+    })
+
+    test("through the helper (read-only on the real drives): C:\\Users\\Alice and D:\\Users\\Alice refused, D:\\UsersBackup and D:\\Applicazioni allowed", { skip: AWAY_SKIP }, async () => {
+        const { w } = away()
+        const noWrite = probing(w, () => assert.fail("no write check on a destination that does not exist")).d
+        for (const dir of ["C:\\Users\\Alice\\FluentReaderMCP", "D:\\Users\\Alice\\FluentReaderMCP", "D:\\users\\BRUNO\\FluentReaderMCP"]) {
+            if (!fs.existsSync(dir.slice(0, 3))) continue
+            const r = await call(w, "check-install-dir", installRequest(w, { installDir: dir }), noWrite)
+            assert.equal(r.code, 1, dir)
+            assert.match(r.one("message"), /non può stare nella cartella di un altro utente, in quella pubblica o direttamente in [A-Za-z]:\\Users \(percorso con la forma di una cartella dei profili di Windows/i, dir)
+        }
+        for (const dir of ["D:\\UsersBackup\\FluentReaderMCP", "D:\\Applicazioni\\FluentReaderMCP"]) {
+            if (!fs.existsSync("D:\\") || fs.existsSync(path.dirname(dir))) continue // never checked against a real existing folder
+            const r = await call(w, "check-install-dir", installRequest(w, { installDir: dir }), noWrite)
+            assert.deepEqual([r.code, r.one("canonical"), r.one("mode"), r.one("adjusted")], [0, dir, "new", ""], r.one("message"))
+            assert.equal(fs.existsSync(path.dirname(dir)), false, "nothing created")
+        }
+    })
+})
+
+describe("review Minor 1: tx-begin requires the confirmed mode", { skip: AWAY_SKIP }, () => {
+    test("absent, empty or unknown expectMode, or a mode that is not the directory's, is refused before any write; new, repair and upgrade pass", async () => {
+        const { w, volume } = away()
+        const fresh = path.join(volume, "Nuova")
+        const base = { installDir: fresh, bundleSha256: "a".repeat(64), profileDir: w.profile }
+        const refused: [Record<string, string>, RegExp][] = [
+            [{}, /richiesta incompleta: manca expectMode/],
+            [{ expectMode: "" }, /richiesta incompleta: manca expectMode/],
+            [{ expectMode: "install" }, /expectMode deve essere new, repair, upgrade/],
+            [{ expectMode: "NEW" }, /expectMode deve essere new, repair, upgrade/],
+            [{ expectMode: "repair" }, /cambiata dopo la conferma \(attesa: repair, trovata: new\)/],
+            [{ expectMode: "upgrade" }, /cambiata dopo la conferma \(attesa: upgrade, trovata: new\)/],
+        ]
+        for (const [extra, message] of refused) {
+            const r = await call(w, "tx-begin", installRequest(w, { ...base, ...extra }))
+            assert.equal(r.code, 1, JSON.stringify(extra))
+            assert.match(r.one("message"), message, JSON.stringify(extra))
+            assert.equal(fs.existsSync(fresh), false, `${JSON.stringify(extra)}: nothing written`)
+        }
+        assert.equal((await call(w, "tx-begin", installRequest(w, { ...base, expectMode: "new" }))).code, 0)
+        const recorded = path.join(volume, "Installata")
+        await installed(w, recorded)
+        // an installed tree that tx-begin can verify file by file against its own inventory
+        fs.writeFileSync(path.join(recorded, "current", "file.txt"), "installed")
+        fs.writeFileSync(path.join(recorded, "current", INVENTORY), JSON.stringify(buildInventory(path.join(recorded, "current"), VERSION)))
+        const before = snapshotDir(recorded)
+        for (const [version, wrong] of [["0.1.0", "upgrade"], ["0.2.0", "repair"], ["0.1.0", "new"]] as const) {
+            const r = await call(w, "tx-begin", installRequest(w, { ...base, installDir: recorded, version, expectMode: wrong }))
+            assert.match(r.one("message"), /cambiata dopo la conferma/, `${version} ${wrong}`)
+            assert.deepEqual(snapshotDir(recorded), before, "nothing written")
+        }
+        assert.equal((await call(w, "tx-begin", installRequest(w, { ...base, installDir: recorded, expectMode: "repair" }))).code, 0)
+        fs.rmSync(path.join(recorded, "state", "install-journal.json"))
+        assert.equal((await call(w, "tx-begin", installRequest(w, { ...base, installDir: recorded, version: "0.2.0", expectMode: "upgrade" }))).code, 0)
+    })
+})
+
+describe("review Minor 2: \"$\" alone does not make a system folder", { skip: AWAY_SKIP }, () => {
+    test("$Recycle.Bin and the Windows setup folders are refused at the top of a drive; $Projects and look-alikes are not", async () => {
+        const { w } = away()
+        const drive = awayBase().slice(0, 3)
+        const noWrite = probing(w, () => assert.fail("no write check on a destination that does not exist")).d
+        for (const top of ["$Recycle.Bin", "$RECYCLE.BIN", "$recycle.bin", "$WinREAgent", "$Windows.~BT", "$Windows.~WS", "$SysReset", "System Volume Information", "Program Files"]) {
+            const r = await call(w, "check-install-dir", installRequest(w, { installDir: `${drive}${top}\\FluentReaderMCP` }), noWrite)
+            assert.equal(r.code, 1, top)
+            assert.match(r.one("message"), /cartella di Windows o dei programmi installati per tutti gli utenti/, top)
+        }
+        for (const relative of ["$Projects\\FluentReaderMCP", "$Recycle.Bin.old\\FluentReaderMCP", "$RecycleBin\\FluentReaderMCP", "Progetti\\$Recycle.Bin\\FluentReaderMCP"]) {
+            const dir = `${drive}${relative}`
+            if (fs.existsSync(`${drive}${relative.split("\\")[0] as string}`)) continue // never checked against a real existing folder
+            const r = await call(w, "check-install-dir", installRequest(w, { installDir: dir }), noWrite)
+            assert.deepEqual([r.code, r.one("canonical"), r.one("adjusted")], [0, dir, ""], `${relative}: ${r.one("message")}`)
+        }
+    })
+})
+
+describe("review Minor: the fixture guard is independent of how the path is written", () => {
+    test("empty, relative, the area itself, a sibling with a shared prefix, '..' escapes and a junction out are refused before anything is created; normalised paths inside pass", async () => {
+        counter++
+        const box = path.join(root, `guard ${counter}`)
+        const area = path.join(box, "area")
+        const outside = path.join(box, "outside")
+        fs.mkdirSync(area, { recursive: true })
+        fs.mkdirSync(outside)
+        fs.writeFileSync(path.join(outside, "x.txt"), "outside")
+        fs.symlinkSync(outside, path.join(area, "link"), "junction")
+        const ok = (dir: string): void => assert.doesNotThrow(() => assertInTestArea(dir, [area]), dir)
+        const ko = (dir: string): void => assert.throws(() => assertInTestArea(dir, [area]), /fixture outside the test area/, dir)
+        ko("")
+        ko("relative\\dir")
+        ko(".")
+        ko(area)
+        ko(`${area}\\..`)
+        ko(`${area}2\\x`)
+        ko(`${area}-sibling\\x`)
+        ko(`${area}\\..\\outside\\x`)
+        ko(`${area}\\sub\\..\\..\\outside`)
+        ko(path.join(area, "link"))
+        ko(path.join(area, "link", "deeper", "x"))
+        ok(path.join(area, "sub"))
+        ok(`${area}\\a\\..\\b`)
+        ok(`${area.toUpperCase()}\\sub`)
+        ok(path.join(area, "..link", "x"))
+        // the fixture itself refuses, and nothing appears outside
+        const w = world()
+        const escape = `${root}\\..\\frmcp-escape-${counter}`
+        for (const dir of ["", "relativo", escape, `${root}2\\x`, `${root}\\sub\\..\\..\\frmcp-escape-${counter}`]) {
+            await assert.rejects(installed(w, dir), /fixture outside the test area/, dir)
+        }
+        assert.equal(fs.existsSync(path.win32.resolve(escape)), false, "nothing created next to the temp root")
+        assert.deepEqual(fs.readdirSync(outside), ["x.txt"], "nothing created through the junction")
+        assert.equal(fs.existsSync(path.join(process.cwd(), "current")), false, "nothing in the working directory")
     })
 })
