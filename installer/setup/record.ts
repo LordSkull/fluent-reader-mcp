@@ -44,9 +44,47 @@ export interface Registration {
      * then nothing is ever removed automatically.
      */
     readonly fingerprint: string | null
-    /** File name of the backup taken before the change, in state\claude-config-backups. */
+    /** File name of the backup taken before the change. */
     readonly backup: string | null
+    /**
+     * FR-MCP-04-BETA-03A-SIMPLE-02: the private directory of `backup` when it was written (backups.ts), only
+     * compared with the one derived again for the current user, never used as a destination; and the backup's
+     * SHA-256. Both or neither (backupReference): absent in records of earlier setups, whose `backup` is in
+     * state\claude-config-backups.
+     */
+    readonly backupDir?: string
+    readonly backupSha256?: string
     readonly updatedAt: string
+}
+
+/** The only names a copy of the Claude configuration taken by this product has. */
+export const BACKUP_NAME = /^claude\.json\.\d{8}T\d{6}Z(-\d+)?\.bak$/
+
+/**
+ * What a registration says about its backup, in one of two complete forms or none:
+ *  none     no backup (no name, no directory, no hash)
+ *  legacy   a name only (earlier setups): the file is in state\claude-config-backups
+ *  private  name, private directory and SHA-256 (backups.ts)
+ *  invalid  anything else (a field without the others, a malformed hash or directory, a name of another kind):
+ *           never described as available, never a reason to move or delete anything
+ * The record stays readable either way (the uninstaller still needs it for the Claude Code entry).
+ */
+export type BackupReference =
+    | { readonly kind: "none" }
+    | { readonly kind: "legacy"; readonly name: string }
+    | { readonly kind: "private"; readonly name: string; readonly dir: string; readonly sha256: string }
+    | { readonly kind: "invalid"; readonly reason: string }
+
+export function backupReference(reg: Registration | null): BackupReference {
+    if (reg === null) return { kind: "none" }
+    const { backup: name, backupDir: dir, backupSha256: sha256 } = reg
+    if (name === null || name === undefined) return dir === undefined && sha256 === undefined ? { kind: "none" } : { kind: "invalid", reason: "cartella o impronta di una copia senza nome" }
+    if (typeof name !== "string" || !BACKUP_NAME.test(name)) return { kind: "invalid", reason: "nome della copia non previsto" }
+    if (dir === undefined && sha256 === undefined) return { kind: "legacy", name }
+    if (dir === undefined || sha256 === undefined) return { kind: "invalid", reason: "riferimento incompleto (cartella o impronta mancante)" }
+    if (typeof dir !== "string" || !/^[A-Za-z]:\\/.test(dir) || !path.win32.isAbsolute(dir)) return { kind: "invalid", reason: "cartella della copia non valida" }
+    if (typeof sha256 !== "string" || !/^[0-9a-f]{64}$/.test(sha256)) return { kind: "invalid", reason: "impronta SHA-256 della copia non valida" }
+    return { kind: "private", name, dir, sha256 }
 }
 
 export interface InstallRecord {
@@ -94,7 +132,9 @@ export function readRecord(file: string): InstallRecord | null {
     }
     const r = raw as Partial<InstallRecord> | null
     const fingerprintOk = (f: unknown): boolean => f === null || (typeof f === "string" && /^[0-9a-f]{64}$/.test(f))
-    const claudeOk = r?.claude === null || (typeof r?.claude === "object" && isEntry(r.claude.entry) && typeof r.claude.claudeExe === "string" && typeof r.claude.configPath === "string" && fingerprintOk(r.claude.fingerprint))
+    // types only: the coherence of the backup fields is judged by backupReference, without making the record unreadable
+    const backupOk = (c: Partial<Registration>): boolean => (c.backupDir === undefined || typeof c.backupDir === "string") && (c.backupSha256 === undefined || typeof c.backupSha256 === "string")
+    const claudeOk = r?.claude === null || (typeof r?.claude === "object" && isEntry(r.claude.entry) && typeof r.claude.claudeExe === "string" && typeof r.claude.configPath === "string" && fingerprintOk(r.claude.fingerprint) && backupOk(r.claude))
     if (r?.schemaVersion !== 1 || r.product !== PRODUCT || typeof r.installDir !== "string" || typeof r.generation !== "string" || !/^[0-9a-f]{32}$/.test(r.generation) || typeof r.version !== "string" || !/^\d+\.\d+\.\d+$/.test(r.version) || !claudeOk || (r.profileDir !== null && typeof r.profileDir !== "string")) {
         throw new SetupRefusal("il registro di installazione non è riconosciuto: non viene sovrascritto")
     }

@@ -227,4 +227,13 @@ describe("NSIS script", () => {
         assert.match(SCRIPT, /non cerca profili da solo/)
         assert.doesNotMatch(SCRIPT, /LogSet|LogText/, "no setup log file")
     })
+
+    test("FR-MCP-04-BETA-03A-SIMPLE-02: the uninstaller only tells where the private copies of the Claude configuration stay; it never touches them", () => {
+        const uninstall = CODE.slice(CODE.indexOf('Section "Uninstall"'))
+        assert.match(uninstall, /RunHelper "un-status"[\s\S]*?Pop \$UnPhase\s+Push "backups"\s+Call un\.ResultGet\s+Pop \$BackupNote\s+\$\{If\} \$UnPhase == "metadata"/)
+        const last = uninstall.slice(uninstall.indexOf("uninstall_last:"))
+        assert.match(last, /\$\{If\} \$BackupNote != ""\s+MessageBox MB_ICONINFORMATION\|MB_OK "\$BackupNote"\s+\$\{EndIf\}/)
+        assert.doesNotMatch(CODE, /FluentReaderMCP-Data/, "the private directory is the helper's business only")
+        for (const line of CODE.split("\n").filter((l) => /^\s*(Delete|RMDir|Rename|CopyFiles)\b/.test(l))) assert.doesNotMatch(line, /claude-config-backups|BackupNote/, line)
+    })
 })

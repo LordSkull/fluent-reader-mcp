@@ -27,6 +27,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { canonicalPath, listFiles, overlaps, safeJoin, samePath, sha256FileSync } from "../lib/common.js"
 import { INVENTORY, readInventory, removeTree, type Inventory } from "./app.js"
+import { migrateLegacyBackups } from "./backups.js"
 import { checkInstallDir, installRoot, LAYOUT, UNINSTALLER } from "./checks.js"
 import { SetupRefusal, type Request } from "./protocol.js"
 import { canonicalJson, PRODUCT, RECORD_NAME, readRecord, writeRecord, type InstallRecord } from "./record.js"
@@ -433,6 +434,9 @@ function blocked(what: string, blockers: readonly string[]): SetupRefusal {
 /** Before the extraction: the journal makes `.staging` an artifact of this transaction and records what the directory held. */
 export function txBegin(deps: TxDeps, input: { installDir: string; version: string; maxRelative: number; bundleSha256: string; profileDir: string; env: NodeJS.ProcessEnv }): Journal {
     const installDir = checkInstallDir({ installDir: input.installDir, version: input.version, maxRelative: input.maxRelative, env: input.env }).canonical
+    // FR-MCP-04-BETA-03A-SIMPLE-02: copies of the Claude configuration left in state\ by an earlier setup go to the
+    // user's private directory first (or nothing starts), and before the record is noted: it may be updated
+    if (readJournal(installDir) === null) migrateLegacyBackups(installDir, input.env)
     const initial = initialState(installDir)
     // Only a recorded installation owns an uninstall.exe or a current tree (checkInstallDir refuses them too).
     if (initial.record === null && (initial.uninstallerSha256 !== null || initial.current !== null)) {

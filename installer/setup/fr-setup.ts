@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url"
 import { execFile, type ExecFn } from "../lib/common.js"
 import { runSelfTest, type SelfTestFn } from "../lib/selftest.js"
 import { HELPER_FILES, readInventory, removalPlan, removeTree, verifyTree } from "./app.js"
+import { backupNote, describeBackup, privateBackupDir, recordedBackup } from "./backups.js"
 import { authorizedTree, checkInstallDir, checkProfile, installRoot, LAYOUT, INSTALL_MODES, recordedInstallDir, resolveInstallDir, type InstallDirCheck } from "./checks.js"
 import { checkClaude, claudeConfigPath, detectClaude, plan, previewLines, register, registrationStatus, unregister, type ClaudeDeps } from "./claude.js"
 import { flag, readRequest, required, SetupRefusal, writeResult, type Request, type Result } from "./protocol.js"
@@ -90,8 +91,17 @@ const COMMANDS: Record<string, (request: Request, deps: HelperDeps) => Promise<F
         const claudeExe = required(request, "claudeExe")
         const { version } = checkClaude(claudeExe, claudeDeps(deps))
         const profileDir = checkProfile(required(request, "profileDir"), installDir).canonical
-        const p = plan({ configPath: claudeConfigPath(deps.env), installDir, profileDir, record: readRecord(recordPath(installDir)) })
-        return [["action", p.action], ["planHash", p.hash], ...previewLines(p, claudeExe, version).map((line): [string, string] => ["preview", line])]
+        const record = readRecord(recordPath(installDir))
+        const p = plan({ configPath: claudeConfigPath(deps.env), installDir, profileDir, record })
+        // the copy can only go to the user's private directory: without it, the change is refused here, before consent
+        const backupDir = p.action !== "none" && p.configExists ? privateBackupDir(deps.env, installDir) : null
+        const lines = previewLines(p, claudeExe, version, backupDir)
+        // a registration that did not finish (crash or incomplete rollback): where its copy is, found again for this user
+        if (record?.claude?.state === "pending" || record?.claude?.state === "rollback-failed") {
+            const note = describeBackup(recordedBackup(installDir, record, deps.env))
+            if (note !== null) lines.push(`Una registrazione precedente non si è conclusa. ${note}`)
+        }
+        return [["action", p.action], ["planHash", p.hash], ...lines.map((line): [string, string] => ["preview", line])]
     },
     // ---------------------------------------------------------------- installation transaction (see transaction.ts)
     "tx-recover": (request, deps) => {
@@ -146,7 +156,14 @@ const COMMANDS: Record<string, (request: Request, deps: HelperDeps) => Promise<F
     // ---------------------------------------------------------------- uninstallation (see uninstall.ts)
     "un-status": (request, deps) => {
         const status = uninstallStatus(required(request, "installDir"), deps.env)
-        return [["phase", status.phase], ["helperCopy", status.helperCopy]]
+        // read-only: where this installation's copies of the Claude configuration stay (shown at the end; never deleted)
+        let backups = ""
+        try {
+            backups = backupNote(installRoot(required(request, "installDir"), deps.env), deps.env)
+        } catch {
+            // nothing to report
+        }
+        return [["phase", status.phase], ["helperCopy", status.helperCopy], ["backups", backups]]
     },
     "uninstall-preflight": (request, deps) => {
         // Nothing is changed here: every reason to stop is found before the uninstaller removes anything.

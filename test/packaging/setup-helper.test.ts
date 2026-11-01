@@ -8,6 +8,7 @@
 
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
+import crypto from "node:crypto"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -18,6 +19,7 @@ import { buildManifest, MANIFEST, type LicenseRecord } from "../../installer/lib
 import { parseRuntimeLock } from "../../installer/lib/runtime-lock.js"
 import { setupClosure } from "../../installer/lib/installer-build.js"
 import { buildInventory, INVENTORY, removalPlan, removeTree, verifyTree } from "../../installer/setup/app.js"
+import { BACKUP_NAME, migrateLegacyBackups, privateBackupDir, recordedBackup, type MigrationCheckpoint } from "../../installer/setup/backups.js"
 import { DEFAULT_SUBDIR, otherProfileLocation, writeProbe } from "../../installer/setup/checks.js"
 import { desiredEntry, SERVER_NAME } from "../../installer/setup/claude.js"
 import { main, type HelperDeps } from "../../installer/setup/fr-setup.js"
@@ -248,8 +250,10 @@ function mutating(w: World): string[][] {
     return w.calls.filter((c) => c[0] === "mcp" && c[2] !== "--help")
 }
 
+/** The copies of the configuration: only in the user's private directory (SIMPLE-02), never under the installation directory. */
 function backups(w: World): string[] {
-    const dir = path.join(w.installDir, "state", "claude-config-backups")
+    assert.equal(fs.existsSync(path.join(w.installDir, "state", "claude-config-backups")), false, "no copy under the installation directory")
+    const dir = privateBackupDir(w.env, w.installDir)
     return fs.existsSync(dir) ? fs.readdirSync(dir) : []
 }
 
@@ -441,7 +445,7 @@ describe("setup helper: preview and registration", () => {
         assert.deepEqual(mutating(w).map((c) => c.slice(0, 3)), [["mcp", "add-json", SERVER_NAME]])
         const [backup] = backups(w)
         assert.ok(backup !== undefined && /^claude\.json\.\d{8}T\d{6}Z\.bak$/.test(backup))
-        assert.ok(fs.readFileSync(path.join(w.installDir, "state", "claude-config-backups", backup)).equals(original), "the backup is the configuration before the change")
+        assert.ok(fs.readFileSync(path.join(privateBackupDir(w.env, w.installDir), backup)).equals(original), "the backup is the configuration before the change")
         const rec = record(w)
         assert.equal(rec.claude?.state, "registered")
         assert.deepEqual(rec.claude?.entry, desiredEntry(w.installDir, w.profile))
@@ -524,7 +528,7 @@ describe("setup helper: preview and registration", () => {
         w.claude = { addFails: "before-write" }
         const { register } = await planAndRegister(w)
         assert.equal(register.code, 1)
-        assert.match(register.one("message"), /registrazione non completata .*riportata allo stato precedente.*claude-config-backups/)
+        assert.match(register.one("message"), /registrazione non completata .*riportata allo stato precedente.*FluentReaderMCP-Data\\claude-config-backups\\[0-9a-f]{32}\\claude\.json\./)
         assert.deepEqual(servers(w), before)
         assert.deepEqual(calls(w, "remove"), [], "nothing removed")
         assert.equal(record(w).claude, null, "nothing recorded as registered")
@@ -542,7 +546,7 @@ describe("setup helper: preview and registration", () => {
             w.claude = behaviour
             const { register } = await planAndRegister(w)
             assert.equal(register.code, 1)
-            assert.match(register.one("message"), /ripristino automatico NON è stato completato: .*non è attribuibile con certezza.*Serve un tuo intervento.*claude-config-backups/)
+            assert.match(register.one("message"), /ripristino automatico NON è stato completato: .*non è attribuibile con certezza.*Serve un tuo intervento.*FluentReaderMCP-Data\\claude-config-backups\\[0-9a-f]{32}\\claude\.json\./)
             assert.ok(Object.hasOwn(servers(w), SERVER_NAME), "the entry is left for the owner")
             assert.deepEqual(calls(w, "remove"), [], "no remove without proven ownership")
             assert.equal(record(w).claude?.state, "rollback-failed")
@@ -1692,5 +1696,653 @@ describe("review Minor: the fixture guard is independent of how the path is writ
         assert.equal(fs.existsSync(path.win32.resolve(escape)), false, "nothing created next to the temp root")
         assert.deepEqual(fs.readdirSync(outside), ["x.txt"], "nothing created through the junction")
         assert.equal(fs.existsSync(path.join(process.cwd(), "current")), false, "nothing in the working directory")
+    })
+})
+
+// ---------------------------------------------------------------- FR-MCP-04-BETA-03A-SIMPLE-02
+
+const LEGACY_A = "claude.json.20261001T090000Z.bak"
+const LEGACY_B = "claude.json.20261002T090000Z-1.bak"
+
+function localAppData(w: World): string {
+    return path.join(w.home, "AppData", "Local")
+}
+
+/** Files under `dir` whose bytes hold the synthetic secret: none may be under an installation directory. */
+function secretFilesUnder(dir: string): string[] {
+    if (!fs.existsSync(dir)) return []
+    return [...snapshotDir(dir).keys()].filter((key) => {
+        const file = path.join(dir, ...key.split("/"))
+        return fs.lstatSync(file).isFile() && fs.readFileSync(file).includes(SECRET)
+    })
+}
+
+function sha256(bytes: Buffer): string {
+    return crypto.createHash("sha256").update(bytes).digest("hex")
+}
+
+/** A record as an earlier setup wrote it: registered, its copy named by file only (state\claude-config-backups). */
+function legacyRegistration(w: World, backup: string | null): void {
+    const file = path.join(w.installDir, RECORD_NAME)
+    const entry = desiredEntry(w.installDir, w.profile)
+    writeRecord(file, { ...(readRecord(file) as InstallRecord), claude: { state: "registered", name: SERVER_NAME, scope: "user", configPath: w.configPath, claudeExe: w.claudeExe, entry, fingerprint: entryFingerprint(entry), backup, updatedAt: "2026-10-01T09:00:00.000Z" } })
+}
+
+function legacyDir(w: World): string {
+    return path.join(w.installDir, "state", "claude-config-backups")
+}
+
+/** A copy left by an earlier setup in state\claude-config-backups (synthetic content with the secret). */
+function legacyCopy(w: World, name: string, content: string | Buffer = JSON.stringify(personalConfig({ n: name }))): string {
+    assertInTestArea(legacyDir(w))
+    fs.mkdirSync(legacyDir(w), { recursive: true })
+    fs.writeFileSync(path.join(legacyDir(w), name), content)
+    return path.join(legacyDir(w), name)
+}
+
+describe("FR-MCP-04-BETA-03A-SIMPLE-02: copies of the Claude Code configuration in the user's private directory", () => {
+    test("a registration keeps its copy only in %LOCALAPPDATA%\\FluentReaderMCP-Data, bound to the installation; nothing sensitive under the installation directory", async () => {
+        const w = world(personalConfig())
+        await installed(w)
+        const original = fs.readFileSync(w.configPath)
+        const dir = privateBackupDir(w.env, w.installDir)
+        assert.ok(dir.startsWith(path.join(localAppData(w), "FluentReaderMCP-Data", "claude-config-backups") + path.sep), dir)
+        assert.match(path.basename(dir), /^[0-9a-f]{32}$/)
+        const { plan, register } = await planAndRegister(w)
+        assert.ok(plan.one("preview").includes(`nella tua cartella personale, fuori dalla cartella di installazione: ${dir}`), plan.one("preview"))
+        assert.equal(register.code, 0, register.one("message"))
+        const [name] = backups(w)
+        assert.ok(name !== undefined && BACKUP_NAME.test(name))
+        assert.deepEqual(fs.readdirSync(dir), [name], "no temporary copy left")
+        assert.equal(register.one("backup"), path.join(dir, name))
+        assert.ok(fs.readFileSync(path.join(dir, name)).equals(original))
+        const rec = record(w)
+        assert.equal(rec.claude?.backup, name)
+        assert.equal(rec.claude?.backupDir, dir)
+        assert.equal(rec.claude?.backupSha256, sha256(original))
+        assert.equal(JSON.stringify(rec).includes(SECRET), false, "only name, directory and SHA-256 are recorded")
+        assert.deepEqual(secretFilesUnder(w.installDir), [])
+        assert.equal(`${plan.text}${register.text}`.includes(SECRET), false)
+        assert.deepEqual(recordedBackup(w.installDir, rec, w.env), { status: "ok", path: path.join(dir, name) })
+    })
+
+    test("the default installation directory %LOCALAPPDATA%\\FluentReaderMCP: the copy is next to it, never inside", async () => {
+        const base = world(personalConfig())
+        const w: World = { ...base, installDir: path.join(localAppData(base), "FluentReaderMCP") }
+        await installed(w)
+        const { register } = await planAndRegister(w)
+        assert.equal(register.code, 0, register.one("message"))
+        const dir = privateBackupDir(w.env, w.installDir)
+        assert.equal(dir.toLowerCase().startsWith(`${w.installDir.toLowerCase()}\\`), false)
+        assert.equal(backups(w).length, 1)
+        assert.deepEqual(secretFilesUnder(w.installDir), [])
+    })
+
+    test("%LOCALAPPDATA% missing, relative, on the network, outside the profile, the profile itself or a file: refused before consent and at registration; nothing copied anywhere", async () => {
+        const w = world(personalConfig())
+        await installed(w)
+        const plan = await call(w, "plan", installRequest(w, { claudeExe: w.claudeExe, profileDir: w.profile }))
+        const outside = path.join(root, `shared ${counter}`)
+        fs.mkdirSync(outside)
+        const aFile = path.join(w.home, "a file")
+        fs.writeFileSync(aFile, "x")
+        const config = fs.readFileSync(w.configPath)
+        const recordBefore = fs.readFileSync(path.join(w.installDir, RECORD_NAME))
+        const { LOCALAPPDATA: _local, ...without } = w.env
+        const envs: [string, NodeJS.ProcessEnv][] = [
+            ["missing", without], ["relative", { ...w.env, LOCALAPPDATA: "AppData\\Local" }], ["network", { ...w.env, LOCALAPPDATA: "\\\\server\\share\\Local" }],
+            ["outside the profile", { ...w.env, LOCALAPPDATA: outside }], ["the profile itself", { ...w.env, LOCALAPPDATA: w.home }], ["a file", { ...w.env, LOCALAPPDATA: aFile }],
+        ]
+        for (const [label, env] of envs) {
+            const d = { ...deps(w), env }
+            const p = await call(w, "plan", installRequest(w, { claudeExe: w.claudeExe, profileDir: w.profile }), d)
+            assert.equal(p.code, 1, label)
+            assert.match(p.one("message"), /cartella personale \(%LOCALAPPDATA%\), che non è utilizzabile.*Nessuna copia viene salvata altrove/, label)
+            const r = await call(w, "register", installRequest(w, { claudeExe: w.claudeExe, profileDir: w.profile, planHash: plan.one("planHash"), consent: "yes" }), d)
+            assert.equal(r.code, 1, label)
+            assert.match(r.one("message"), /Nessuna copia viene salvata altrove e la configurazione di Claude Code non viene modificata/, label)
+        }
+        assert.ok(fs.readFileSync(w.configPath).equals(config), "configuration unchanged")
+        assert.ok(fs.readFileSync(path.join(w.installDir, RECORD_NAME)).equals(recordBefore), "record unchanged")
+        assert.deepEqual(mutating(w), [])
+        assert.deepEqual(fs.readdirSync(outside), [], "no fallback to another directory")
+        assert.equal(fs.existsSync(path.join(w.installDir, "state")), false, "no fallback to the installation directory")
+        assert.equal(fs.existsSync(path.join(localAppData(w), "FluentReaderMCP-Data")), false)
+    })
+
+    test("a junction or a file in place of a managed directory: nothing is written through it", async () => {
+        const w = world(personalConfig())
+        await installed(w)
+        const elsewhere = path.join(w.home, "elsewhere")
+        fs.mkdirSync(elsewhere)
+        fs.symlinkSync(elsewhere, path.join(localAppData(w), "FluentReaderMCP-Data"), "junction")
+        const { register } = await planAndRegister(w)
+        assert.equal(register.code, 1)
+        assert.match(register.one("message"), /FluentReaderMCP-Data non è una cartella normale \(collegamento, junction o file\)/)
+        assert.deepEqual(fs.readdirSync(elsewhere), [])
+        assert.deepEqual(mutating(w), [], "Claude Code untouched")
+        const v = world(personalConfig())
+        await installed(v)
+        fs.mkdirSync(path.join(localAppData(v), "FluentReaderMCP-Data"))
+        fs.writeFileSync(path.join(localAppData(v), "FluentReaderMCP-Data", "claude-config-backups"), "a file")
+        const second = await planAndRegister(v)
+        assert.match(second.register.one("message"), /claude-config-backups non è una cartella normale/)
+        assert.equal(fs.readFileSync(path.join(localAppData(v), "FluentReaderMCP-Data", "claude-config-backups"), "utf8"), "a file")
+    })
+
+    test("two installations of one user: separate private directories, no collision; repair and upgrade keep the same directory with a new copy per change", async () => {
+        const a = world(personalConfig())
+        await installed(a)
+        assert.equal((await planAndRegister(a)).register.code, 0)
+        const b: World = { ...a, installDir: path.join(localAppData(a), "Seconda installazione") }
+        await installed(b)
+        const dirA = privateBackupDir(a.env, a.installDir)
+        const dirB = privateBackupDir(b.env, b.installDir)
+        assert.notEqual(dirA.toLowerCase(), dirB.toLowerCase())
+        const snapA = snapshotDir(dirA)
+        assert.equal((await planAndRegister(b, { replaceForeign: "yes" })).register.code, 0)
+        assert.equal(backups(b).length, 1)
+        assert.deepEqual(snapshotDir(dirA), snapA, "the first installation's copies untouched")
+        // upgrade simulation of b: another generation, an older own entry; the same private directory, a second copy
+        const rec = record(b)
+        const oldProfile = buildSmokeProfile(path.join(b.home, "Profili Fluent", `vecchio ${counter}`)).dir
+        const oldEntry = desiredEntry(b.installDir, oldProfile)
+        fs.writeFileSync(path.join(b.installDir, RECORD_NAME), JSON.stringify({ ...rec, generation: "cd".repeat(16), version: "0.0.9", claude: { ...rec.claude, entry: oldEntry, fingerprint: entryFingerprint(oldEntry) } }))
+        const doc = readConfig(b)
+        fs.writeFileSync(b.configPath, JSON.stringify({ ...doc, mcpServers: { ...(doc.mcpServers as object), [SERVER_NAME]: oldEntry } }))
+        const again = await planAndRegister(b)
+        assert.equal(again.plan.one("action"), "replace-own")
+        assert.equal(again.register.code, 0, again.register.one("message"))
+        assert.equal(backups(b).length, 2, "same directory across generations, never overwritten")
+        assert.equal(record(b).claude?.backupDir, dirB)
+        assert.deepEqual(Object.fromEntries(Object.entries(servers(b)).filter(([n]) => n !== SERVER_NAME)), otherServers(), "other servers preserved")
+        assert.deepEqual(snapshotDir(dirA), snapA)
+        const noteA = (await call(a, "un-status", { installDir: a.installDir })).one("backups")
+        assert.ok(noteA.includes(dirA) && !noteA.includes(dirB), noteA)
+    })
+
+    test("errors before and after the change: the private copy is the configuration before it, and the message names it", async () => {
+        const failures: [string, (w: World) => void][] = [
+            ["before", (w) => (w.claude = { addFails: "before-write" })],
+            ["after", (w) => (w.checkpoint = (s) => {
+                if (s === "after-readback") throw new Error("injected failure")
+            })],
+        ]
+        for (const [label, setup] of failures) {
+            const w = world(personalConfig())
+            await installed(w)
+            const original = fs.readFileSync(w.configPath)
+            setup(w)
+            const { register } = await planAndRegister(w)
+            assert.equal(register.code, 1, label)
+            const [name] = backups(w)
+            const file = path.join(privateBackupDir(w.env, w.installDir), name as string)
+            assert.ok(register.one("message").includes(`La copia presa prima della modifica è in ${file}.`), label)
+            assert.ok(fs.readFileSync(file).equals(original), label)
+            assert.deepEqual(servers(w), otherServers(), label)
+            assert.equal(register.text.includes(SECRET), false)
+        }
+    })
+
+    /** The registration's backup fields replaced (undefined removes a field): the record stays as written otherwise. */
+    function patchRegistration(w: World, patch: Record<string, unknown>): void {
+        const rec = record(w)
+        writeRecord(path.join(w.installDir, RECORD_NAME), { ...rec, claude: { ...(rec.claude as NonNullable<InstallRecord["claude"]>), ...patch } })
+    }
+
+    /** An installation of an earlier setup whose record names LEGACY_A, kept in state\claude-config-backups. */
+    async function legacyInstallation(): Promise<{ w: World; a: Buffer }> {
+        const w = world(personalConfig())
+        await installed(w)
+        const a = fs.readFileSync(legacyCopy(w, LEGACY_A))
+        legacyRegistration(w, LEGACY_A)
+        return { w, a }
+    }
+
+    const privateRoot = (w: World): string => path.join(localAppData(w), "FluentReaderMCP-Data")
+
+    test("the one copy the record names: moved byte for byte, recorded (directory and SHA-256) before the original goes; a repeated run changes nothing", async () => {
+        const { w, a } = await legacyInstallation()
+        assert.equal(recordedBackup(w.installDir, record(w), w.env).status, "legacy")
+        const steps: string[] = []
+        assert.deepEqual(migrateLegacyBackups(w.installDir, w.env, (s) => {
+            steps.push(s)
+            if (s === "after-record") {
+                assert.equal(record(w).claude?.backupSha256, sha256(a), "recorded first")
+                assert.ok(fs.existsSync(path.join(legacyDir(w), LEGACY_A)), "the original is still there")
+            }
+        }), [LEGACY_A])
+        assert.deepEqual(steps, ["after-copy", "after-publish", "after-record"])
+        const dir = privateBackupDir(w.env, w.installDir)
+        assert.deepEqual(fs.readdirSync(dir), [LEGACY_A])
+        assert.ok(fs.readFileSync(path.join(dir, LEGACY_A)).equals(a), "identical byte for byte")
+        assert.equal(fs.existsSync(legacyDir(w)), false, "the old directory is gone")
+        assert.deepEqual(secretFilesUnder(w.installDir), [])
+        assert.equal(record(w).claude?.backupDir, dir)
+        assert.deepEqual(recordedBackup(w.installDir, record(w), w.env), { status: "ok", path: path.join(dir, LEGACY_A) })
+        const snap = snapshotDir(privateRoot(w))
+        const rec = fs.readFileSync(path.join(w.installDir, RECORD_NAME))
+        assert.deepEqual(migrateLegacyBackups(w.installDir, w.env), [])
+        assert.deepEqual(snapshotDir(privateRoot(w)), snap)
+        assert.ok(fs.readFileSync(path.join(w.installDir, RECORD_NAME)).equals(rec))
+    })
+
+    test("register moves the copy its record names before taking its own, all in the private directory", async () => {
+        const { w } = await legacyInstallation()
+        const { register } = await planAndRegister(w)
+        assert.equal(register.code, 0, register.one("message"))
+        assert.equal(backups(w).length, 2)
+        assert.ok(backups(w).includes(LEGACY_A))
+    })
+
+    test("Codex Major: anything next to the named copy (another valid copy, even identical; another name; a directory; a link) stops the whole move before any change", async () => {
+        const cases: [string, (w: World, a: Buffer) => void, RegExp][] = [
+            ["an unreferenced copy with valid JSON", (w) => legacyCopy(w, LEGACY_B), /claude\.json\.20261002T090000Z-1\.bak \(copia non indicata dal registro di installazione\)/],
+            ["an unreferenced copy identical to the named one", (w, a) => legacyCopy(w, LEGACY_B, a), /claude\.json\.20261002T090000Z-1\.bak \(copia non indicata dal registro di installazione\)/],
+            ["another name", (w) => legacyCopy(w, "notes.txt", "mine"), /notes\.txt \(nome non previsto\)/],
+            ["a subdirectory", (w) => fs.mkdirSync(path.join(legacyDir(w), "sub")), /sub \(non è un file\)/],
+            ["a junction with a copy's name", (w) => fs.symlinkSync(w.home, path.join(legacyDir(w), "claude.json.20261005T090000Z.bak"), "junction"), /claude\.json\.20261005T090000Z\.bak \(collegamento\)/],
+            ["a leftover temporary copy", (w) => legacyCopy(w, `.${LEGACY_A}.0123456789abcdef.partial`, "{}"), /\.partial \(nome non previsto\)/],
+        ]
+        for (const [label, add, message] of cases) {
+            const { w, a } = await legacyInstallation()
+            add(w, a)
+            const before = snapshotDir(legacyDir(w))
+            const rec = fs.readFileSync(path.join(w.installDir, RECORD_NAME))
+            assert.throws(() => migrateLegacyBackups(w.installDir, w.env), (e: Error) => message.test(e.message) && /non attribuibili con certezza a questa installazione.*Nessun elemento è stato modificato, spostato o cancellato\. Prima di aggiornare o riparare serve un tuo intervento/.test(e.message) && !e.message.includes(SECRET), label)
+            assert.deepEqual(snapshotDir(legacyDir(w)), before, `${label}: every original in place, byte for byte`)
+            assert.ok(fs.readFileSync(path.join(legacyDir(w), LEGACY_A)).equals(a), label)
+            assert.ok(fs.readFileSync(path.join(w.installDir, RECORD_NAME)).equals(rec), `${label}: record unchanged`)
+            assert.equal(fs.existsSync(privateRoot(w)), false, `${label}: no private copy created`)
+            const config = fs.readFileSync(w.configPath)
+            const { register } = await planAndRegister(w)
+            assert.equal(register.code, 1, label)
+            assert.ok(fs.readFileSync(w.configPath).equals(config), label)
+            assert.deepEqual(mutating(w), [], label)
+            assert.deepEqual(snapshotDir(legacyDir(w)), before, label)
+        }
+    })
+
+    test("a record that names no copy there, names it in another form, or is bound to another directory: nothing is moved; an empty old directory blocks nothing", async () => {
+        const refused = (w: World, message: RegExp, label: string): void => {
+            const before = snapshotDir(legacyDir(w))
+            const rec = fs.readFileSync(path.join(w.installDir, RECORD_NAME))
+            assert.throws(() => migrateLegacyBackups(w.installDir, w.env), message, label)
+            assert.deepEqual(snapshotDir(legacyDir(w)), before, label)
+            assert.ok(fs.readFileSync(path.join(w.installDir, RECORD_NAME)).equals(rec), label)
+            assert.equal(fs.existsSync(privateRoot(w)), false, label)
+        }
+        const cases: [string, (w: World) => void][] = [
+            ["no registration", () => undefined],
+            ["a registration without a copy", (w) => legacyRegistration(w, null)],
+            ["a registration naming another copy", (w) => legacyRegistration(w, LEGACY_B)],
+            ["an incomplete reference (directory only)", (w) => (legacyRegistration(w, LEGACY_A), patchRegistration(w, { backupDir: privateBackupDir(w.env, w.installDir) }))],
+            ["a reference of another user's directory", (w) => (legacyRegistration(w, LEGACY_A), patchRegistration(w, { backupDir: path.join(root, "someone", "Local", "FluentReaderMCP-Data", "claude-config-backups", "x"), backupSha256: "0".repeat(64) }))],
+        ]
+        for (const [label, setup] of cases) {
+            const w = world(personalConfig())
+            await installed(w)
+            legacyCopy(w, LEGACY_A)
+            setup(w)
+            refused(w, /claude\.json\.20261001T090000Z\.bak \(copia non indicata dal registro di installazione\).*Nessun elemento è stato modificato/, label)
+        }
+        const other = world(personalConfig())
+        await installed(other)
+        legacyCopy(other, LEGACY_A)
+        legacyRegistration(other, LEGACY_A)
+        const rec = record(other)
+        writeRecord(path.join(other.installDir, RECORD_NAME), { ...rec, installDir: path.join(localAppData(other), "Another installation") })
+        refused(other, /non è attribuibile a un'installazione registrata in questa cartella/, "record bound to another directory")
+        const empty = world(personalConfig())
+        await installed(empty)
+        fs.mkdirSync(legacyDir(empty), { recursive: true })
+        assert.deepEqual(migrateLegacyBackups(empty.installDir, empty.env), [])
+        assert.equal(fs.existsSync(legacyDir(empty)), false, "an empty old directory just goes")
+        assert.equal((await planAndRegister(empty)).register.code, 0)
+    })
+
+    test("the private name already taken by a different copy: neither replaced nor deleted; the same copy already there: accepted, nothing duplicated", async () => {
+        const { w, a } = await legacyInstallation()
+        const dir = privateBackupDir(w.env, w.installDir)
+        fs.mkdirSync(dir, { recursive: true })
+        fs.writeFileSync(path.join(dir, LEGACY_A), "{\"other\":true}")
+        const rec = fs.readFileSync(path.join(w.installDir, RECORD_NAME))
+        assert.throws(() => migrateLegacyBackups(w.installDir, w.env), /esiste già .*con un contenuto diverso\. Nessuna delle due viene sostituita o cancellata/)
+        assert.equal(fs.readFileSync(path.join(dir, LEGACY_A), "utf8"), "{\"other\":true}")
+        assert.ok(fs.readFileSync(path.join(legacyDir(w), LEGACY_A)).equals(a))
+        assert.ok(fs.readFileSync(path.join(w.installDir, RECORD_NAME)).equals(rec))
+        fs.writeFileSync(path.join(dir, LEGACY_A), a) // the identical copy
+        assert.deepEqual(migrateLegacyBackups(w.installDir, w.env), [LEGACY_A])
+        assert.deepEqual(fs.readdirSync(dir), [LEGACY_A])
+        assert.ok(fs.readFileSync(path.join(dir, LEGACY_A)).equals(a))
+        assert.equal(fs.existsSync(legacyDir(w)), false)
+        assert.equal(recordedBackup(w.installDir, record(w), w.env).status, "ok")
+    })
+
+    test("without %LOCALAPPDATA% or without a record nothing moves", async () => {
+        const { w } = await legacyInstallation()
+        const { LOCALAPPDATA: _l, ...without } = w.env
+        assert.throws(() => migrateLegacyBackups(w.installDir, without), /non è utilizzabile/)
+        fs.rmSync(path.join(w.installDir, RECORD_NAME))
+        assert.throws(() => migrateLegacyBackups(w.installDir, w.env), /non è attribuibile a un'installazione registrata/)
+        assert.ok(fs.existsSync(path.join(legacyDir(w), LEGACY_A)))
+        assert.equal(fs.existsSync(privateRoot(w)), false)
+    })
+
+    test("interrupted moves at every step: the next attempt completes; a temporary copy left by a crash is never deleted", async () => {
+        for (const step of ["after-copy", "after-publish", "after-record"] as const) {
+            const { w, a } = await legacyInstallation()
+            const dir = privateBackupDir(w.env, w.installDir)
+            assert.throws(() => migrateLegacyBackups(w.installDir, w.env, (s) => {
+                if (s === step) throw new Error(`crash at ${s}`)
+            }), /crash at/, step)
+            assert.ok(fs.readFileSync(path.join(legacyDir(w), LEGACY_A)).equals(a), `${step}: the original is still there`)
+            const left = fs.readdirSync(dir).filter((n) => n.endsWith(".partial"))
+            const leftBytes = left.map((n) => fs.readFileSync(path.join(dir, n)))
+            assert.deepEqual(migrateLegacyBackups(w.installDir, w.env), [LEGACY_A], step)
+            assert.ok(fs.readFileSync(path.join(dir, LEGACY_A)).equals(a), step)
+            assert.equal(fs.existsSync(legacyDir(w)), false, step)
+            assert.equal(recordedBackup(w.installDir, record(w), w.env).status, "ok", step)
+            assert.deepEqual(fs.readdirSync(dir).filter((n) => n.endsWith(".partial")), left, `${step}: the crash's temporary copy stays as it was`)
+            left.forEach((n, i) => assert.ok(fs.readFileSync(path.join(dir, n)).equals(leftBytes[i] as Buffer)))
+            assert.equal(fs.readdirSync(dir).filter((n) => BACKUP_NAME.test(n)).length, 1, `${step}: no duplicate`)
+        }
+    })
+
+    test("a move recorded before the crash, then the original changed: not removed; a private copy with the name but no record of it: never adopted", async () => {
+        const { w } = await legacyInstallation()
+        assert.throws(() => migrateLegacyBackups(w.installDir, w.env, (s) => {
+            if (s === "after-record") throw new Error("crash")
+        }), /crash/)
+        fs.appendFileSync(path.join(legacyDir(w), LEGACY_A), " ")
+        assert.throws(() => migrateLegacyBackups(w.installDir, w.env), /claude\.json\.20261001T090000Z\.bak \(non coincide con la copia indicata dal registro di installazione\)/)
+        assert.ok(fs.existsSync(path.join(legacyDir(w), LEGACY_A)))
+        // an original gone and a record still naming it by file only: the private file of the same name proves nothing
+        const v = await legacyInstallation()
+        const dir = privateBackupDir(v.w.env, v.w.installDir)
+        fs.mkdirSync(dir, { recursive: true })
+        fs.writeFileSync(path.join(dir, LEGACY_A), v.a)
+        fs.rmSync(legacyDir(v.w), { recursive: true })
+        const rec = fs.readFileSync(path.join(v.w.installDir, RECORD_NAME))
+        assert.deepEqual(migrateLegacyBackups(v.w.installDir, v.w.env), [])
+        assert.ok(fs.readFileSync(path.join(v.w.installDir, RECORD_NAME)).equals(rec), "the record is not changed")
+        assert.deepEqual(recordedBackup(v.w.installDir, record(v.w), v.w.env), { status: "missing", path: path.join(legacyDir(v.w), LEGACY_A) })
+        assert.ok(fs.readFileSync(path.join(dir, LEGACY_A)).equals(v.a), "and the private file is left as it is")
+    })
+
+    test("a copy changed during the move, or the private name taken while publishing: only this call's temporary copy goes, everything else stays", async () => {
+        const { w } = await legacyInstallation()
+        const source = path.join(legacyDir(w), LEGACY_A)
+        const dir = privateBackupDir(w.env, w.installDir)
+        assert.throws(() => migrateLegacyBackups(w.installDir, w.env, (s) => {
+            if (s === "after-copy") fs.appendFileSync(source, " ")
+        }), /è cambiata durante lo spostamento.*non viene spostata né cancellata/)
+        assert.deepEqual(fs.readdirSync(dir), [], "nothing published, this call's temporary copy removed")
+        assert.ok(fs.readFileSync(source, "utf8").endsWith(" "), "the old copy stays as it is now")
+        const v = await legacyInstallation()
+        const vdir = privateBackupDir(v.w.env, v.w.installDir)
+        const rec = fs.readFileSync(path.join(v.w.installDir, RECORD_NAME))
+        assert.throws(() => migrateLegacyBackups(v.w.installDir, v.w.env, (s) => {
+            if (s === "after-copy") fs.writeFileSync(path.join(vdir, LEGACY_A), "{\"someone\":\"else\"}")
+        }), /esiste già e non viene sostituito/)
+        assert.deepEqual(fs.readdirSync(vdir), [LEGACY_A], "this call's temporary copy removed")
+        assert.equal(fs.readFileSync(path.join(vdir, LEGACY_A), "utf8"), "{\"someone\":\"else\"}", "the entry found stays")
+        assert.ok(fs.readFileSync(path.join(legacyDir(v.w), LEGACY_A)).equals(v.a))
+        assert.ok(fs.readFileSync(path.join(v.w.installDir, RECORD_NAME)).equals(rec))
+    })
+
+    test("Codex re-review Major: a change during after-record (original, record or private copy) stops the move before the original is removed; nothing is deleted or rewritten", async () => {
+        const replaced = Buffer.from(JSON.stringify({ replaced: true }))
+        const cases: [string, (w: World, dir: string) => void, RegExp][] = [
+            ["original replaced", (w) => fs.writeFileSync(path.join(legacyDir(w), LEGACY_A), replaced), /l'originale .*claude\.json\.20261001T090000Z\.bak non è più quello copiato/],
+            ["record: another hash", (w) => patchRegistration(w, { backupSha256: "0".repeat(64) }), /il registro di installazione non indica più la copia spostata/],
+            ["record: another name", (w) => patchRegistration(w, { backup: "claude.json.20261003T090000Z.bak" }), /il registro di installazione non indica più la copia spostata/],
+            ["record: another directory", (w) => patchRegistration(w, { backupDir: path.join(localAppData(w), "Altrove") }), /il registro di installazione non indica più la copia spostata/],
+            ["record: the copy dropped", (w) => patchRegistration(w, { backup: null, backupDir: undefined, backupSha256: undefined }), /il registro di installazione non indica più la copia spostata/],
+            ["record: another installation directory", (w) => writeRecord(path.join(w.installDir, RECORD_NAME), { ...record(w), installDir: path.join(localAppData(w), "Altra installazione") }), /appartiene a un'altra cartella/],
+            ["private copy changed", (_w, dir) => fs.appendFileSync(path.join(dir, LEGACY_A), " "), /la copia .*claude\.json\.20261001T090000Z\.bak non è più quella verificata/],
+            ["private copy replaced by a directory", (_w, dir) => (fs.rmSync(path.join(dir, LEGACY_A)), fs.mkdirSync(path.join(dir, LEGACY_A))), /non è più quella verificata/],
+        ]
+        for (const [label, change, message] of cases) {
+            const { w } = await legacyInstallation()
+            const dir = privateBackupDir(w.env, w.installDir)
+            let recordAfterChange: Buffer | null = null
+            let privateAfterChange: Map<string, string> | null = null
+            let sourceAfterChange: Buffer | null = null
+            let result: string[] | null = null
+            assert.throws(() => {
+                result = migrateLegacyBackups(w.installDir, w.env, (s) => {
+                    if (s !== "after-record") return
+                    change(w, dir)
+                    recordAfterChange = fs.readFileSync(path.join(w.installDir, RECORD_NAME))
+                    privateAfterChange = snapshotDir(dir)
+                    sourceAfterChange = fs.readFileSync(path.join(legacyDir(w), LEGACY_A))
+                })
+            }, (e: Error) => message.test(e.message) && /L'originale non viene cancellato; la copia nella cartella personale e il registro di installazione restano come sono/.test(e.message) && !e.message.includes(SECRET), label)
+            assert.equal(result, null, `${label}: no completed migration is reported`)
+            assert.ok(fs.readFileSync(path.join(legacyDir(w), LEGACY_A)).equals(sourceAfterChange as unknown as Buffer), `${label}: the original stays, byte for byte as it is now`)
+            assert.deepEqual(snapshotDir(dir), privateAfterChange, `${label}: the private copy is not deleted or changed`)
+            assert.ok(fs.readFileSync(path.join(w.installDir, RECORD_NAME)).equals(recordAfterChange as unknown as Buffer), `${label}: the record is not rewritten`)
+        }
+    })
+
+    test("Codex re-review Major: after a refused removal, the next attempts change nothing until the difference is resolved; without a concurrent change the move completes", async () => {
+        // the original changed during after-record, then again later: always refused by the preflight (hash of the record)
+        const { w, a } = await legacyInstallation()
+        const dir = privateBackupDir(w.env, w.installDir)
+        assert.throws(() => migrateLegacyBackups(w.installDir, w.env, (s) => {
+            if (s === "after-record") fs.appendFileSync(path.join(legacyDir(w), LEGACY_A), " ")
+        }), /non è più quello copiato/)
+        for (let i = 0; i < 2; i++) {
+            const before = snapshotDir(legacyDir(w))
+            const rec = fs.readFileSync(path.join(w.installDir, RECORD_NAME))
+            assert.throws(() => migrateLegacyBackups(w.installDir, w.env), /non coincide con la copia indicata dal registro di installazione/)
+            assert.deepEqual(snapshotDir(legacyDir(w)), before)
+            assert.ok(fs.readFileSync(path.join(w.installDir, RECORD_NAME)).equals(rec))
+            assert.ok(fs.readFileSync(path.join(dir, LEGACY_A)).equals(a), "the private copy stays available")
+            fs.appendFileSync(path.join(legacyDir(w), LEGACY_A), "x") // changed again after the refusal
+        }
+        assert.equal(recordedBackup(w.installDir, record(w), w.env).status, "ok")
+        // the private copy changed during after-record: the next attempt finds it different and replaces nothing
+        const v = await legacyInstallation()
+        const vdir = privateBackupDir(v.w.env, v.w.installDir)
+        assert.throws(() => migrateLegacyBackups(v.w.installDir, v.w.env, (s) => {
+            if (s === "after-record") fs.appendFileSync(path.join(vdir, LEGACY_A), " ")
+        }), /non è più quella verificata/)
+        assert.throws(() => migrateLegacyBackups(v.w.installDir, v.w.env), /esiste già .*con un contenuto diverso/)
+        assert.ok(fs.readFileSync(path.join(legacyDir(v.w), LEGACY_A)).equals(v.a))
+        assert.equal(recordedBackup(v.w.installDir, record(v.w), v.w.env).status, "altered")
+        // a crash after the record and before the removal, nothing changed: the next attempt revalidates and completes
+        const c = await legacyInstallation()
+        assert.throws(() => migrateLegacyBackups(c.w.installDir, c.w.env, (s) => {
+            if (s === "after-record") throw new Error("crash")
+        }), /crash/)
+        assert.equal(recordedBackup(c.w.installDir, record(c.w), c.w.env).status, "ok", "a valid private record with the original still there")
+        assert.deepEqual(migrateLegacyBackups(c.w.installDir, c.w.env), [LEGACY_A])
+        assert.equal(fs.existsSync(legacyDir(c.w)), false)
+        assert.ok(fs.readFileSync(path.join(privateBackupDir(c.w.env, c.w.installDir), LEGACY_A)).equals(c.a))
+        assert.deepEqual(migrateLegacyBackups(c.w.installDir, c.w.env), [], "repeated: nothing to do")
+    })
+
+    test("Codex re-review Minor: the message on elements that are not attributable names paths and reasons only, warns that they may be confidential, and points to a safe personal folder", async () => {
+        const { w } = await legacyInstallation()
+        legacyCopy(w, LEGACY_B, `{"token":"${SECRET}"}`)
+        let message = ""
+        assert.throws(() => migrateLegacyBackups(w.installDir, w.env), (e: Error) => ((message = e.message), true))
+        assert.ok(message.includes(`${path.join(legacyDir(w), LEGACY_B)} (copia non indicata dal registro di installazione)`), message)
+        for (const fact of ["possono contenere informazioni riservate", "Non cancellarli senza averli controllati", "cartella personale sicura del tuo account Windows", "non in una cartella condivisa con altri utenti", "puoi ripetere l'aggiornamento o la riparazione"]) assert.ok(message.includes(fact), fact)
+        assert.doesNotMatch(message, /spostali fuori dalla cartella di installazione|cancella (la cartella )?state/)
+        assert.equal(message.includes(SECRET), false)
+        assert.equal(message.includes("{"), false, "no content")
+    })
+
+    test("Codex Minor 1: temporary copies of other runs, or of unknown origin, are never deleted by a backup or a move", async () => {
+        const { w, a } = await legacyInstallation()
+        const dir = privateBackupDir(w.env, w.installDir)
+        fs.mkdirSync(dir, { recursive: true })
+        const foreign = [".claude.json.0123456789abcdef.partial", `.${LEGACY_A}.fedcba9876543210.partial`, "notes.partial"]
+        for (const name of foreign) fs.writeFileSync(path.join(dir, name), `not ours ${name}`)
+        assert.deepEqual(migrateLegacyBackups(w.installDir, w.env), [LEGACY_A])
+        const { register } = await planAndRegister(w)
+        assert.equal(register.code, 0, register.one("message"))
+        for (const name of foreign) assert.equal(fs.readFileSync(path.join(dir, name), "utf8"), `not ours ${name}`, name)
+        assert.ok(fs.readFileSync(path.join(dir, LEGACY_A)).equals(a))
+        assert.equal(fs.readdirSync(dir).filter((n) => BACKUP_NAME.test(n)).length, 2)
+        assert.equal(fs.readdirSync(dir).length, foreign.length + 2, "no temporary copy of this run left")
+    })
+
+    test("Codex Minor 2: only the two complete forms of a backup reference are accepted; every other combination is never ok and moves nothing; the record stays readable", async () => {
+        const w = world(personalConfig())
+        await installed(w)
+        assert.equal((await planAndRegister(w)).register.code, 0)
+        const dir = privateBackupDir(w.env, w.installDir)
+        const [name] = backups(w)
+        const genuine = record(w).claude as NonNullable<InstallRecord["claude"]>
+        const sha = genuine.backupSha256 as string
+        const cases: [string, Record<string, unknown>, string][] = [
+            ["new form, genuine", {}, "ok"],
+            ["new form, hash of another content", { backupSha256: "0".repeat(64) }, "altered"],
+            ["directory only", { backupSha256: undefined }, "invalid"],
+            ["hash only", { backupDir: undefined }, "invalid"],
+            ["malformed hash", { backupSha256: "ABC" }, "invalid"],
+            ["upper-case hash", { backupSha256: sha.toUpperCase() }, "invalid"],
+            ["relative directory", { backupDir: "AppData\\Local\\x" }, "invalid"],
+            ["name of another kind", { backup: "notes.txt" }, "invalid"],
+            ["name escaping the directory", { backup: "..\\..\\claude.json.20261001T090000Z.bak" }, "invalid"],
+            ["no copy, with the other fields", { backup: null }, "invalid"],
+            ["no copy at all", { backup: null, backupDir: undefined, backupSha256: undefined }, "none"],
+            ["legacy form, file absent", { backupDir: undefined, backupSha256: undefined }, "missing"],
+        ]
+        for (const [label, patch, expected] of cases) {
+            writeRecord(path.join(w.installDir, RECORD_NAME), { ...record(w), claude: genuine })
+            patchRegistration(w, patch)
+            const rec = readRecord(path.join(w.installDir, RECORD_NAME)) as InstallRecord
+            const found = recordedBackup(w.installDir, rec, w.env)
+            assert.equal(found.status, expected, label)
+            if (expected === "invalid") assert.ok(typeof found.reason === "string" && found.reason.length > 0, `${label}: a diagnosable reason`)
+            if (expected === "ok") assert.equal(found.path, path.join(dir, name as string))
+        }
+        // legacy form with the file in place: legacy; an invalid reference never authorises a move
+        writeRecord(path.join(w.installDir, RECORD_NAME), { ...record(w), claude: genuine })
+        legacyCopy(w, LEGACY_A)
+        patchRegistration(w, { backup: LEGACY_A, backupDir: undefined, backupSha256: undefined })
+        assert.equal(recordedBackup(w.installDir, record(w), w.env).status, "legacy")
+        patchRegistration(w, { backupDir: dir })
+        const snap = snapshotDir(legacyDir(w))
+        const privateSnap = snapshotDir(dir)
+        assert.throws(() => migrateLegacyBackups(w.installDir, w.env), /copia non indicata dal registro di installazione/)
+        assert.deepEqual(snapshotDir(legacyDir(w)), snap)
+        assert.deepEqual(snapshotDir(dir), privateSnap)
+        const plan = await call(w, "plan", installRequest(w, { claudeExe: w.claudeExe, profileDir: w.profile }))
+        assert.equal(plan.code, 0, "the record stays readable")
+    })
+
+    test("uninstall status: this installation's private copies are reported and kept; repeated, the same; without the record they are found again", async () => {
+        const w = world(personalConfig())
+        await installed(w)
+        assert.equal((await planAndRegister(w)).register.code, 0)
+        const dir = privateBackupDir(w.env, w.installDir)
+        const snap = snapshotDir(dir)
+        const first = await call(w, "un-status", { installDir: w.installDir })
+        assert.equal(first.code, 0, first.one("message"))
+        assert.ok(first.one("backups").includes(`restano nella tua cartella personale ${dir}`), first.one("backups"))
+        assert.equal((await call(w, "un-status", { installDir: w.installDir })).one("backups"), first.one("backups"))
+        assert.equal((await call(w, "unregister", { installDir: w.installDir })).one("outcome"), "removed")
+        fs.rmSync(path.join(w.installDir, RECORD_NAME))
+        assert.ok((await call(w, "un-status", { installDir: w.installDir })).one("backups").includes(dir), "found again without the record (derived, not stored)")
+        assert.deepEqual(snapshotDir(dir), snap, "nothing deleted")
+        const n = world()
+        await installed(n)
+        assert.equal((await call(n, "un-status", { installDir: n.installDir })).one("backups"), "", "no copy, nothing to say")
+    })
+
+    test("an interrupted registration: the next preview finds its copy again; missing, altered, recorded elsewhere or invalid references are reported, nothing searched or touched", async () => {
+        const w = world(personalConfig())
+        await installed(w)
+        assert.equal((await planAndRegister(w)).register.code, 0)
+        const dir = privateBackupDir(w.env, w.installDir)
+        const [name] = backups(w)
+        const file = path.join(dir, name as string)
+        const crashed = (patch: Record<string, unknown> = {}): void => {
+            const rec = record(w)
+            writeRecord(path.join(w.installDir, RECORD_NAME), { ...rec, claude: { ...(rec.claude as NonNullable<InstallRecord["claude"]>), state: "pending", fingerprint: null, ...patch } })
+        }
+        const preview = async (): Promise<string> => {
+            const r = await call(w, "plan", installRequest(w, { claudeExe: w.claudeExe, profileDir: w.profile }))
+            assert.equal(r.code, 0, r.one("message"))
+            assert.equal(r.text.includes(SECRET), false)
+            return r.one("preview")
+        }
+        crashed()
+        assert.ok((await preview()).includes(`Una registrazione precedente non si è conclusa. La copia della configurazione presa prima della modifica è in ${file}.`))
+        fs.appendFileSync(file, " ")
+        assert.match(await preview(), /non è più quella salvata: non è affidabile per un ripristino/)
+        assert.equal(recordedBackup(w.installDir, record(w), w.env).status, "altered")
+        fs.renameSync(file, `${file}.moved`)
+        assert.match(await preview(), /non è stata trovata/)
+        const otherRoot = path.join(root, `other account ${counter}`)
+        const other = path.join(otherRoot, "AppData", "Local", "FluentReaderMCP-Data", "claude-config-backups", path.basename(dir))
+        crashed({ backupDir: other })
+        assert.ok((await preview()).includes(`è stata salvata in ${path.join(other, name as string)}, che non è la cartella personale dell'utente Windows attuale`))
+        assert.equal(fs.existsSync(otherRoot), false, "never searched or created")
+        crashed({ backup: "..\\..\\x.bak", backupDir: dir })
+        assert.equal(recordedBackup(w.installDir, record(w), w.env).status, "invalid")
+        assert.match(await preview(), /riferimento alla copia .* non è utilizzabile/)
+    })
+})
+
+describe("FR-MCP-04-BETA-03A-SIMPLE-02: installation on another drive and another Windows account", { skip: AWAY_SKIP }, () => {
+    test("installation directory on another (synthetic) drive: the copy is in the user's profile; old copies are moved through the private directory only", async () => {
+        const { w, volume } = away(personalConfig())
+        const v: World = { ...w, installDir: path.join(volume, "Programmi", "Fluent Reader MCP") }
+        await installed(v)
+        const old = fs.readFileSync(legacyCopy(v, LEGACY_A))
+        legacyRegistration(v, LEGACY_A)
+        const dir = privateBackupDir(v.env, v.installDir)
+        assert.ok(dir.toLowerCase().startsWith(`${v.home.toLowerCase()}\\`), dir)
+        assert.throws(() => migrateLegacyBackups(v.installDir, v.env, (s) => {
+            if (s !== "after-copy") return
+            // the temporary copy is in the private directory, never next to the old one
+            assert.equal(fs.readdirSync(dir).filter((n) => n.endsWith(".partial")).length, 1)
+            assert.deepEqual(fs.readdirSync(legacyDir(v)), [LEGACY_A])
+            throw new Error("crash")
+        }), /crash/)
+        assert.deepEqual(migrateLegacyBackups(v.installDir, v.env), [LEGACY_A])
+        assert.ok(fs.readFileSync(path.join(dir, LEGACY_A)).equals(old))
+        const { register } = await planAndRegister(v)
+        assert.equal(register.code, 0, register.one("message"))
+        assert.equal(backups(v).filter((n) => BACKUP_NAME.test(n)).length, 2)
+        assert.ok(backups(v).some((n) => n.endsWith(".partial")), "the temporary copy left by the crash is not deleted")
+        assert.deepEqual(secretFilesUnder(volume), [], "nothing sensitive on the other drive")
+    })
+
+    test("the old directory is a junction: not followed", async () => {
+        const { w, volume } = away(personalConfig())
+        const v: World = { ...w, installDir: path.join(volume, "FR junction") }
+        await installed(v)
+        const target = path.join(volume, "target")
+        fs.mkdirSync(target)
+        fs.writeFileSync(path.join(target, LEGACY_A), "{}")
+        fs.mkdirSync(path.join(v.installDir, "state"))
+        fs.symlinkSync(target, legacyDir(v), "junction")
+        assert.throws(() => migrateLegacyBackups(v.installDir, v.env), /non è una cartella normale.*non viene seguita né modificata/)
+        assert.deepEqual(fs.readdirSync(target), [LEGACY_A])
+    })
+
+    test("uninstall status under another Windows account: the recorded copy is reported, never searched, nothing created in either profile", async () => {
+        const { w, volume, machine } = away(personalConfig())
+        const v: World = { ...w, installDir: path.join(volume, "Condivisa") }
+        await installed(v)
+        assert.equal((await planAndRegister(v)).register.code, 0)
+        const dir = privateBackupDir(v.env, v.installDir)
+        const snap = snapshotDir(dir)
+        const otherHome = path.join(machine, "Users", "altro")
+        fs.mkdirSync(path.join(otherHome, "AppData", "Local"), { recursive: true })
+        const env = { USERPROFILE: otherHome, APPDATA: path.join(otherHome, "AppData", "Roaming"), LOCALAPPDATA: path.join(otherHome, "AppData", "Local"), PATH: "" }
+        const r = await call(v, "un-status", { installDir: v.installDir }, { ...deps(v), env })
+        assert.equal(r.code, 0, r.one("message"))
+        assert.ok(r.one("backups").includes(`è stata salvata in ${dir}\\`) && r.one("backups").includes("non è la cartella personale dell'utente Windows attuale"), r.one("backups"))
+        assert.deepEqual(fs.readdirSync(path.join(otherHome, "AppData", "Local")), [], "nothing searched or created for the other account")
+        assert.deepEqual(snapshotDir(dir), snap)
     })
 })

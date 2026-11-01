@@ -20,6 +20,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { isDeepStrictEqual } from "node:util"
 import { childEnv, type ExecFn } from "../lib/common.js"
+import { createBackup, migrateLegacyBackups } from "./backups.js"
 import { LAYOUT } from "./checks.js"
 import { SetupRefusal } from "./protocol.js"
 import { canonicalJson, entryFingerprint, readRecord, sameEntry, writeRecord, type InstallRecord, type Registration, type StdioEntry } from "./record.js"
@@ -210,8 +211,11 @@ export function plan(input: { readonly configPath: string; readonly installDir: 
     return { configPath: input.configPath, configExists: config.exists, action, existing, existingIsStdio: existing !== null, desired, shadowingProjects: config.shadowingProjects, hash }
 }
 
-/** The preview shown before consent: only this installation's paths, never configuration content. */
-export function previewLines(p: Plan, claudeExe: string, claudeVersion: string): string[] {
+/**
+ * The preview shown before consent: only this installation's paths, never configuration content. `backupDir`: the
+ * private directory of the copy (backups.ts), required whenever an existing configuration is going to change.
+ */
+export function previewLines(p: Plan, claudeExe: string, claudeVersion: string, backupDir: string | null): string[] {
     const lines = [
         `Server MCP: ${SERVER_NAME} (trasporto stdio)`,
         `Scope: ${SCOPE} (disponibile in tutti i progetti di questo utente Windows)`,
@@ -229,7 +233,7 @@ export function previewLines(p: Plan, claudeExe: string, claudeVersion: string):
         lines.push(`ATTENZIONE: esiste già una voce "${SERVER_NAME}" che non è stata creata da questo installer, o è stata modificata dopo (${detail}).`)
         lines.push("Viene sostituita soltanto se lo confermi esplicitamente nella casella sotto; altrimenti torna indietro e scegli di installare solo il server.")
     }
-    if (p.action !== "none") lines.push(`Prima della modifica viene salvata una copia della configurazione nella cartella di installazione (state\\claude-config-backups).`)
+    if (p.action !== "none" && p.configExists) lines.push(`Prima della modifica viene salvata una copia della configurazione nella tua cartella personale, fuori dalla cartella di installazione: ${backupDir as string}`)
     lines.push("Gli altri server MCP e le altre impostazioni di Claude Code non vengono toccati; il risultato viene verificato e, in caso di errore, annullato quando è sicuro farlo.")
     if (p.shadowingProjects > 0) lines.push(`Nota: ${p.shadowingProjects} progetti hanno una propria voce "${SERVER_NAME}" (scope local), che in quei progetti ha la precedenza.`)
     lines.push("Chiudi le sessioni di Claude Code aperte prima di continuare.")
@@ -250,21 +254,6 @@ export interface RegisterOutcome {
     readonly backup: string | null
 }
 
-function backupConfig(configPath: string, installDir: string, now: Date): string {
-    const dir = path.win32.join(installDir, LAYOUT.state, "claude-config-backups")
-    fs.mkdirSync(dir, { recursive: true })
-    const stamp = now.toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")
-    for (let i = 0; ; i++) {
-        const name = `claude.json.${stamp}${i === 0 ? "" : `-${i}`}.bak`
-        try {
-            fs.copyFileSync(configPath, path.win32.join(dir, name), fs.constants.COPYFILE_EXCL)
-            return name
-        } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
-        }
-    }
-}
-
 function updateRegistration(recordPath: string, registration: Registration | null): void {
     const record = readRecord(recordPath)
     if (record === null) throw new SetupRefusal("registro di installazione mancante")
@@ -277,8 +266,11 @@ function updateRegistration(recordPath: string, registration: Registration | nul
  * add ours, READ BACK the entry the CLI saved (it becomes ours only if it is
  * what was approved; its full fingerprint is recorded), verify every other
  * user-scope server unchanged. Any failure leads to a conservative rollback.
+ * The backup goes to the user's private directory (backups.ts), never into the installation directory; copies
+ * left there by an earlier setup are moved first (normally already done by tx-begin).
  */
 export function register(input: RegisterInput, deps: ClaudeDeps): RegisterOutcome {
+    migrateLegacyBackups(input.installDir, deps.env)
     const record = readRecord(input.recordPath)
     if (record === null) throw new SetupRefusal("registro di installazione mancante")
     const configPath = claudeConfigPath(deps.env)
@@ -293,8 +285,12 @@ export function register(input: RegisterInput, deps: ClaudeDeps): RegisterOutcom
     const originalRegistration = record.claude
     const before = readConfig(configPath)
     const previousRaw = before.servers[SERVER_NAME]
-    const backup = before.exists ? backupConfig(configPath, input.installDir, deps.now()) : null
-    const registration: Registration = { state: "pending", name: SERVER_NAME, scope: SCOPE, configPath, claudeExe: input.claudeExe, entry: p.desired, fingerprint: null, backup, updatedAt: deps.now().toISOString() }
+    const backup = before.exists ? createBackup(configPath, input.installDir, deps.env, deps.now()) : null
+    const registration: Registration = {
+        state: "pending", name: SERVER_NAME, scope: SCOPE, configPath, claudeExe: input.claudeExe, entry: p.desired, fingerprint: null,
+        backup: backup?.name ?? null, ...(backup !== null && { backupDir: backup.dir, backupSha256: backup.sha256 }), updatedAt: deps.now().toISOString(),
+    }
+    const backupPath = backup === null ? null : path.win32.join(backup.dir, backup.name)
     updateRegistration(input.recordPath, registration)
     let removedPrevious = false
     let ownFingerprint: string | null = null
@@ -317,7 +313,7 @@ export function register(input: RegisterInput, deps: ClaudeDeps): RegisterOutcom
     } catch (error) {
         const cause = error instanceof Error ? error.message : String(error)
         const outcome = rollback(deps, input.claudeExe, configPath, ownFingerprint, previousRaw, removedPrevious)
-        const where = backup === null ? "" : ` La copia presa prima della modifica è in ${path.win32.join(input.installDir, LAYOUT.state, "claude-config-backups", backup)}.`
+        const where = backupPath === null ? "" : ` La copia presa prima della modifica è in ${backupPath}.`
         try {
             updateRegistration(input.recordPath, outcome.complete ? originalRegistration : { ...registration, state: "rollback-failed", fingerprint: outcome.ownStillPresent ? ownFingerprint : null, updatedAt: deps.now().toISOString() })
         } catch {
@@ -326,7 +322,7 @@ export function register(input: RegisterInput, deps: ClaudeDeps): RegisterOutcom
         if (outcome.complete) throw new SetupRefusal(`registrazione non completata (${cause}); la voce "${SERVER_NAME}" di Claude Code è stata riportata allo stato precedente.${where}`)
         throw new SetupRefusal(`registrazione non completata (${cause}) e il ripristino automatico NON è stato completato: ${outcome.reason}. Serve un tuo intervento: controlla la voce con "claude mcp get ${SERVER_NAME}".${where}`)
     }
-    return { action: p.action, backup }
+    return { action: p.action, backup: backupPath }
 }
 
 /** Steps where tests inject concurrent changes or failures. */

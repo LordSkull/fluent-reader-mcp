@@ -611,6 +611,7 @@ Var EstimatedSize
 Var HelperSource
 Var UnPhase
 Var CleanFail
+Var BackupNote
 
 ; Removes one of this installer's own trees (current, .staging or previous of $INSTDIR) through
 ; the helper, which accepts nothing else and requires the installation record; $0 = "ok" or "fail".
@@ -1172,6 +1173,10 @@ Section "Uninstall"
   Push "phase"
   Call un.ResultGet
   Pop $UnPhase
+  ; where the copies of the Claude configuration stay (the user's private directory, never deleted here): told at the end
+  Push "backups"
+  Call un.ResultGet
+  Pop $BackupNote
   ${If} $UnPhase == "metadata"
     Goto uninstall_metadata
   ${EndIf}
@@ -1352,8 +1357,12 @@ Section "Uninstall"
   ${EndIf}
   RMDir "$INSTDIR\state"
   RMDir "$INSTDIR"
+  ${If} $BackupNote != ""
+    MessageBox MB_ICONINFORMATION|MB_OK "$BackupNote"
+  ${EndIf}
+  ; copies left by an earlier version of the setup in the installation directory
   ${If} ${FileExists} "$INSTDIR\state\claude-config-backups\*"
-    MessageBox MB_ICONINFORMATION|MB_OK "Le copie della configurazione di Claude Code prese durante l'installazione restano in $INSTDIR\state\claude-config-backups: cancellale quando non ti servono più. Finché sono presenti, il setup non riusa questa cartella per una nuova installazione."
+    MessageBox MB_ICONINFORMATION|MB_OK "Le copie della configurazione di Claude Code prese da una versione precedente del setup restano in $INSTDIR\state\claude-config-backups: contengono la tua configurazione, compresa quella di altri server MCP. Spostale nella tua cartella personale o cancellale quando non ti servono più. Finché sono presenti, il setup non riusa questa cartella per una nuova installazione."
   ${EndIf}
   !undef UN
 SectionEnd

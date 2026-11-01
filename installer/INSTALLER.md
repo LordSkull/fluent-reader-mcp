@@ -104,11 +104,20 @@ resti sotto `MAX_PATH`, e vuota oppure una precedente installazione di Fluent Re
   current\setup\...               programma di supporto del setup
   current\installer-files.json    inventario: i file che l'installer possiede
   fluent-reader-mcp.install.json  versione, profilo, registrazione Claude creata dall'installer
-  state\claude-config-backups\    copie della configurazione Claude prese prima di ogni modifica
   state\install-journal.json      solo durante un'installazione (con le copie di recupero accanto)
   state\uninstall*.               solo durante una disinstallazione (marcatori, copia del programma di supporto)
   uninstall.exe
 ```
+
+Le copie della configurazione di Claude Code (che può contenere segreti di altri server MCP) non stanno mai nella
+cartella di installazione, che può trovarsi su un volume accessibile ad altri utenti: stanno nella cartella personale
+dell'utente Windows che esegue il setup, `%LOCALAPPDATA%\FluentReaderMCP-Data\claude-config-backups\<chiave>\`, dove la
+chiave deriva dalla cartella di installazione (stabile fra riparazioni e aggiornamenti, diversa per due installazioni).
+Se `%LOCALAPPDATA%` manca o non è una cartella locale dentro il profilo utente, la modifica di Claude Code viene
+rifiutata: nessuna copia viene salvata altrove. Le copie lasciate da setup precedenti in
+`state\claude-config-backups` vengono spostate lì all'inizio della riparazione o dell'aggiornamento (copia verificata
+byte per byte, poi rimozione dell'originale); se in quella cartella c'è un elemento non attribuibile, nulla viene
+spostato e l'installazione non parte finché non viene controllato.
 
 Voci di registro (solo HKCU): `Software\Microsoft\Windows\CurrentVersion\Uninstall\FluentReaderMCP` e
 `Software\FluentReaderMCP`.
@@ -137,7 +146,7 @@ la prima prova con i propri dati la fa il proprietario.
   L'anteprima non mostra contenuti della configurazione (di una voce estranea solo comando e numero di argomenti e
   variabili) e non modifica nulla.
 - **Al momento dell'installazione:** la configurazione deve essere ancora quella dell'anteprima (impronta), altrimenti
-  nulla viene cambiato; copia di backup in `state\claude-config-backups`; intento annotato nel registro; eventuale
+  nulla viene cambiato; copia di backup nella cartella personale (vedi sopra); intento annotato nel registro; eventuale
   `claude mcp remove` della voce sostituita; `claude mcp add-json`; **rilettura della voce effettivamente salvata dalla
   CLI**: diventa "dell'installer" solo se corrisponde a quella approvata, e nel registro si annota l'impronta SHA-256
   del suo JSON canonico **completo** (tutti i campi, anche annidati e sconosciuti; conta solo il contenuto, non l'ordine
@@ -253,8 +262,9 @@ Il programma di supporto rimuove `current`, `.staging` o `previous` soltanto in 
 (percorsi canonici, nessun collegamento o junction, nessun `..`); senza registro rifiuta sempre: le cartelle di
 un'installazione non ancora registrata le rimuove solo la transazione che le ha create, tramite il suo journal.
 Non vengono toccati il profilo Fluent Reader (`fluent-reader.db`, `config.json`, articoli, feed), gli altri server
-MCP, le altre impostazioni di Claude Code, il fork, i valori del registro di altri programmi e i backup della
-configurazione in `state\claude-config-backups`, che restano finché l'utente non li cancella.
+MCP, le altre impostazioni di Claude Code, il fork, i valori del registro di altri programmi e le copie della
+configurazione nella cartella personale, che restano finché l'utente non le cancella (alla fine il disinstallatore dice
+dove sono).
 
 ### Limiti delle verifiche
 

@@ -25,7 +25,8 @@ import { buildInventory, INVENTORY, readInventory } from "../../installer/setup/
 import { checkInstallDir } from "../../installer/setup/checks.js"
 import { main, type HelperDeps } from "../../installer/setup/fr-setup.js"
 import { decodeResult } from "../../installer/setup/protocol.js"
-import { canonicalJson, RECORD_NAME } from "../../installer/setup/record.js"
+import { privateBackupDir } from "../../installer/setup/backups.js"
+import { canonicalJson, entryFingerprint, RECORD_NAME, readRecord, writeRecord, type InstallRecord } from "../../installer/setup/record.js"
 import { REGISTRY_SLOTS, rename, SETUP_SCRIPT, type TxCheckpoint } from "../../installer/setup/transaction.js"
 import { encodeFinalMarker, helperCopyEntries, type UninstallCheckpoint } from "../../installer/setup/uninstall.js"
 import { buildSmokeProfile } from "../e2e/smoke-fixture.js"
@@ -610,6 +611,7 @@ async function uninstall(w: World, faults: UninstallFaults = {}): Promise<Uninst
     const state = path.join(w.installDir, "state")
     if (!fs.existsSync(path.join(w.installDir, RECORD_NAME)) && !fs.existsSync(path.join(state, "uninstall.json")) && !fs.existsSync(path.join(state, "uninstall-final.marker"))) return "not-recognised"
     const req = { installDir: w.installDir }
+    let backupNote = "" // $BackupNote: from un-status, empty when only the last steps are left
     if (fs.existsSync(path.join(state, "uninstall-final.marker"))) {
         // only the last steps are left: never next to an installation, never with a marker of another directory
         if (fs.existsSync(path.join(w.installDir, RECORD_NAME)) || !finalMarkerValid(w)) return "stopped"
@@ -620,6 +622,7 @@ async function uninstall(w: World, faults: UninstallFaults = {}): Promise<Uninst
         if (source === null || !helperRuns(w, source)) return "no-helper"
         const status = await call(w, "un-status", req)
         if (status.code !== 0) return "stopped"
+        backupNote = status.one("backups")
         if (status.one("phase") !== "metadata") {
             if ((await call(w, "uninstall-preflight", req)).code !== 0) return "stopped"
             const unreg = await call(w, "unregister", req)
@@ -660,7 +663,7 @@ async function uninstall(w: World, faults: UninstallFaults = {}): Promise<Uninst
     const run = runNsis({
         lines: sectionLines(script, "Uninstall", "uninstall_last", "!undef UN"),
         macros: parseMacros(script, nsh),
-        vars: { INSTDIR: w.installDir, CleanFail: "0" },
+        vars: { INSTDIR: w.installDir, CleanFail: "0", BackupNote: backupNote },
         fs: { unlink: w.unlink ?? fs.unlinkSync, rmdir: w.rmdir ?? fs.rmdirSync },
         crashAfter: (instruction) => faults.crashAfter !== undefined && crashAt[faults.crashAfter] === instruction,
     })
@@ -2221,5 +2224,100 @@ describe("a failed rename in the transaction: nothing retried, nothing removed, 
         assert.equal(await install(w, "0.2.0"), "installed")
         assert.deepEqual(names(), ["current->previous", ".staging->current", "uninstall.exe->uninstall.exe.previous", "uninstall.exe.new->uninstall.exe"])
         assert.deepEqual(snapshot(w).state, [])
+    })
+})
+
+describe("FR-MCP-04-BETA-03A-SIMPLE-02: copies of the Claude configuration left by an earlier setup, in the lifecycle", { timeout: 180_000 }, () => {
+    const NAMES = ["claude.json.20261001T090000Z.bak", "claude.json.20261002T090000Z.bak"]
+
+    /**
+     * 0.1.0 as an earlier setup left it: a registration whose copy (NAMES[0], named in the record) is in
+     * state\claude-config-backups; with `unreferenced`, also an older valid copy the record does not name (NAMES[1]).
+     */
+    async function withLegacyCopies(unreferenced = false): Promise<{ w: World; copies: Map<string, Buffer> }> {
+        const w = world()
+        w.reg.write(UNINSTALL_KEY, "SomeoneElse", "REG_SZ", "foreign value")
+        assert.equal(await install(w, "0.1.0"), "installed")
+        const file = path.join(w.installDir, RECORD_NAME)
+        const app = path.join(w.installDir, "current", "app")
+        const entry = { type: "stdio" as const, command: path.join(app, "runtime", "node.exe"), args: [path.join(app, "server", "dist", "main.js"), "--profile-dir", w.profile], env: {} }
+        writeRecord(file, { ...(readRecord(file) as InstallRecord), claude: { state: "registered", name: "fluent-reader", scope: "user", configPath: path.join(w.home, ".claude.json"), claudeExe: path.join(w.home, "claude.exe"), entry, fingerprint: entryFingerprint(entry), backup: NAMES[0] as string, updatedAt: "2026-10-02T09:00:00.000Z" } })
+        const legacy = path.join(w.installDir, "state", "claude-config-backups")
+        fs.mkdirSync(legacy)
+        const copies = new Map<string, Buffer>()
+        for (const name of unreferenced ? NAMES : NAMES.slice(0, 1)) {
+            const bytes = Buffer.from(JSON.stringify({ mcpServers: { other: { command: "x", env: { TOKEN: `synthetic ${name}` } } } }))
+            fs.writeFileSync(path.join(legacy, name), bytes)
+            if (name === NAMES[0]) copies.set(name, bytes)
+        }
+        return { w, copies }
+    }
+
+    function assertPrivate(w: World, copies: Map<string, Buffer>): string {
+        const dir = privateBackupDir(w.env, w.installDir)
+        assert.deepEqual(fs.readdirSync(dir).sort(), [...copies.keys()])
+        for (const [name, bytes] of copies) assert.ok(fs.readFileSync(path.join(dir, name)).equals(bytes), name)
+        assert.equal(fs.existsSync(path.join(w.installDir, "state", "claude-config-backups")), false)
+        return dir
+    }
+
+    test("upgrade: tx-begin moves the named copy to the private directory and the record follows; cleanup and uninstall leave it there and say where", async () => {
+        const { w, copies } = await withLegacyCopies()
+        assert.equal(await install(w, "0.2.0"), "installed")
+        assert.equal(snapshot(w).version, "0.2.0")
+        const dir = assertPrivate(w, copies)
+        const rec = readRecord(path.join(w.installDir, RECORD_NAME)) as InstallRecord
+        assert.equal(rec.claude?.backup, NAMES[0])
+        assert.equal(rec.claude?.backupDir, dir)
+        fs.writeFileSync(path.join(w.installDir, "my notes é.txt"), "mine")
+        assert.equal(await uninstall(w), "uninstalled")
+        assertUninstalled(w)
+        assertPrivate(w, copies)
+        assert.ok(w.lastRun?.messages.some((m) => m.includes(`restano nella tua cartella personale ${dir}`)), JSON.stringify(w.lastRun?.messages))
+        assert.equal(w.lastRun?.messages.some((m) => m.includes("versione precedente del setup")), false, "no old copy left to report")
+    })
+
+    test("an element there that is not attributable (another name; a valid copy the record does not name): the upgrade does not start, nothing is moved, the element is named", async () => {
+        const cases: [string, boolean, RegExp][] = [
+            ["another name", false, /notes\.txt \(nome non previsto\)/],
+            ["an unreferenced valid copy", true, /claude\.json\.20261002T090000Z\.bak \(copia non indicata dal registro di installazione\)/],
+        ]
+        for (const [label, unreferenced, message] of cases) {
+            const { w } = await withLegacyCopies(unreferenced)
+            if (!unreferenced) fs.writeFileSync(path.join(w.installDir, "state", "claude-config-backups", "notes.txt"), "mine")
+            const before = snapshot(w)
+            const files = snapshotDir(path.join(w.installDir, "state", "claude-config-backups"))
+            assert.equal(await install(w, "0.2.0"), "refused", label)
+            assert.match(w.lastMessage ?? "", message, label)
+            assert.match(w.lastMessage ?? "", /Nessun elemento è stato modificato, spostato o cancellato\. Prima di aggiornare o riparare serve un tuo intervento/, label)
+            assert.deepEqual(snapshot(w), before, label)
+            assert.deepEqual(snapshotDir(path.join(w.installDir, "state", "claude-config-backups")), files, label)
+            assert.equal(fs.existsSync(path.join(w.home, "AppData", "Local", "FluentReaderMCP-Data")), false, label)
+        }
+    })
+
+    test("the move done, then the upgrade refused for another reason: the private copy and the updated record stay", async () => {
+        const { w, copies } = await withLegacyCopies()
+        fs.mkdirSync(path.join(w.installDir, ".staging"))
+        assert.equal(await install(w, "0.2.0"), "refused")
+        assert.match(w.lastMessage ?? "", /\.staging esiste senza una transazione/)
+        assert.equal(snapshot(w).version, "0.1.0")
+        const dir = assertPrivate(w, copies)
+        assert.equal((readRecord(path.join(w.installDir, RECORD_NAME)) as InstallRecord).claude?.backupDir, dir)
+        fs.rmdirSync(path.join(w.installDir, ".staging"))
+        assert.equal(await install(w, "0.2.0"), "installed")
+        assertPrivate(w, copies)
+    })
+
+    test("a repair rolled back after the move: the installation and its record come back, the copies stay in the private directory", async () => {
+        const { w, copies } = await withLegacyCopies()
+        const generation = (readRecord(path.join(w.installDir, RECORD_NAME)) as InstallRecord).generation
+        assert.equal(await install(w, "0.1.0", { at: "after-second-rename", mode: "fail" }), "rolled-back", w.lastMessage)
+        const dir = assertPrivate(w, copies)
+        const restored = readRecord(path.join(w.installDir, RECORD_NAME)) as InstallRecord
+        assert.equal(restored.generation, generation, "the record of before the repair")
+        assert.equal(restored.claude?.backupDir, dir, "the restored record points to the private copy")
+        assert.equal(await install(w, "0.1.0"), "installed")
+        assertPrivate(w, copies)
     })
 })
