@@ -70,7 +70,7 @@ Var ReplaceCheck
 
 !define MUI_ABORTWARNING
 !define MUI_WELCOMEPAGE_TITLE "${PRODUCT_NAME} ${PRODUCT_VERSION} (beta privata)"
-!define MUI_WELCOMEPAGE_TEXT "Questo programma installa Fluent Reader MCP, un server MCP in SOLA LETTURA che permette a Claude Code di consultare un tuo profilo locale di Fluent Reader.$\r$\n$\r$\nLa beta offre otto strumenti di sola lettura (fonti, gruppi, regole, elenco degli articoli e singoli articoli). Include il proprio runtime Node.js: non serve installare altro.$\r$\n$\r$\nNon vengono installati servizi, porte di rete o processi residenti. Puoi scegliere se registrare il server in Claude Code: prima vedrai un'anteprima esatta della modifica."
+!define MUI_WELCOMEPAGE_TEXT "Questo programma installa Fluent Reader MCP, un server MCP in SOLA LETTURA che permette a Claude Code di consultare un tuo profilo locale di Fluent Reader.$\r$\n$\r$\nLa beta offre nove strumenti di sola lettura (fonti, gruppi, regole, elenco, ricerca testuale e lettura degli articoli salvati). Include il proprio runtime Node.js: non serve installare altro.$\r$\n$\r$\nNon vengono installati servizi, porte di rete o processi residenti. Puoi scegliere se registrare il server in Claude Code: prima vedrai un'anteprima esatta della modifica."
 !insertmacro MUI_PAGE_WELCOME
 !define MUI_DIRECTORYPAGE_TEXT_TOP "Cartella proposta: %LOCALAPPDATA%\FluentReaderMCP. Puoi sceglierne un'altra su qualsiasi unità locale (C:, D:, H:...), nuova, vuota oppure una precedente installazione di Fluent Reader MCP. Se scegli la radice di un'unità o una cartella che contiene già altri file, ti verrà proposta una sottocartella FluentReaderMCP: la destinazione effettiva ti viene sempre mostrata prima di continuare."
 !define MUI_PAGE_CUSTOMFUNCTION_LEAVE DirectoryLeave
@@ -177,7 +177,7 @@ FunctionEnd
   Call ${UN}ResultGet
   Pop $R0
   ${If} $R0 == ""
-    StrCpy $R0 "Il programma di supporto del setup non ha risposto (codice $HelperExit). Nessuna modifica è stata fatta in questo passaggio."
+    StrCpy $R0 "Il programma di supporto del setup non ha restituito un risultato verificabile (codice $HelperExit). Non è possibile sapere se questo passaggio abbia già modificato qualcosa.$\r$\n$\r$\nNon cancellare né modificare file a mano. Esegui di nuovo la stessa operazione (setup o disinstallazione) sulla stessa cartella: all'avvio verifica lo stato e, quando possibile, completa o annulla il passaggio interrotto. Se segnala un ripristino o un recupero INCOMPLETO, fermati e segui le sue indicazioni. Il recupero automatico non è garantito in tutti i casi."
   ${EndIf}
   MessageBox MB_ICONEXCLAMATION|MB_OK "$R0"
 !macroend
@@ -392,7 +392,7 @@ Function PrivacyPageShow
   ${NSD_CreateText} 0 11u 100% 12u "$ProfileDir"
   Pop $0
   SendMessage $0 ${EM_SETREADONLY} 1 0
-  ${NSD_CreateLabel} 0 28u 100% 84u "- Fluent Reader MCP legge questo profilo in sola lettura: non modifica il database né la configurazione di Fluent Reader.$\r$\n- Il server non effettua richieste di rete proprie e non resta in esecuzione: lo avvia Claude Code quando serve.$\r$\n- I risultati degli strumenti (per esempio titoli e testi degli articoli richiesti) possono essere inviati da Claude Code al servizio Anthropic come parte della conversazione.$\r$\n- La beta espone soltanto otto strumenti in sola lettura; la ricerca degli articoli non è ancora disponibile.$\r$\n- Nessun servizio Windows viene installato."
+  ${NSD_CreateLabel} 0 28u 100% 84u "- Fluent Reader MCP legge questo profilo in sola lettura: non modifica il database né la configurazione di Fluent Reader.$\r$\n- Il server non effettua richieste di rete proprie e non resta in esecuzione: lo avvia Claude Code quando serve.$\r$\n- I risultati degli strumenti (per esempio titoli e testi degli articoli richiesti) possono essere inviati da Claude Code al servizio Anthropic come parte della conversazione.$\r$\n- La beta espone soltanto nove strumenti in sola lettura; la ricerca degli articoli lavora solo sui dati già salvati da Fluent Reader.$\r$\n- Nessun servizio Windows viene installato."
   Pop $0
   ${NSD_CreateCheckbox} 0 116u 100% 12u "Confermo il profilo scelto e ho letto l'informativa"
   Pop $ConfirmProfile
@@ -1013,7 +1013,7 @@ Section "Fluent Reader MCP" SectionMain
     !insertmacro RequestEnd
     !insertmacro RunHelper "register"
     ${If} $HelperExit == "0"
-      StrCpy $FinishText "$FinishText$\r$\n$\r$\nIl server $\"fluent-reader$\" è registrato in Claude Code. Apri Visual Studio Code, avvia Claude Code e digita /mcp: deve comparire fluent-reader con otto strumenti in sola lettura. La prima prova con i tuoi dati la fai tu, per esempio chiedendo di elencare le fonti."
+      StrCpy $FinishText "$FinishText$\r$\n$\r$\nIl server $\"fluent-reader$\" è registrato in Claude Code. Apri Visual Studio Code, avvia Claude Code e digita /mcp: deve comparire fluent-reader con nove strumenti in sola lettura. La prima prova con i tuoi dati la fai tu, per esempio chiedendo di elencare le fonti."
     ${Else}
       Call ShowHelperMessage
       StrCpy $FinishText "$FinishText$\r$\n$\r$\nIl server è installato ma NON è registrato in Claude Code (vedi il messaggio mostrato). Puoi registrarlo eseguendo di nuovo questo setup."

@@ -21,7 +21,9 @@ import {
     INFO,
     KOFFI_NATIVE,
     MANIFEST,
+    packagingInfo,
     RUNTIME_EXE,
+    TOOLS,
     verifyManifest,
 } from "../../installer/lib/package-content.js"
 import { acquireRuntimeArchive, extractRuntime, shasumFor, type FetchFn } from "../../installer/lib/runtime.js"
@@ -330,6 +332,22 @@ describe("package content and manifest", () => {
         ])
         assert.equal(problems.length, 14)
         assert.deepEqual(forbiddenFiles(["server/node_modules/x/config.json", "server/node_modules/zod/src/index.ts", "server/dist/main.js", "licenses/npm/zod@4.6.7/LICENSE"]), [])
+    })
+
+    const STALE_TOOL_COUNT = /\b(seven|eight) read-only tools\b|article search is not included/
+
+    test("PACKAGING-INFO.md lists the nine tools and no stale tool count (FR-MCP-04-BETA-RELEASE-01)", () => {
+        const lock = parseRuntimeLock(JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, "installer", "runtime-lock.json"), "utf8")), ">=24.15.0 <25")
+        const info = packagingInfo("0.1.0", lock)
+        assert.equal(TOOLS.length, 9)
+        for (const tool of TOOLS) assert.ok(info.includes(tool), tool)
+        assert.match(info, /limited to nine read-only tools/)
+        assert.doesNotMatch(info, STALE_TOOL_COUNT)
+        // the check itself must work: real \b word boundaries (not 0x08 control characters), stale text rejected, current text accepted
+        assert.equal(STALE_TOOL_COUNT.source, String.raw`\b(seven|eight) read-only tools\b|article search is not included`)
+        assert.doesNotMatch(STALE_TOOL_COUNT.source, /[\x00-\x1f]/, "no control characters in the pattern")
+        for (const stale of ["limited to seven read-only tools.", "the eight read-only tools", "(eight read-only tools)", "article search is not included yet"])assert.match(stale, STALE_TOOL_COUNT, stale)
+        for (const current of ["limited to nine read-only tools", "seventy read-only tools", "weight read-only tools"]) assert.doesNotMatch(current, STALE_TOOL_COUNT, current)
     })
 
     test("the compiled server must be JavaScript only", () => {

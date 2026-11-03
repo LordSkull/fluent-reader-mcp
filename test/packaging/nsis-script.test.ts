@@ -221,11 +221,39 @@ describe("NSIS script", () => {
     })
 
     test("the wizard states the privacy facts and the beta limits", () => {
-        for (const fact of ["sola lettura", "non effettua richieste di rete proprie", "servizio Anthropic", "otto strumenti", "la ricerca degli articoli non è ancora disponibile", "Nessun servizio Windows", "Claude Desktop va configurato a mano", "questo installer non lo registra"]) {
+        for (const fact of ["sola lettura", "non effettua richieste di rete proprie", "servizio Anthropic", "nove strumenti", "la ricerca degli articoli lavora solo sui dati già salvati", "Nessun servizio Windows", "Claude Desktop va configurato a mano", "questo installer non lo registra"]) {
             assert.ok(SCRIPT.includes(fact), fact)
         }
         assert.match(SCRIPT, /non cerca profili da solo/)
+        // FR-MCP-04-BETA-RELEASE-01: the payload carries the nine tools (TOOLS); no page may still promise fewer
+        assert.doesNotMatch(SCRIPT, /sette strumenti|otto strumenti|ricerca degli articoli non è ancora disponibile/, "no stale tool count in the wizard")
         assert.doesNotMatch(SCRIPT, /LogSet|LogText/, "no setup log file")
+    })
+
+    test("FR-MCP-04-BETA-RELEASE-01: without a helper result the outcome is uncertain; recovery is the same operation again, never a manual delete", () => {
+        const body = /!macro HelperMessageBody\n([\s\S]*?)\n!macroend/.exec(CODE)?.[1] ?? ""
+        const fallback = /\$\{If\} \$R0 == ""\s+StrCpy \$R0 "([^"]+)"\s+\$\{EndIf\}\s+MessageBox MB_ICONEXCLAMATION\|MB_OK "\$R0"/.exec(body)?.[1] ?? ""
+        assert.ok(fallback.includes("(codice $HelperExit)"), "the exit code is shown")
+        // the helper may have run tx-begin and written the journal before failing to write its result
+        assert.doesNotMatch(fallback, /nessuna modifica|non ha risposto|nulla è stato/i, "no guarantee that nothing changed")
+        assert.match(fallback, /non ha restituito un risultato verificabile/)
+        assert.match(fallback, /Non è possibile sapere se questo passaggio abbia già modificato qualcosa/)
+        assert.match(fallback, /Non cancellare né modificare file a mano/)
+        assert.match(fallback, /Esegui di nuovo la stessa operazione \(setup o disinstallazione\) sulla stessa cartella/)
+        assert.match(fallback, /INCOMPLETO, fermati e segui le sue indicazioni/)
+        assert.match(fallback, /non è garantito/)
+        assert.doesNotMatch(fallback, /\b(cancella|elimina|rimuovi)\b|state\\|\.staging|previous|journal/i, "no suggestion to delete anything")
+        assert.doesNotMatch(SCRIPT, /Nessuna modifica è stata fatta in questo passaggio/, "the false guarantee is gone everywhere")
+        // the documentation says the same and keeps no equivalent promise
+        const doc = fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "installer", "INSTALLER.md"), "utf8").replace(/\r?\n\s*/g, " ")
+        const item = doc.slice(doc.indexOf("`Il programma di supporto del setup non ha restituito un risultato verificabile (codice N)`"), doc.indexOf("`recupero INCOMPLETO (...)`"))
+        assert.ok(item.length > 0, "INSTALLER.md documents the message")
+        assert.match(item, /L'esito è incerto/)
+        assert.match(item, /journal/)
+        assert.match(item, /non cancellare né modificare file a mano/)
+        assert.match(item, /stessa cartella/)
+        assert.match(item, /non garantisce il recupero automatico/)
+        assert.doesNotMatch(doc, /non ha risposto|nessuna modifica in quel passaggio/, "no equivalent guarantee left in INSTALLER.md")
     })
 
     test("FR-MCP-04-BETA-03A-SIMPLE-02: the uninstaller only tells where the private copies of the Claude configuration stay; it never touches them", () => {

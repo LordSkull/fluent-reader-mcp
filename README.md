@@ -4,7 +4,7 @@
 
 Il server espone fonti RSS, gruppi, articoli e regole di filtraggio già presenti nel profilo Fluent Reader. Non modifica il database, non aggiorna i feed, non applica le regole e non scarica da Internet il contenuto degli articoli.
 
-> **Stato:** `v0.1.0-beta` — il codice sorgente attuale implementa **nove strumenti MCP read-only**, compresi l'elenco paginato (`list_articles`) e la ricerca testuale (`search_articles`) degli articoli. L'installer Windows `v0.1.0-beta` già costruito e collaudato contiene invece i **sette** strumenti iniziali (FR-MCP-02A): i due strumenti sugli articoli saranno inclusi soltanto in un nuovo pacchetto, non ancora costruito.
+> **Stato:** `v0.1.0-beta` — il codice sorgente attuale implementa **nove strumenti MCP read-only**, compresi l'elenco paginato (`list_articles`) e la ricerca testuale (`search_articles`) degli articoli. I pacchetti Windows costruiti dal codice attuale (ZIP e installer) contengono tutti e nove gli strumenti e lo verificano con un auto-test MCP su un profilo sintetico. Il primo installer `v0.1.0-beta` costruito il 2026-10-29 conteneva invece soltanto i **sette** strumenti iniziali (FR-MCP-02A). Il nuovo installer è in **collaudo**: non è ancora approvato per la distribuzione.
 
 ## Come funziona
 
@@ -108,7 +108,7 @@ Gli artefatti generati devono essere verificati tramite i relativi checksum e re
 
 ## Strumenti MCP disponibili
 
-Il codice sorgente attuale implementa **nove strumenti**, tutti in sola lettura. L'installer `v0.1.0-beta` già distribuito contiene soltanto i primi sette (senza `list_articles` e `search_articles`); questi due sono stati validati con test automatici e smoke MCP su profili sintetici, mentre il collaudo reale con Claude Desktop riguarda finora solo i sette strumenti FR-MCP-02A.
+Il codice sorgente attuale implementa **nove strumenti**, tutti in sola lettura: nessuno strumento modifica articoli, feed, gruppi, regole o impostazioni. I pacchetti costruiti dal codice attuale li contengono tutti; il primo installer `v0.1.0-beta` (2026-10-29) conteneva soltanto i primi sette. `list_articles` e `search_articles` sono stati validati con test automatici e smoke MCP su profili sintetici, mentre il collaudo reale con Claude Desktop riguarda finora solo i sette strumenti FR-MCP-02A.
 
 | Strumento | Cosa fa |
 |---|---|
@@ -161,7 +161,7 @@ Il codice sorgente attuale implementa **nove strumenti**, tutti in sola lettura.
 
 ### Claude Code
 
-L'installer Windows `v0.1.0-beta` già costruito può proporre la registrazione del server **`fluent-reader`** in Claude Code, nello scope **`user`**, **solo dopo un consenso esplicito**. È possibile installare il server senza registrarlo.
+L'installer Windows può registrare il server **`fluent-reader`** in Claude Code (CLI o binario dell'estensione VS Code), nello scope **`user`**, tramite la CLI ufficiale `claude mcp add-json` e **solo dopo un'anteprima e un consenso esplicito**. È possibile installare il server senza registrarlo. Prima della modifica il setup salva una copia della configurazione di Claude Code in una cartella personale (vedi sotto). Dettagli: [installer/INSTALLER.md](installer/INSTALLER.md).
 
 ### Claude Desktop
 
@@ -169,13 +169,19 @@ Il server è compatibile con **Claude Desktop**: la registrazione **manuale** è
 
 **Attenzione ai percorsi Windows:** la configurazione attiva di Claude Desktop può trovarsi in posizioni diverse secondo la distribuzione e la versione (per esempio sotto `%LOCALAPPDATA%\Claude-Data\...`), non necessariamente in `%APPDATA%\Claude`. Verifica sempre il percorso tramite **Claude Desktop → Impostazioni → Server MCP locali → Modifica configurazione**. Crea un backup e preserva tutte le altre entry MCP e preferenze.
 
-Non presumere che `%APPDATA%\Claude` sia sempre la directory effettiva. L'individuazione affidabile del file attivo e una scelta esplicita tra **Claude Code**, **Claude Desktop**, **entrambi** oppure **nessuna registrazione** sono obiettivi del prossimo installer (FR-MCP-04-BETA-03), **non ancora implementati**.
+Non presumere che `%APPDATA%\Claude` sia sempre la directory effettiva. L'installer **non** cerca, non legge e non modifica la configurazione di Claude Desktop: l'individuazione automatica del file attivo e una scelta esplicita tra **Claude Code**, **Claude Desktop**, **entrambi** oppure **nessuna registrazione** **non sono implementate**.
 
 ## Installazione e disinstallazione Windows
 
-- L'installer NSIS è progettato per l'**utente corrente**, con posizione predefinita sotto `%LOCALAPPDATA%\FluentReaderMCP`.
-- Nella beta attuale le posizioni personalizzate **fuori dal profilo Windows** possono essere rifiutate, anche se si trovano su un disco locale sicuro come `D:`. Il supporto a directory personalizzate validate tramite permessi è pianificato; **non è ancora disponibile**.
-- Il profilo Fluent Reader è selezionato separatamente e **non viene copiato o cancellato** durante installazione/disinstallazione.
+La descrizione completa è in [installer/INSTALLER.md](installer/INSTALLER.md); in sintesi:
+
+- L'installer NSIS è per l'**utente corrente** (nessun UAC, nessun servizio, nessuna scrittura in `Program Files` o `HKLM`), con posizione proposta `%LOCALAPPDATA%\FluentReaderMCP`.
+- **Cartella personalizzata:** si può scegliere una cartella su qualsiasi unità **locale** con lettera (`C:`, `D:`, `H:`...), anche fuori dal profilo Windows. Il wizard mostra sempre la destinazione effettiva e chiede conferma. Se si sceglie la radice di un'unità, o una cartella che contiene già altri file, viene proposta la sottocartella `FluentReaderMCP` (i file presenti non vengono toccati).
+- **Rifiutate:** unità di rete, unità mappate e SUBST, percorsi UNC, collegamenti simbolici, junction e nomi brevi 8.3, cartelle di Windows e dei programmi, profili di altri utenti e la cartella pubblica, `Roaming`, OneDrive e `.claude`, cartelle con elementi del prodotto non attribuibili a un'installazione registrata. Le unità **rimovibili** sono accettate con un avviso (devono essere collegate con la stessa lettera ogni volta che il server viene usato). Fuori dalla cartella utente il setup avverte che i permessi della posizione non vengono verificati né modificati.
+- **Riparazione e aggiornamento:** rieseguendo il setup sulla stessa cartella; il downgrade non è supportato. Chiudere Claude Code prima di aggiornare.
+- **Backup della configurazione Claude Code:** in `%LOCALAPPDATA%\FluentReaderMCP-Data\claude-config-backups\<chiave>\`, separati per installazione e **mai** nella cartella di installazione. Possono contenere informazioni riservate (anche token di altri server MCP): non condividerli. Le copie delle beta precedenti vengono spostate lì quando sono attribuibili; elementi legacy ambigui bloccano aggiornamento e riparazione finché non vengono controllati. Non vengono cancellati automaticamente, neppure dalla disinstallazione.
+- **Recupero:** dopo alcuni errori o crash (in particolare quelli successivi alla scrittura del nuovo disinstallatore) il recupero automatico **può fermarsi e chiedere un intervento manuale** sui soli file elencati nel messaggio; vedi "Limite noto del recupero" in [installer/INSTALLER.md](installer/INSTALLER.md).
+- Il profilo Fluent Reader è selezionato separatamente e **non viene copiato, modificato o cancellato** durante installazione/disinstallazione.
 - Per la rimozione usa il disinstallatore fornito (`uninstall.exe`), non la cancellazione manuale della cartella; le modifiche alle configurazioni MCP eventualmente fatte **manualmente** vanno rimosse separatamente dal client interessato.
 
 ## Sicurezza, privacy e limiti
@@ -191,17 +197,18 @@ Non presumere che `%APPDATA%\Claude` sia sempre la directory effettiva. L'indivi
 
 ## Stato e roadmap
 
-- **FR-MCP-02A (completato):** sette strumenti read-only; ZIP Windows con Node incluso; primo installer NSIS `v0.1.0-beta` (con questi sette strumenti); test end-to-end dei sette strumenti con Claude Desktop e un profilo reale, più installazione/disinstallazione ordinaria in Windows Sandbox.
+- **FR-MCP-02A (completato):** sette strumenti read-only; ZIP Windows con Node incluso; primo installer NSIS `v0.1.0-beta` (2026-10-29, con questi sette strumenti); test end-to-end dei sette strumenti con Claude Desktop e un profilo reale, più installazione/disinstallazione ordinaria in Windows Sandbox.
 - **FR-MCP-02B (completato nel codice sorgente):**
   - `list_articles` (FR-MCP-02B-01) — completato;
   - `search_articles` (FR-MCP-02B-02) — completato.
 
-  Entrambi validati con test automatici, smoke MCP e benchmark su database sintetici; non ancora inclusi in un installer costruito né collaudati con Claude Desktop su un profilo reale.
-- **FR-MCP-04-BETA-03 (prossima attività, non ancora implementata):** miglioramento dell'installer Windows.
-  - **03A:** installazione in directory personalizzate sicure, anche su `D:`;
-  - **03B:** scelta esplicita tra Claude Code, Claude Desktop, entrambi o nessuno;
-  - **03C:** individuazione affidabile del file di configurazione realmente attivo di Claude Desktop;
-  - **03D:** rollback, repair, upgrade e disinstallazione sicuri con più client.
+  Entrambi validati con test automatici, smoke MCP e benchmark su database sintetici; inclusi nei pacchetti costruiti dal codice attuale, non ancora collaudati con un profilo reale.
+- **FR-MCP-04-BETA-03:** miglioramento dell'installer Windows.
+  - **03A (implementato, in collaudo):** installazione in cartelle personalizzate su unità locali (SIMPLE-01) e backup della configurazione Claude Code in un'area personale separata (SIMPLE-02);
+  - **03B (non implementato):** scelta esplicita tra Claude Code, Claude Desktop, entrambi o nessuno;
+  - **03C (non implementato):** individuazione affidabile del file di configurazione realmente attivo di Claude Desktop;
+  - **03D (non implementato):** rollback, repair, upgrade e disinstallazione sicuri con più client.
+- **FR-MCP-04-BETA-RELEASE-01 (in corso):** documentazione, nuova build dell'installer con i nove strumenti e collaudo su Windows reale; la distribuzione resta subordinata alla review e all'approvazione del proprietario.
 - **Successivamente:** hardening di sicurezza, benchmark su archivi grandi, miglioramento della distribuzione Windows, licenze, CI e release pubblica quando autorizzata.
 
 Il progetto Fluent Reader MCP è indipendente dal fork dell'applicazione e non richiede modifiche a Fluent Reader per le funzionalità read-only attuali.

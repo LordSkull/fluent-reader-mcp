@@ -4,11 +4,19 @@ Installer NSIS per l'utente corrente (Windows 10/11 x64) costruito **a partire d
 (`fluent-reader-mcp-v<versione>-beta-win-x64.zip`, FR-MCP-04-BETA-01). Il server non viene ricompilato: l'installer
 contiene esattamente i file del pacchetto, più il programma di supporto del setup.
 
-Beta privata: otto strumenti in sola lettura (i sette di FR-MCP-02A e `list_articles` di FR-MCP-02B-01). L'installer
-registra il server soltanto in **Claude Code** (CLI o binario dell'estensione VS Code). Questa versione beta
-dell'installer non configura automaticamente Claude Desktop: il server Fluent Reader MCP è compatibile con Claude
-Desktop tramite configurazione manuale. I sette strumenti originari sono stati collaudati con Claude Desktop; il nuovo
-`list_articles` è stato verificato tramite test sintetici.
+Beta privata: nove strumenti in sola lettura (i sette di FR-MCP-02A, `list_articles` di FR-MCP-02B-01 e
+`search_articles` di FR-MCP-02B-02). Il builder rifiuta un pacchetto il cui manifest non elenca esattamente questi nove
+strumenti e l'auto-test MCP (a build e durante l'installazione, su un profilo sintetico) richiede che `tools/list`
+restituisca esattamente quei nove.
+
+Integrazioni con i client Claude:
+
+- **Claude Code:** registrazione automatica implementata (CLI o binario dell'estensione VS Code), solo con consenso
+  esplicito; vedi "Claude Code" più sotto.
+- **Claude Desktop:** **non** gestito dall'installer. Il setup non cerca, non legge e non modifica la configurazione di
+  Claude Desktop; il server può essere aggiunto a mano (vedi il README). I sette strumenti originari sono stati collaudati
+  con Claude Desktop tramite configurazione manuale; `list_articles` e `search_articles` sono verificati finora solo con
+  test automatici e smoke MCP su profili sintetici.
 
 ## Prerequisiti (solo per chi costruisce l'installer)
 
@@ -49,7 +57,7 @@ fissato negli script: va passato ogni volta con `--bundle-sha256`.
 1. Windows x64; nome del pacchetto, file `.sha256` e `--bundle-sha256` tutti uguali allo SHA-256 del file.
 2. Ogni voce dello ZIP riletta (CRC, nomi sicuri, nessuna voce fuori da `FluentReaderMCP/`); manifest (schema 1)
    uguale al contenuto, con dimensione e SHA-256 di ogni file; versione uguale a `package.json`; runtime uguale a
-   `installer/runtime-lock.json` (Node.js 24.22.1, hash dell'archivio ufficiale); entrypoint e gli otto strumenti;
+   `installer/runtime-lock.json` (Node.js 24.22.1, hash dell'archivio ufficiale); entrypoint e i nove strumenti;
    presenti `runtime\node.exe`, `server\dist\main.js`, il modulo Koffi win32-x64, le licenze; nessun contenuto
    vietato. Un pacchetto incompleto, alterato o di un'altra versione viene rifiutato prima di scrivere qualsiasi file.
 3. Percorsi canonici (collegamenti e junction risolti); `--out` fuori dalla repository; nessun artefatto o cartella
@@ -91,12 +99,55 @@ dei plugin NSIS, cancellata alla chiusura).
 
 ### Cartella di installazione
 
-Proposta: `%LOCALAPPDATA%\FluentReaderMCP`. Un'altra cartella è accettata solo se è sicura: percorso locale
-(`X:\...`, niente rete, UNC o unità mappate), **dentro la cartella dell'utente** (che gli altri utenti non possono
-modificare: nessuno può sostituire il `node.exe` che Claude Code avvierà), fuori da `Roaming`, OneDrive e `.claude`,
-senza collegamenti, junction o nomi brevi, con nomi validi per Windows, abbastanza corta perché il file più profondo
-resti sotto `MAX_PATH`, e vuota oppure una precedente installazione di Fluent Reader MCP (riconosciuta dal registro
-`fluent-reader-mcp.install.json`). Il downgrade non è supportato.
+Proposta: `%LOCALAPPDATA%\FluentReaderMCP`. Con **Sfoglia** si può scegliere un'altra cartella su qualsiasi unità
+**locale** con lettera (`C:`, `D:`, `H:`...), anche fuori dalla cartella utente (FR-MCP-04-BETA-03A-SIMPLE-01). Il
+controllo è del programma di supporto (`installer\setup\checks.ts`, `check-install-dir`); il wizard mostra sempre la
+**destinazione effettiva** e la usa solo dopo un **OK esplicito** (Annulla resta sulla pagina con la scelta digitata).
+Lo stesso controllo viene ripetuto prima di ogni scrittura: se nel frattempo la cartella è cambiata (per esempio da
+"nuova" a "riparazione"), l'installazione non parte.
+
+| Scelta | Comportamento |
+|---|---|
+| Cartella nuova (non esiste) o vuota | Accettata; una cartella nuova viene creata solo all'inizio dell'installazione |
+| Radice di un'unità (`D:\`) | Mai usata direttamente: viene proposta `D:\FluentReaderMCP`, controllata con tutte le regole |
+| Cartella estranea non vuota | I file presenti non vengono toccati: viene proposta la sottocartella `<cartella>\FluentReaderMCP`. Se anche quella contiene altri file, o se la cartella scelta si chiama già `FluentReaderMCP`, il setup chiede di sceglierne un'altra |
+| La propria cartella utente (`%USERPROFILE%`) | Mai usata direttamente: viene proposta `%USERPROFILE%\FluentReaderMCP` |
+| Installazione esistente di questo prodotto | Riconosciuta **solo** dal registro `fluent-reader-mcp.install.json` legato a quella cartella (o dal journal valido di un'installazione interrotta): stessa versione → **riparazione**, versione precedente → **aggiornamento**, versione più recente → rifiuto (downgrade non supportato) |
+| Elementi con i nomi del prodotto (`current`, `state`, `uninstall.exe`...) senza registro né journal | Rifiuto: non vengono usati, sostituiti né rimossi; vanno controllati e spostati a mano |
+| Registro copiato da un'altra cartella | Rifiuto |
+| Cartella dentro un'altra installazione di Fluent Reader MCP | Rifiuto |
+| Stato di una disinstallazione non conclusa | Rifiuto (vedi "Disinstallazione non conclusa") |
+
+Sono **sempre rifiutati**:
+
+- percorsi non locali: UNC (`\\server\...`), relativi, di dispositivo, con `.`/`..`, con nomi non validi o ambigui per
+  Windows (nomi riservati come `CON`, segmenti che finiscono con punto o spazio);
+- **unità di rete mappate** (il percorso reale porta a una cartella di rete; inoltre il wizard rifiuta le unità che
+  Windows classifica come di rete) e **unità SUBST** (il percorso reale non coincide con quello scelto);
+- **collegamenti simbolici, junction e nomi brevi 8.3** lungo il percorso: il setup chiede di scegliere direttamente la
+  cartella reale, che indica nel messaggio;
+- unità non disponibili (scollegate, inesistenti o non pronte);
+- le cartelle di Windows e dei programmi per tutti gli utenti in radice di **ogni** unità (`Windows`, `Program Files`,
+  `Program Files (x86)`, `ProgramData`, `System Volume Information`, `Recovery`, `$Recycle.Bin` e le cartelle di lavoro
+  di setup e ripristino di Windows), e le cartelle indicate dalle variabili `SystemRoot`, `ProgramFiles*`,
+  `ProgramData`, `PUBLIC`;
+- **profili Windows**: la propria cartella utente direttamente, la cartella di un altro utente o quella pubblica,
+  `X:\Users` e `X:\Users\<account>\...` su qualsiasi unità (controllo sulla **forma** del percorso, non sui permessi:
+  un profilo reindirizzato altrove con un nome diverso non viene riconosciuto);
+- `Roaming` (`%APPDATA%`), OneDrive e `%USERPROFILE%\.claude`, sia dentro sia come contenitore;
+- percorsi troppo lunghi perché il file più profondo resti sotto `MAX_PATH`;
+- cartelle esistenti in cui non si riesce a creare un file di prova (creato e rimosso subito).
+
+**Unità rimovibili** (chiavette, dischi USB che Windows classifica come rimovibili): accettate, con un avviso nella
+conferma: l'unità deve essere collegata **con la stessa lettera** ogni volta che Claude Code avvia il server e per
+aggiornare o disinstallare. Un disco esterno che Windows classifica come fisso non riceve questo avviso.
+
+**Fuori dalla cartella utente** la conferma avverte che, secondo i permessi di quella posizione, altri account del
+computer potrebbero leggere o modificare i file installati. Il setup **non legge e non modifica permessi o ACL** e non
+garantisce che una cartella fuori dal profilo sia protetta: la scelta della posizione resta dell'utente.
+
+Non sono provati come destinazione supportata: unità ottiche, RAM disk, volumi FAT32/exFAT, cartelle sincronizzate da
+programmi diversi da OneDrive, profili reindirizzati.
 
 ```text
 %LOCALAPPDATA%\FluentReaderMCP\
@@ -109,15 +160,39 @@ resti sotto `MAX_PATH`, e vuota oppure una precedente installazione di Fluent Re
   uninstall.exe
 ```
 
-Le copie della configurazione di Claude Code (che può contenere segreti di altri server MCP) non stanno mai nella
-cartella di installazione, che può trovarsi su un volume accessibile ad altri utenti: stanno nella cartella personale
-dell'utente Windows che esegue il setup, `%LOCALAPPDATA%\FluentReaderMCP-Data\claude-config-backups\<chiave>\`, dove la
-chiave deriva dalla cartella di installazione (stabile fra riparazioni e aggiornamenti, diversa per due installazioni).
-Se `%LOCALAPPDATA%` manca o non è una cartella locale dentro il profilo utente, la modifica di Claude Code viene
-rifiutata: nessuna copia viene salvata altrove. Le copie lasciate da setup precedenti in
-`state\claude-config-backups` vengono spostate lì all'inizio della riparazione o dell'aggiornamento (copia verificata
-byte per byte, poi rimozione dell'originale); se in quella cartella c'è un elemento non attribuibile, nulla viene
-spostato e l'installazione non parte finché non viene controllato.
+#### Copie (backup) della configurazione di Claude Code
+
+Prima di modificare la registrazione in Claude Code il setup salva una copia di `%USERPROFILE%\.claude.json` in:
+
+```text
+%LOCALAPPDATA%\FluentReaderMCP-Data\claude-config-backups\<chiave>\claude.json.<data UTC>[-n].bak
+```
+
+- **Non** nella cartella di installazione (che può stare su un volume o in una cartella leggibile da altri utenti) e
+  non in `%LOCALAPPDATA%\FluentReaderMCP` (la cartella di installazione predefinita), ma in `FluentReaderMCP-Data`.
+- **Possono contenere informazioni riservate**: l'intera configurazione di Claude Code, compresi token, chiavi API e
+  variabili di altri server MCP. Non vanno condivise né allegate a segnalazioni.
+- **Separate per installazione**: la `<chiave>` (32 caratteri esadecimali) deriva dalla cartella di installazione; è la
+  stessa fra riparazioni e aggiornamenti della stessa cartella, diversa per due installazioni.
+- Se `%LOCALAPPDATA%` manca, non è locale o non sta dentro il profilo utente, oppure se una delle cartelle è un
+  collegamento o una junction, la modifica di Claude Code viene **rifiutata**: nessuna copia viene salvata altrove (si
+  può installare solo il server).
+- Il setup non legge né modifica permessi: è l'archivio locale standard dell'utente Windows, non una garanzia di
+  riservatezza su un sistema alterato. Il contenuto delle copie non viene mai mostrato né annotato (il registro di
+  installazione conserva solo nome, cartella e SHA-256).
+- **Migrazione dei backup precedenti:** le beta precedenti salvavano la copia in `<installazione>\state\claude-config-backups`.
+  All'inizio di una riparazione o di un aggiornamento la copia che il registro di installazione indica esattamente viene
+  spostata nella cartella personale (copia temporanea, confronto byte per byte, rinomina, nuovo confronto, annotazione
+  nel registro, solo allora rimozione dell'originale); uno spostamento interrotto viene completato dal tentativo
+  successivo.
+- **Elementi legacy ambigui:** se in quella cartella c'è qualsiasi altro elemento (un'altra copia, un file con un nome
+  qualsiasi, un collegamento), oppure se nella cartella personale esiste già un file con lo stesso nome e contenuto
+  diverso, **nulla viene spostato, modificato o cancellato** e l'aggiornamento o la riparazione **non partono**. Il
+  messaggio elenca gli elementi. Prima di intervenire: controllali e, se ti servono, **conservali in una cartella
+  personale sicura del tuo account Windows** (non in una cartella condivisa); poi esegui di nuovo il setup. Non
+  cancellarli senza averli controllati.
+- **Mai cancellati automaticamente**: né da installazione, riparazione e aggiornamento, né dalla disinstallazione, che
+  alla fine indica la cartella in cui restano.
 
 Voci di registro (solo HKCU): `Software\Microsoft\Windows\CurrentVersion\Uninstall\FluentReaderMCP` e
 `Software\FluentReaderMCP`.
@@ -176,7 +251,7 @@ contiene dati di Claude Code né di Fluent Reader.
 | Fase | Che cosa è già persistente quando inizia |
 |---|---|
 | `staging` | il journal, prima che esista `.staging` |
-| `prepared` | `.staging` verificata con il proprio runtime (inventario, manifest, `node --version`, handshake MCP con gli otto strumenti su un profilo **sintetico**); il nuovo disinstallatore in `state\uninstall.exe.new`; copia del registro precedente in `state\install-record.previous.json`; per i nove valori HKCU del prodotto presenza, tipo e valore, e la presenza delle due chiavi |
+| `prepared` | `.staging` verificata con il proprio runtime (inventario, manifest, `node --version`, handshake MCP con i nove strumenti su un profilo **sintetico**); il nuovo disinstallatore in `state\uninstall.exe.new`; copia del registro precedente in `state\install-record.previous.json`; per i nove valori HKCU del prodotto presenza, tipo e valore, e la presenza delle due chiavi |
 | `swapping` | inizio delle due rinomine `current` → `previous`, `.staging` → `current` |
 | `metadata` | nuova versione in `current`; poi nuovo registro, disinstallatore precedente spostato in `state\uninstall.exe.previous` e nuovo al suo posto, valori HKCU (ciascuno scritto e riletto) |
 | `committed` | tutti i controlli superati: la nuova versione è definitiva |
@@ -208,8 +283,56 @@ scritto).
 propone di completarla da sé (vedi "Recupero da un nuovo setup"); negli altri casi quegli
 elementi vanno cancellati a mano. Così nessuna installazione nuova eredita lo stato di una precedente.
 
-Se la versione installata è in uso (Claude Code aperto) lo scambio non riesce e il recupero riporta tutto com'era. Il
-percorso registrato in Claude Code (`current\app\...`) non cambia fra le versioni. Nessun aggiornamento automatico online.
+Se la versione installata è in uso (Claude Code aperto) lo scambio non riesce (`attivazione della nuova versione (chiudi
+Claude Code se è aperto)`): la versione installata resta al suo posto, ma il recupero automatico può fermarsi per il
+limite descritto sotto. Chiudere Claude Code (CLI, estensione VS Code) **prima** di riparare o aggiornare. Il percorso
+registrato in Claude Code (`current\app\...`) non cambia fra le versioni. Nessun aggiornamento automatico online.
+
+#### Limite noto del recupero
+
+Il recupero **non è completamente automatico**. È automatico quando ogni elemento da rimettere a posto è attribuibile
+con certezza (file del payload, copie verificate con lo SHA-256 annotato nel journal). Dopo `WriteUninstaller` (passo
+4, scrittura di `state\uninstall.exe.new`) esistono invece file creati da questa transazione per i quali non c'è un
+riferimento indipendente: il nuovo disinstallatore (`state\uninstall.exe.new` o, dopo la fase `metadata`,
+`uninstall.exe`) e, se già scritto, il nuovo `fluent-reader-mcp.install.json`. Il nuovo disinstallatore viene rimosso
+automaticamente solo se è identico a quello installato prima. Negli altri casi, dopo un errore o un crash successivo a
+quel passo (per esempio nella preparazione, nello scambio bloccato da un file in uso, nella scrittura del registro di
+Windows), il recupero **si ferma prima di qualsiasi modifica** e chiede un intervento manuale.
+
+Come riconoscerlo:
+
+- durante l'installazione: `Installazione non completata (<passo>) e ripristino INCOMPLETO`, preceduto dal messaggio del
+  programma di supporto; `<passo>` è la fase in cui l'errore è avvenuto (per esempio `scrittura del disinstallatore`,
+  `preparazione della transazione`, `attivazione della nuova versione`, `registro di installazione e disinstallatore`,
+  `scrittura del registro di Windows (<valore>)`, `completamento dell'installazione`);
+- al successivo avvio del setup: `il ripristino automatico non è possibile: questi elementi non sono attribuibili con
+  certezza a Fluent Reader MCP ...: <elenco>`, poi `Nulla è stato rimosso, sostituito o spostato; il journal
+  (state\install-journal.json) resta per la diagnosi`;
+- `Il programma di supporto del setup non ha restituito un risultato verificabile (codice N)`: il programma di
+  supporto è terminato (codice di uscita N) senza un file di risultato leggibile. **L'esito è incerto**: il passaggio
+  può essersi fermato prima di qualsiasi scrittura oppure dopo aver già modificato qualcosa (per esempio dopo aver
+  aperto la transazione e scritto il journal, se l'errore è avvenuto mentre scriveva il risultato); dal solo messaggio
+  non si può stabilire quale dei due. Che cosa fare: non cancellare né modificare file a mano solo perché manca la
+  risposta (in particolare `state\`, il journal, `current`, `previous`, `.staging` e i backup); esegui di nuovo la stessa
+  operazione (setup o disinstallazione) sulla **stessa cartella**, così il controllo iniziale (`tx-recover` per il
+  setup, i marcatori per la disinstallazione) riconosce lo stato reale e, quando può farlo con certezza, completa o
+  annulla il passaggio interrotto. Se il nuovo tentativo segnala un ripristino o un recupero INCOMPLETO, fermati,
+  controlla gli elementi che elenca e segui le indicazioni di questa sezione. Un nuovo avvio non garantisce il recupero
+  automatico in tutte le condizioni;
+- `recupero INCOMPLETO (...)`: un passo del recupero non è riuscito; journal e copie restano.
+
+Come leggere l'elenco: ogni voce è un percorso **relativo alla cartella di installazione** mostrata nella conferma,
+seguito tra parentesi dal motivo (per esempio `state\uninstall.exe.new (nuovo disinstallatore scritto da questa
+transazione: ...)` o `fluent-reader-mcp.install.json (registro scritto da questa transazione ...)`). Che cosa fare:
+
+1. non eseguire il disinstallatore e non cancellare `state\`, il journal, `current`, `previous` o `.staging`;
+2. controlla **solo** gli elementi elencati: se sono stati creati da questa installazione interrotta di Fluent Reader MCP
+   (data e ora coincidono con il tentativo appena fallito) puoi rimuoverli; se non sei sicuro, spostali in una cartella
+   personale invece di cancellarli;
+3. esegui di nuovo il setup e scegli la stessa cartella: il recupero riparte dal journal.
+
+Un elemento non elencato non va toccato. Se il messaggio indica altro (una cartella `.staging` o `previous` senza
+journal, una copia alterata), il setup non lo rimuove: va controllato a mano prima di riprovare.
 
 ### Disinstallazione
 
@@ -263,8 +386,9 @@ Il programma di supporto rimuove `current`, `.staging` o `previous` soltanto in 
 un'installazione non ancora registrata le rimuove solo la transazione che le ha create, tramite il suo journal.
 Non vengono toccati il profilo Fluent Reader (`fluent-reader.db`, `config.json`, articoli, feed), gli altri server
 MCP, le altre impostazioni di Claude Code, il fork, i valori del registro di altri programmi e le copie della
-configurazione nella cartella personale, che restano finché l'utente non le cancella (alla fine il disinstallatore dice
-dove sono).
+configurazione in `%LOCALAPPDATA%\FluentReaderMCP-Data\claude-config-backups\<chiave>\`, che restano finché l'utente non
+decide che cosa farne (alla fine il disinstallatore mostra la cartella in cui sono). Un file estraneo nelle cartelle
+dell'installazione ferma la disinstallazione nel preflight, prima di qualsiasi rimozione.
 
 ### Limiti delle verifiche
 
@@ -273,13 +397,14 @@ sintetiche, comprese le interruzioni in ogni fase. Le parti dello script NSIS (W
 HKCU con advapi32 e le istruzioni `WriteReg*`/`DeleteReg*`, il controllo degli a capo, la verifica del marcatore
 finale, la cancellazione della copia di recupero dall'elenco compilato, CopyFiles) sono verificate solo staticamente
 e tramite un modello che le riproduce: vanno provate con l'installer compilato, compreso il caso di un processo
-terminato durante l'installazione o la disinstallazione.
+terminato durante l'installazione o la disinstallazione. La checklist del collaudo manuale (con le prove distruttive
+riservate a una VM o a un ambiente sacrificabile) è in [WINDOWS-SMOKE-TEST.md](WINDOWS-SMOKE-TEST.md).
 
 ### Privacy
 
 Il wizard dichiara che il profilo è letto in sola lettura, che il server non fa richieste di rete proprie, che i
-risultati degli strumenti possono essere inviati da Claude Code al servizio Anthropic, che la beta espone otto
-strumenti senza ricerca degli articoli e che non viene installato alcun servizio. Il setup non scrive file di log; i
+risultati degli strumenti possono essere inviati da Claude Code al servizio Anthropic, che la beta espone nove
+strumenti in sola lettura (la ricerca lavora solo sui dati già salvati) e che non viene installato alcun servizio. Il setup non scrive file di log; i
 messaggi e i file di risultato non contengono contenuti della configurazione Claude, del
 database, URL dei feed, titoli o token. Il registro di installazione e i backup restano sulla macchina dell'utente.
 

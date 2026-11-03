@@ -260,7 +260,7 @@ export function packagingInfo(version: string, lock: RuntimeLock): string {
         "Read-only MCP server (stdio) for one local Fluent Reader profile.",
         `Tools: ${TOOLS.join(", ")}. No write tools; Fluent Reader data is never modified.`,
         "",
-        "This beta is limited to eight read-only tools: the seven of FR-MCP-02A and list_articles (FR-MCP-02B-01); article search is not included.",
+        "This beta is limited to nine read-only tools: the seven of FR-MCP-02A, list_articles (FR-MCP-02B-01) and search_articles (FR-MCP-02B-02, literal search of the locally stored articles only).",
         "It is not an installer: nothing is registered, no service or network port is created.",
         "",
         "## Contents",
