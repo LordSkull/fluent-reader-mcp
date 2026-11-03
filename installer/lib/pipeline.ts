@@ -475,6 +475,8 @@ export async function buildPortable(options: BuildOptions, deps: BuildDeps): Pro
     const warnings: string[] = []
     if (git.dirty) warnings.push("built from a working tree with uncommitted changes (gitDirty: true)")
     if (pkg.license === undefined) warnings.push("package.json declares no license: decide the project licence (D-13) before any distribution")
+    const projectLicense = pkg.license === undefined ? null : { declared: pkg.license, file: path.join(options.repoRoot, "LICENSE") }
+    if (projectLicense !== null && !fs.existsSync(projectLicense.file)) throw new BuildError(`package.json declares the licence ${projectLicense.declared} but the repository has no LICENSE file: ${projectLicense.file}`)
     log(`${PRODUCT_ID} ${pkg.version} (${git.commit.slice(0, 12)}${git.dirty ? ", dirty" : ""}), runtime Node.js ${lock.version} ${lock.platform}`)
     log(`Output: ${out.zipPath}`)
     if (out.redirected) log(`Output: --out resolves (links, junctions or 8.3 names) to ${out.out}`)
@@ -533,7 +535,7 @@ export async function buildPortable(options: BuildOptions, deps: BuildDeps): Pro
 
         // 5. content
         fs.writeFileSync(path.join(stage, INFO), packagingInfo(pkg.version, lock), { flag: "wx" })
-        const licenses = collectLicenses(stage)
+        const licenses = collectLicenses(stage, projectLicense)
         for (const record of licenses) if (record.status === "no-license-file") warnings.push(`no licence file in ${record.component} (declared ${String(record.declared)})`)
         const forbidden = forbiddenFiles(listFiles(stage))
         if (forbidden.length > 0) throw new BuildError(`forbidden content in the package: ${forbidden.join("; ")}`)

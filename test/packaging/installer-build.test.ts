@@ -15,7 +15,7 @@ import { parseInstallerArgs } from "../../installer/build-installer.js"
 import { BuildError, canonicalPath, sha256Bytes, type ExecFn } from "../../installer/lib/common.js"
 import { buildInstaller, helperCopyNsh, installerName, NSIS_REQUIREMENTS, nsisString, SETUP_ENTRY, setupClosure, type InstallerDeps, type InstallerOptions } from "../../installer/lib/installer-build.js"
 import { helperCopyEntries } from "../../installer/setup/uninstall.js"
-import { artifactName, buildManifest, KOFFI_NATIVE, MANIFEST, type Manifest } from "../../installer/lib/package-content.js"
+import { artifactName, buildManifest, KOFFI_NATIVE, MANIFEST, PROJECT_LICENSE, type Manifest } from "../../installer/lib/package-content.js"
 import { parseRuntimeLock } from "../../installer/lib/runtime-lock.js"
 import { zipBytes } from "../../installer/lib/zip.js"
 import { createTempRoot, removeTempRoot, snapshotDir } from "../helpers/fixtures.js"
@@ -52,6 +52,7 @@ interface BundleOptions {
     readonly manifestPatch?: (m: Manifest) => Manifest
     readonly name?: string
     readonly corruptByte?: boolean
+    readonly extraFiles?: Record<string, string>
 }
 
 const lockRaw = JSON.parse(fs.readFileSync(path.join(REAL_REPO, "installer", "runtime-lock.json"), "utf8")) as unknown
@@ -69,7 +70,7 @@ function fixture(options: BundleOptions = {}): Fixture {
         "runtime/node.exe": "synthetic node.exe", "runtime/LICENSE": "node licence", "server/dist/main.js": "// synthetic server", "server/package.json": "{}",
         [KOFFI_NATIVE]: "synthetic native", "PACKAGING-INFO.md": "info", "licenses/node/LICENSE": "licence", "server/dist/tools/list é.js": "// tool",
     }
-    for (const [f, content] of Object.entries(files)) if (f !== options.omit) write(path.join(stage, ...f.split("/")), content)
+    for (const [f, content] of Object.entries({ ...files, ...options.extraFiles })) if (f !== options.omit) write(path.join(stage, ...f.split("/")), content)
     const lock = parseRuntimeLock(lockRaw, ">=24.15.0 <25")
     let manifest = buildManifest(stage, { version: VERSION, gitCommit: COMMIT, gitDirty: false, sourceDateEpoch: 1767225600, lock, projectLicense: null, licenses: [] })
     if (options.manifestPatch !== undefined) manifest = options.manifestPatch(manifest)
@@ -196,6 +197,15 @@ describe("installer builder: bundle verification", { timeout: 60_000 }, () => {
         assert.equal(seen.helperFiles.includes("server\\"), false, "only the helper, never the server files")
         const compile = f.calls.find((c) => c.file === fx.makensis && c.args[0] !== "/VERSION")
         assert.deepEqual(compile?.args.slice(0, 3), ["/V2", "/INPUTCHARSET", "UTF8"])
+    })
+
+    test("the licence files of the package reach the EXE payload byte for byte (FR-MCP-04-BETA-RELEASE-02)", async () => {
+        const licences = { [PROJECT_LICENSE]: "project MIT licence", "licenses/npm/@koromix+koffi-win32-x64@3.3.4/LICENSE.txt": "koffi MIT licence", "licenses/npm/koffi@3.3.4/LICENSE.txt": "koffi MIT licence" }
+        const fx = fixture({ extraFiles: licences })
+        const opts = options(fx, { keepWork: true })
+        await buildInstaller(opts, fakes(fx).deps)
+        const app = path.join(opts.outDir, `work-installer-${VERSION}`, "payload", "current", "app")
+        assert.deepEqual(Object.fromEntries(Object.keys(licences).map((l) => [l, fs.readFileSync(path.join(app, ...l.split("/")), "utf8")])), licences)
     })
 
     const bad: [string, BundleOptions, RegExp][] = [

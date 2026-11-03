@@ -20,10 +20,11 @@ osservato, annota la differenza: non adattare l'esito atteso a quello osservato.
 | Unità secondarie | Lettere disponibili (`D:`, `H:`...), tipo (fisso, rimovibile), file system. **Facoltative**: le prove che ne hanno bisogno si segnano NON ESEGUITO se l'unità non c'è |
 | Ambiente | Macchina personale, account Windows di prova, VM o snapshot: indicarlo per ogni prova (sezione H) |
 
-**Quale EXE.** Gli artefatti in `D:\FluentReaderMCP-build\beta-release-01\` sono una build **preliminare**, prodotta
+**Quale EXE.** Gli artefatti 0.1.0 in `D:\FluentReaderMCP-build\beta-release-01\` sono una build **preliminare**, prodotta
 con `--allow-dirty` da un albero con modifiche non committate: servono a verificare il packaging, non sono la build
 finale, e lo script NSIS è cambiato dopo (messaggio del programma di supporto senza risultato, vedi F). Il collaudo
-che vale per il rilascio va ripetuto sulla build finale pulita. Lo SHA-256 dell'EXE si **annota a ogni collaudo**
+che vale per il rilascio si fa sulla build finale pulita **0.1.1** (`FluentReaderMCP-Setup-v0.1.1-beta-win-x64.exe`,
+`gitDirty: false` e `scriptsDirty: false` nei report). Lo SHA-256 dell'EXE si **annota a ogni collaudo**
 dal file effettivamente provato: non esiste un valore fisso in questo documento, perché cambia a ogni ricompilazione.
 
 ## B. Classificazione delle prove
@@ -248,19 +249,20 @@ categoria 1 si fermano con **Annulla** prima della pagina di installazione.
 
 ## E. Aggiornamento e riparazione
 
-**Versione 0.1.0.** La beta precedente (sette strumenti, installer del 2026-10-29) e la build attuale (nove strumenti)
-hanno **la stessa versione 0.1.0**. Il setup riconosce l'installazione esistente dal registro e, a parità di
-versione, la tratta come **riparazione**: la conferma dice "La versione 0.1.0 vi è già installata: i suoi file
-verranno reinstallati (riparazione)". È il comportamento atteso, non un aggiornamento: il passaggio da sette a nove
-strumenti avviene perché la riparazione reinstalla il payload di questo setup. Un vero **aggiornamento** ("verrà
-aggiornata alla ...") si vede solo con un registro di versione inferiore. Annota il testo effettivamente mostrato.
+**Versioni.** La beta precedente (sette strumenti, installer del 2026-10-29) è la **0.1.0**; la build da collaudare
+(nove strumenti) è la **0.1.1**. Il setup riconosce l'installazione esistente dal registro: sopra la 0.1.0 la tratta
+come **aggiornamento** (la conferma dice "Vi è installata la versione 0.1.0: verrà aggiornata alla 0.1.1. Se
+l'aggiornamento non riesce, la versione attuale resta com'è."); sopra la stessa 0.1.1 come **riparazione** ("La
+versione 0.1.1 vi è già installata: i suoi file verranno reinstallati (riparazione)"). Annota il testo effettivamente
+mostrato.
 
 **U-01 — Installazione sopra la beta precedente** (cat. 2)
 - Preparazione: VM o account di prova con la beta precedente installata (di norma nella cartella predefinita) e
   registrata in Claude Code; hash e `claude mcp list` registrati.
 - Azione: avvia il nuovo setup, stessa cartella.
-- Atteso: conferma di **riparazione** (vedi sopra); al termine `tools/list` con nove strumenti (N-14); profilo e altre
-  voci MCP invariati; registro di installazione aggiornato.
+- Atteso: conferma di **aggiornamento** dalla 0.1.0 alla 0.1.1 (vedi sopra); al termine `tools/list` con nove
+  strumenti (N-14); profilo e altre voci MCP invariati; registro di installazione e "App installate" con la versione
+  0.1.1.
 - Fallimento: rifiuto senza motivo; versione precedente persa senza nuova versione; altre voci cambiate.
 - Evidenza: testo della conferma, elenco strumenti prima (sette) e dopo (nove).
 
@@ -284,7 +286,7 @@ aggiornata alla ...") si vede solo con un registro di versione inferiore. Annota
 **U-04 — Migrazione di un backup legacy esattamente referenziato** (cat. 2)
 - Preparazione: installazione della beta precedente con registrazione, quindi con la sua copia in
   `<installazione>\state\claude-config-backups\`; annota nome e SHA-256 di quella copia.
-- Azione: riparazione con il nuovo setup.
+- Azione: aggiornamento con il nuovo setup.
 - Atteso: **solo** la copia indicata dal registro di installazione viene spostata in
   `%LOCALAPPDATA%\FluentReaderMCP-Data\claude-config-backups\<chiave>\` con lo stesso SHA-256; l'originale viene rimosso
   solo dopo la verifica. Non è prevista la migrazione automatica di altre copie.
@@ -294,9 +296,9 @@ aggiornata alla ...") si vede solo con un registro di versione inferiore. Annota
 **U-05 — Rifiuto conservativo di backup legacy non attribuibili** (cat. 2, solo ambiente di prova)
 - Preparazione: come U-04, poi aggiungi in `<installazione>\state\claude-config-backups\` un secondo file creato da te
   e senza dati (per esempio `extra.bak` con testo `test`).
-- Azione: riparazione.
+- Azione: aggiornamento con il nuovo setup.
 - Atteso: il setup elenca gli elementi non attribuibili e **non parte**; nulla viene spostato, modificato o cancellato.
-- Fallimento: migrazione parziale; cancellazione; riparazione che procede.
+- Fallimento: migrazione parziale; cancellazione; aggiornamento che procede.
 - Evidenza: testo del messaggio; hash dei file prima/dopo. Ripristino: rimuovi soltanto `extra.bak`, che hai creato tu,
   e ripeti U-04.
 
@@ -311,8 +313,8 @@ U-06 e R-02 hanno risultati separati nel modulo (sezione H).
   - solo VM o installazione sacrificabile, con snapshot ripristinabile preso **dopo** la preparazione qui sotto;
   - un'installazione valida e funzionante: la beta precedente (sette strumenti, come in U-01) oppure questa build
     (nove strumenti, come in U-02), registrata o no in Claude Code; Claude Code e Fluent Reader chiusi;
-  - annota la versione iniziale (la versione 0.1.0 è la stessa per le due build, quindi annota anche quale build è e il
-    numero di strumenti visto con N-14), il percorso di installazione e lo stato dei file gestiti: nomi in `current`,
+  - annota la versione iniziale (0.1.0 con sette strumenti, oppure 0.1.1 con nove: annota anche il numero di
+    strumenti visto con N-14), il percorso di installazione e lo stato dei file gestiti: nomi in `current`,
     `state\` e nella radice (`Get-ChildItem -Force -Name`) e SHA-256 di `current\installer-files.json`,
     `fluent-reader-mcp.install.json` e `uninstall.exe`; `.staging`, `previous` e `state\install-journal.json` devono
     essere assenti;

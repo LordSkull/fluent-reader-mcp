@@ -32,10 +32,10 @@ Integrazioni con i client Claude:
 
 ```powershell
 # 1. Prova a secco: verifica bundle, checksum, manifest, NSIS e percorsi; non scrive nulla e non avvia makensis
-npm.cmd run installer:win -- --bundle "D:\FluentReaderMCP-build\fluent-reader-mcp-v0.1.0-beta-win-x64.zip" --bundle-sha256 <sha256 del bundle> --out "D:\FluentReaderMCP-build" --dry-run
+npm.cmd run installer:win -- --bundle "D:\FluentReaderMCP-build\fluent-reader-mcp-v0.1.1-beta-win-x64.zip" --bundle-sha256 <sha256 del bundle> --out "D:\FluentReaderMCP-build" --dry-run
 
 # 2. Installer
-npm.cmd run installer:win -- --bundle "D:\FluentReaderMCP-build\fluent-reader-mcp-v0.1.0-beta-win-x64.zip" --bundle-sha256 <sha256 del bundle> --out "D:\FluentReaderMCP-build"
+npm.cmd run installer:win -- --bundle "D:\FluentReaderMCP-build\fluent-reader-mcp-v0.1.1-beta-win-x64.zip" --bundle-sha256 <sha256 del bundle> --out "D:\FluentReaderMCP-build"
 ```
 
 Come per il builder portatile, il comando npm compila prima con TypeScript (rigenera `dist-test\`, già ignorata da
@@ -75,9 +75,9 @@ Output:
 
 ```text
 D:\FluentReaderMCP-build\
-  FluentReaderMCP-Setup-v0.1.0-beta-win-x64.exe
-  FluentReaderMCP-Setup-v0.1.0-beta-win-x64.exe.sha256
-  FluentReaderMCP-Setup-v0.1.0-beta-win-x64.exe.build-report.json
+  FluentReaderMCP-Setup-v0.1.1-beta-win-x64.exe
+  FluentReaderMCP-Setup-v0.1.1-beta-win-x64.exe.sha256
+  FluentReaderMCP-Setup-v0.1.1-beta-win-x64.exe.build-report.json
 ```
 
 Il report contiene SHA-256 e dimensione dell'installer, versione NSIS, commit degli script, e la provenienza del

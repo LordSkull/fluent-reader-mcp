@@ -23,11 +23,13 @@ import {
     MANIFEST,
     packagingInfo,
     RUNTIME_EXE,
+    SUPPLIED_LICENSES,
     TOOLS,
     verifyManifest,
 } from "../../installer/lib/package-content.js"
 import { acquireRuntimeArchive, extractRuntime, shasumFor, type FetchFn } from "../../installer/lib/runtime.js"
 import { parseRuntimeLock, satisfiesRange, type RuntimeLock } from "../../installer/lib/runtime-lock.js"
+import { installerName } from "../../installer/lib/installer-build.js"
 import { assertBuildPlatform } from "../../installer/lib/pipeline.js"
 import { encodeZip, readZip, writeZip } from "../../installer/lib/zip.js"
 import { createTempRoot, removeTempRoot } from "../helpers/fixtures.js"
@@ -371,6 +373,23 @@ describe("package content and manifest", () => {
 
     test("artifact name identifies product, version, beta and Windows x64", () => {
         assert.equal(artifactName("0.1.0"), "fluent-reader-mcp-v0.1.0-beta-win-x64.zip")
+        assert.equal(artifactName("0.1.1"), "fluent-reader-mcp-v0.1.1-beta-win-x64.zip")
+        assert.equal(installerName("0.1.1"), "FluentReaderMCP-Setup-v0.1.1-beta-win-x64.exe")
+    })
+
+    test("the real repository: version 0.1.1, MIT with its LICENSE, supplied notices only for the exact locked versions (FR-MCP-04-BETA-RELEASE-02)", () => {
+        const pkg = JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, "package.json"), "utf8")) as { version: string; license: string }
+        const lockText = fs.readFileSync(path.join(PROJECT_ROOT, "package-lock.json"), "utf8")
+        const lock = JSON.parse(lockText) as { version: string; packages: Record<string, { version?: string; license?: string }> }
+        assert.deepEqual([pkg.version, lock.version, lock.packages[""]?.version], ["0.1.1", "0.1.1", "0.1.1"])
+        assert.deepEqual([pkg.license, lock.packages[""]?.license], ["MIT", "MIT"])
+        assert.match(fs.readFileSync(path.join(PROJECT_ROOT, "LICENSE"), "utf8"), /^MIT License\r?\n\r?\nCopyright \(c\) 2026 LordSkull\r?\n/)
+        for (const name of [artifactName(pkg.version), installerName(pkg.version)]) assert.equal(name.match(/beta/g)?.length, 1, name)
+        const production = expectedProductionPackages(lockText)
+        for (const s of SUPPLIED_LICENSES) {
+            assert.ok(production.includes(s.component) && production.includes(s.from), `${s.component} from ${s.from}: both locked at these versions`)
+            assert.equal(s.component.slice(s.component.lastIndexOf("@")), s.from.slice(s.from.lastIndexOf("@")), "same version")
+        }
     })
 
     function stagedPackage(): string {

@@ -4,7 +4,7 @@
 
 Il server espone fonti RSS, gruppi, articoli e regole di filtraggio già presenti nel profilo Fluent Reader. Non modifica il database, non aggiorna i feed, non applica le regole e non scarica da Internet il contenuto degli articoli.
 
-> **Stato:** `v0.1.0-beta` — il codice sorgente attuale implementa **nove strumenti MCP read-only**, compresi l'elenco paginato (`list_articles`) e la ricerca testuale (`search_articles`) degli articoli. I pacchetti Windows costruiti dal codice attuale (ZIP e installer) contengono tutti e nove gli strumenti e lo verificano con un auto-test MCP su un profilo sintetico. Il primo installer `v0.1.0-beta` costruito il 2026-10-29 conteneva invece soltanto i **sette** strumenti iniziali (FR-MCP-02A). Il nuovo installer è in **collaudo**: non è ancora approvato per la distribuzione.
+> **Stato:** `v0.1.1-beta` — il codice sorgente attuale implementa **nove strumenti MCP read-only**, compresi l'elenco paginato (`list_articles`) e la ricerca testuale (`search_articles`) degli articoli. I pacchetti Windows costruiti dal codice attuale (ZIP e installer) contengono tutti e nove gli strumenti e lo verificano con un auto-test MCP su un profilo sintetico. Il primo installer `v0.1.0-beta` costruito il 2026-10-29 conteneva invece soltanto i **sette** strumenti iniziali (FR-MCP-02A); il setup `v0.1.1-beta` lo riconosce come versione precedente e lo aggiorna. Il nuovo installer è in **collaudo**: non è ancora approvato per la distribuzione.
 
 ## Come funziona
 
@@ -94,7 +94,7 @@ npm.cmd run package:win -- --out "D:\FluentReaderMCP-build"
 **Installer NSIS**, generato a partire dallo ZIP appena costruito e verificato con SHA-256:
 
 ```powershell
-$zip = "D:\FluentReaderMCP-build\fluent-reader-mcp-v0.1.0-beta-win-x64.zip"
+$zip = "D:\FluentReaderMCP-build\fluent-reader-mcp-v0.1.1-beta-win-x64.zip"
 $sha = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
 
 # Prima verifica senza compilare l'EXE.
@@ -193,7 +193,7 @@ La descrizione completa è in [installer/INSTALLER.md](installer/INSTALLER.md); 
 - **Completezza degli articoli:** il server restituisce soltanto il contenuto salvato localmente da Fluent Reader, che può essere un estratto e non il testo editoriale completo.
 - **Ricerca:** `search_articles` lavora solo sui dati locali, senza accesso a Internet, lasciando il database in sola lettura e senza creare indici, tabelle o file di ricerca. È soggetta a budget di scansione, di valori testuali ricercabili caricati e di memoria per chiamata; i campi troppo grandi possono essere esclusi dall'esame, quindi l'esaustività non è garantita in assoluto ed è dichiarata solo da `search.exhaustive`. Titoli, autori e snippet restituiti restano dati non attendibili.
 - **Uso con Claude:** i contenuti restituiti dagli strumenti possono essere inviati dal client ai servizi di Anthropic. Valuta quali informazioni condividere.
-- **Beta privata:** la revisione delle licenze, delle notice delle dipendenze, dei test di upgrade/recovery su Windows reale e della firma del codice è ancora necessaria prima di una distribuzione pubblica.
+- **Beta privata:** il progetto è sotto licenza MIT e i pacchetti includono le licenze e le notice delle dipendenze (`licenses/`); il collaudo di upgrade/recovery su Windows reale e la firma del codice sono ancora necessari prima di una distribuzione pubblica.
 
 ## Stato e roadmap
 
@@ -208,8 +208,9 @@ La descrizione completa è in [installer/INSTALLER.md](installer/INSTALLER.md); 
   - **03B (non implementato):** scelta esplicita tra Claude Code, Claude Desktop, entrambi o nessuno;
   - **03C (non implementato):** individuazione affidabile del file di configurazione realmente attivo di Claude Desktop;
   - **03D (non implementato):** rollback, repair, upgrade e disinstallazione sicuri con più client.
-- **FR-MCP-04-BETA-RELEASE-01 (in corso):** documentazione, nuova build dell'installer con i nove strumenti e collaudo su Windows reale; la distribuzione resta subordinata alla review e all'approvazione del proprietario.
-- **Successivamente:** hardening di sicurezza, benchmark su archivi grandi, miglioramento della distribuzione Windows, licenze, CI e release pubblica quando autorizzata.
+- **FR-MCP-04-BETA-RELEASE-01 (completato):** documentazione e checklist di collaudo Windows ([WINDOWS-SMOKE-TEST.md](installer/WINDOWS-SMOKE-TEST.md)).
+- **FR-MCP-04-BETA-RELEASE-02 (in corso):** versione 0.1.1, licenza MIT del progetto e notice di Koffi nei pacchetti; poi build pulita e collaudo su Windows reale. La distribuzione resta subordinata alla review e all'approvazione del proprietario.
+- **Successivamente:** hardening di sicurezza, benchmark su archivi grandi, miglioramento della distribuzione Windows, CI e release pubblica quando autorizzata.
 
 Il progetto Fluent Reader MCP è indipendente dal fork dell'applicazione e non richiede modifiche a Fluent Reader per le funzionalità read-only attuali.
 
@@ -218,3 +219,7 @@ Il progetto Fluent Reader MCP è indipendente dal fork dell'applicazione e non r
 I test automatici devono utilizzare **profili sintetici**: non utilizzare database personali nei test, nei benchmark o nei log condivisi. Le modifiche al server seguono review indipendente prima dell'integrazione.
 
 Il documento descrive le capacità del codice sorgente attuale, distinguendole da quelle dell'installer già costruito, e non attribuisce alle funzionalità pianificate uno stato di implementazione.
+
+## Licenza
+
+Il codice di Fluent Reader MCP è distribuito con licenza [MIT](LICENSE). Node.js e le dipendenze incluse nei pacchetti Windows restano sotto le proprie licenze, copiate nella cartella `licenses/` del pacchetto.

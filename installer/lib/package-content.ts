@@ -128,27 +128,60 @@ export interface LicenseRecord {
     readonly component: string
     readonly declared: string | null
     readonly files: string[]
-    readonly status: "file-included" | "no-license-file"
+    readonly status: "file-included" | "file-supplied" | "no-license-file"
+    /** file-supplied: the package file the text was taken from (package@version/file). */
+    readonly source?: string
 }
+
+/** A licence text for a package that ships none, taken from another shipped package (exact versions, pinned SHA-256). */
+export interface SuppliedLicense {
+    readonly component: string
+    readonly from: string
+    readonly file: string
+    readonly sha256: string
+}
+
+/**
+ * @koromix/koffi-win32-x64 holds the native module of koffi (same author and
+ * repository, both declared MIT) but its npm tarball has no licence file; the
+ * LICENSE.txt of koffi at the same version is the notice of that release
+ * (registry tarballs checked against package-lock.json). Exact versions only:
+ * another Koffi version brings the missing-licence warning back until this
+ * table is checked again.
+ */
+export const SUPPLIED_LICENSES: readonly SuppliedLicense[] = [
+    { component: "@koromix/koffi-win32-x64@3.3.4", from: "koffi@3.3.4", file: "LICENSE.txt", sha256: "22bcbbbacd739b026a8dc484f62a31484ce4c4e31f3408b60b29b4e41d62b290" },
+]
+
+/** The project's own licence in the package (D-13). */
+export const PROJECT_LICENSE = "licenses/fluent-reader-mcp/LICENSE"
 
 const LICENSE_FILE = /^(licen[cs]e|notice|copying)(\.(md|txt))?$/i
 
 /**
- * Copies the licence and notice files of the runtime and of every shipped
- * package into licenses/. Packages without a licence file are recorded, not
- * hidden: the licence review stays open in any case (no public distribution
- * before it).
+ * Copies the licence and notice files of the project (when package.json
+ * declares a licence), of the runtime and of every shipped package into
+ * licenses/. A package without a licence file gets the text SUPPLIED_LICENSES
+ * pins for its exact version, if the source file is there with that SHA-256;
+ * otherwise it is recorded, not hidden: the licence review stays open in any
+ * case (no public distribution before it).
  */
-export function collectLicenses(stage: string): LicenseRecord[] {
+export function collectLicenses(stage: string, project: { declared: string; file: string } | null, supplied: readonly SuppliedLicense[] = SUPPLIED_LICENSES): LicenseRecord[] {
     const records: LicenseRecord[] = []
+    if (project !== null) {
+        copyFile(project.file, safeJoin(stage, PROJECT_LICENSE))
+        records.push({ component: `${PRODUCT_ID} (this project)`, declared: project.declared, files: [PROJECT_LICENSE], status: "file-included" })
+    }
     const runtimeLicense = safeJoin(stage, "runtime/LICENSE")
     copyFile(runtimeLicense, safeJoin(stage, "licenses/node/LICENSE"))
     records.push({ component: "node (runtime, includes the notices of its bundled components)", declared: "MIT and others (see LICENSE)", files: ["licenses/node/LICENSE"], status: "file-included" })
     const nodeModules = safeJoin(stage, "server/node_modules")
-    for (const id of installedPackages(nodeModules)) {
-        const name = id.slice(0, id.lastIndexOf("@"))
-        const dir = path.join(nodeModules, ...name.split("/"))
+    const installed = installedPackages(nodeModules)
+    const packageDir = (id: string): string => path.join(nodeModules, ...id.slice(0, id.lastIndexOf("@")).split("/"))
+    for (const id of installed) {
+        const dir = packageDir(id)
         const pkg = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")) as { license?: unknown }
+        const declared = typeof pkg.license === "string" ? pkg.license : null
         const target = `licenses/npm/${id.replace("/", "+")}`
         const files: string[] = []
         for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -157,7 +190,18 @@ export function collectLicenses(stage: string): LicenseRecord[] {
             files.push(`${target}/${entry.name}`)
         }
         files.sort(compareOrdinal)
-        records.push({ component: id, declared: typeof pkg.license === "string" ? pkg.license : null, files, status: files.length > 0 ? "file-included" : "no-license-file" })
+        if (files.length > 0) {
+            records.push({ component: id, declared, files, status: "file-included" })
+            continue
+        }
+        const supply = supplied.find((s) => s.component === id)
+        const source = supply !== undefined && installed.includes(supply.from) ? path.join(packageDir(supply.from), supply.file) : null
+        if (supply !== undefined && source !== null && fs.existsSync(source) && sha256FileSync(source) === supply.sha256) {
+            copyFile(source, safeJoin(stage, `${target}/${supply.file}`))
+            records.push({ component: id, declared, files: [`${target}/${supply.file}`], status: "file-supplied", source: `${supply.from}/${supply.file}` })
+        } else {
+            records.push({ component: id, declared, files, status: "no-license-file" })
+        }
     }
     return records
 }

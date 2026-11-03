@@ -3,14 +3,13 @@
 Builder del pacchetto ZIP autonomo di Fluent Reader MCP, limitato ai nove strumenti read-only (i sette di FR-MCP-02A, `list_articles` di FR-MCP-02B-01 e `search_articles` di FR-MCP-02B-02).
 Il pacchetto non è un installer: non registra nulla, non crea servizi né porte di rete, non legge profili.
 
-> Stato (FR-MCP-04-BETA-RELEASE-01): sono stati generati uno ZIP e un installer EXE **preliminari** della versione
-> 0.1.0, costruiti con `--allow-dirty` da un albero con modifiche non committate (`gitDirty: true` nei report). Sono
-> stati verificati tecnicamente (SHA-256, manifest, inventario, nove strumenti, contenuto del payload), ma **non sono la
-> build finale**: dopo il loro build lo script NSIS è cambiato, il wizard reale non è ancora stato collaudato
-> (checklist in [WINDOWS-SMOKE-TEST.md](WINDOWS-SMOKE-TEST.md)) e la distribuzione **non è autorizzata**. Restano aperti il
-> versionamento (la beta a nove strumenti ha ancora la versione 0.1.0 della precedente) e le licenze (licenza del
-> progetto, D-13; licenza mancante in un pacchetto npm). Dopo il commit servirà una build finale da albero pulito, senza
-> `--allow-dirty`. Anche allora la distribuzione resta **solo privata** finché la verifica delle licenze non è chiusa.
+> Stato (FR-MCP-04-BETA-RELEASE-02): la beta a nove strumenti ha la versione **0.1.1** (la beta precedente a sette
+> strumenti è la 0.1.0, che il setup 0.1.1 aggiorna); il progetto è sotto licenza **MIT** (D-13, [LICENSE](../LICENSE));
+> la notice di Koffi è inclusa anche per il pacchetto nativo che non ne contiene una (vedi "Licenze"). Lo ZIP e l'EXE
+> preliminari 0.1.0 di FR-MCP-04-BETA-RELEASE-01 (`--allow-dirty`, `gitDirty: true`) **non sono la build finale**: va
+> costruita da albero pulito, senza `--allow-dirty`, in una cartella di output nuova, e il wizard reale va collaudato
+> con [WINDOWS-SMOKE-TEST.md](WINDOWS-SMOKE-TEST.md). Fino ad allora la distribuzione **non è autorizzata**; il manifest
+> continua a riportare `licenses.review: "required"` (beta privata).
 
 ## File
 
@@ -160,16 +159,16 @@ va cancellata prima della build successiva.
 
 ```text
 D:\FluentReaderMCP-build\
-  fluent-reader-mcp-v0.1.0-beta-win-x64.zip
-  fluent-reader-mcp-v0.1.0-beta-win-x64.zip.sha256
-  fluent-reader-mcp-v0.1.0-beta-win-x64.zip.build-report.json
+  fluent-reader-mcp-v0.1.1-beta-win-x64.zip
+  fluent-reader-mcp-v0.1.1-beta-win-x64.zip.sha256
+  fluent-reader-mcp-v0.1.1-beta-win-x64.zip.build-report.json
   runtime-cache\node-v24.22.1-win-x64.zip
 ```
 
-Il nome deriva da `package.json` (`0.1.0`) più l'etichetta di canale `beta` e la piattaforma `win-x64`.
-Non esiste ancora una politica per numerare le beta (`0.1.0-beta.1`, …): due build della stessa versione hanno lo
-stesso nome, e la seconda viene rifiutata se la prima è ancora nella cartella di output. La decisione spetta al
-proprietario.
+Il nome deriva da `package.json` (`0.1.1`) più l'etichetta di canale `beta` e la piattaforma `win-x64`.
+Una nuova beta ha una nuova versione in `package.json` (decisione del proprietario: 0.1.0 → 0.1.1, suffisso `-beta`
+solo dal canale). Due build della stessa versione hanno lo stesso nome, e la seconda viene rifiutata se la prima è
+ancora nella cartella di output.
 
 Struttura dello ZIP:
 
@@ -182,6 +181,7 @@ FluentReaderMCP/
   server/package.json        minimo: nome, versione, "type": "module", dipendenze
   server/dist/**/*.js
   server/node_modules/...    sole dipendenze production
+  licenses/fluent-reader-mcp/LICENSE   licenza del progetto (MIT)
   licenses/node/LICENSE
   licenses/npm/<pacchetto>@<versione>/LICENSE...
 ```
@@ -189,7 +189,7 @@ FluentReaderMCP/
 ## Verifica manuale
 
 ```powershell
-$zip = "D:\FluentReaderMCP-build\fluent-reader-mcp-v0.1.0-beta-win-x64.zip"
+$zip = "D:\FluentReaderMCP-build\fluent-reader-mcp-v0.1.1-beta-win-x64.zip"
 (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLower()
 Get-Content -LiteralPath "$zip.sha256"
 ```
@@ -237,10 +237,25 @@ con la chiave di un releaser elencato in `nodejs/release-keys`, aggiornare `atte
   licenza dichiarata e stato in `manifest.json` (`licenses.records`) e nel report di build. Licenze dichiarate
   oggi: Apache-2.0 (`@modelcontextprotocol/core`, `@modelcontextprotocol/server`), MIT (`koffi`, `zod`,
   `@koromix/koffi-win32-x64`).
-- `@koromix/koffi-win32-x64` non contiene un file di licenza (dichiara MIT; la licenza è nel pacchetto `koffi`
-  dello stesso autore): viene segnalato come avviso.
-- `package.json` non dichiara una licenza del progetto (D-13): il builder lo segnala e il manifest riporta
-  `licenses.review: "required"`. Nessuna distribuzione pubblica prima della verifica.
+- `@koromix/koffi-win32-x64` (il modulo nativo `koffi.node`) non contiene un file di licenza nel suo pacchetto npm:
+  dichiara MIT, ha lo stesso autore (Niels Martignène) e lo stesso repository (`github.com/Koromix/koffi`) di `koffi`.
+  Il builder gli associa il `LICENSE.txt` di `koffi` **della stessa versione** (`SUPPLIED_LICENSES` in
+  `installer/lib/package-content.ts`): solo per le versioni esatte annotate (oggi 3.3.4 per entrambi, come in
+  `package-lock.json`) e solo se il file ha lo SHA-256 annotato
+  (`22bcbbbacd739b026a8dc484f62a31484ce4c4e31f3408b60b29b4e41d62b290`, verificato il 2026-11-03 sui tarball del
+  registry, con integrità uguale a quella del lockfile). Il file è copiato in
+  `licenses/npm/@koromix+koffi-win32-x64@3.3.4/LICENSE.txt` e registrato con `status: "file-supplied"` e
+  `source: "koffi@3.3.4/LICENSE.txt"`. Con un'altra versione di Koffi, o un testo diverso, la notice non viene
+  associata e torna l'avviso "no licence file": la tabella va ricontrollata. Le notice MIT di `node-addon-api` e
+  `node-api-headers` incluse in `koffi` restano al loro posto in `server/node_modules/koffi/vendor/`.
+- Licenza del progetto (D-13): **MIT**, `LICENSE` nella radice della repository (`Copyright (c) 2026 LordSkull`, autore
+  di tutti i commit). `package.json` dichiara `"license": "MIT"`; il builder copia `LICENSE` in
+  `licenses/fluent-reader-mcp/LICENSE` e si ferma (anche in `--dry-run`) se la licenza è dichiarata ma il file manca.
+  Verifica della titolarità (2026-11-03): nessun file copiato da altri progetti nella repository; le parti che
+  descrivono Fluent Reader (schema SQLite, chiavi di `config.json`) ne documentano il formato per l'interoperabilità,
+  non ne copiano il codice. Le dipendenze restano sotto le proprie licenze (`licenses/`).
+- Il manifest riporta comunque `licenses.review: "required"` e il report "private beta only": la distribuzione
+  resta privata finché il proprietario non la autorizza.
 
 ## Integrazione con il futuro installer NSIS (FR-MCP-04-BETA-02)
 

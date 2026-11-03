@@ -464,6 +464,22 @@ describe("installation transaction: crash at each point, then the next start (Ma
     })
 })
 
+describe("FR-MCP-04-BETA-RELEASE-02: the 0.1.0 beta is an earlier version than 0.1.1", { timeout: 120_000 }, () => {
+    test("0.1.0 installed: the 0.1.1 setup offers an upgrade and completes it; then 0.1.1 is a repair and 0.1.0 a refused downgrade", async () => {
+        const { w } = await installedV1()
+        const offered = checkInstallDir({ installDir: w.installDir, version: "0.1.1", maxRelative: 150, env: w.env })
+        assert.deepEqual([offered.mode, offered.installedVersion], ["upgrade", "0.1.0"])
+        assert.equal(await install(w, "0.1.1"), "installed")
+        const after = snapshot(w)
+        assert.equal(after.version, "0.1.1")
+        assert.match(after.record ?? "", /"version": "0\.1\.1"/)
+        assert.deepEqual(after.dirs, ["current"])
+        assert.equal(w.reg.keys.get(UNINSTALL_KEY)?.get("DisplayVersion")?.value, "0.1.1")
+        assert.equal(checkInstallDir({ installDir: w.installDir, version: "0.1.1", maxRelative: 150, env: w.env }).mode, "repair")
+        assert.throws(() => checkInstallDir({ installDir: w.installDir, version: "0.1.0", maxRelative: 150, env: w.env }), /contiene la versione 0\.1\.1, più recente di 0\.1\.0; il downgrade non è supportato/)
+    })
+})
+
 describe("installation transaction: HKCU types and values (Major 1)", { timeout: 120_000 }, () => {
     test("values absent, present with the expected types, and REG_EXPAND_SZ: a failed upgrade restores each with its type", async () => {
         const w = world()

@@ -1,7 +1,8 @@
 {
   "name": "fluent-reader-mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Read-only MCP server (stdio) for a local Fluent Reader profile",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "main": "dist/main.js",

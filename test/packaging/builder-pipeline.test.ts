@@ -14,13 +14,15 @@ import assert from "node:assert/strict"
 import fs from "node:fs"
 import path from "node:path"
 import { after, before, describe, test } from "node:test"
+import { isDeepStrictEqual } from "node:util"
 import { BuildError, canonicalPath, isInside, sha256Bytes, type ExecFn } from "../../installer/lib/common.js"
+import { PROJECT_LICENSE, SUPPLIED_LICENSES } from "../../installer/lib/package-content.js"
 import { assertHardLinks, buildPortable, NPM_REGISTRY, OwnedFiles, promoteArtifacts, type BuildDeps, type BuildOptions, type CheckpointStep } from "../../installer/lib/pipeline.js"
 import type { FetchFn } from "../../installer/lib/runtime.js"
 import { runSelfTest, type SelfTestFn } from "../../installer/lib/selftest.js"
 import { encodeZip, readZip } from "../../installer/lib/zip.js"
 import { createTempRoot, removeTempRoot, snapshotDir } from "../helpers/fixtures.js"
-import { MAIN_JS } from "../helpers/process.js"
+import { MAIN_JS, PROJECT_ROOT } from "../helpers/process.js"
 
 let root: string
 let counter = 0
@@ -537,6 +539,59 @@ describe("npm configuration isolation", { timeout: 60_000 }, () => {
         assert.equal(log.toLowerCase().includes(fx.home.toLowerCase().replaceAll("\\", "\\\\")), false, "nor the personal home")
         assert.deepEqual(snapshotDir(fx.home), homeBefore)
         for (const name of FINALS) assert.equal(fs.existsSync(path.join(opts.outDir, name)), false)
+    })
+})
+
+describe("FR-MCP-04-BETA-RELEASE-02: project licence and Koffi notice in the package", { timeout: 60_000 }, () => {
+    /** The real LICENSE.txt of koffi@3.3.4 (registry tarball, as package-lock.json pins it). */
+    const KOFFI_LICENSE = fs.readFileSync(path.join(PROJECT_ROOT, "node_modules", "koffi", "LICENSE.txt"))
+
+    function licensed(fx: Fixture): void {
+        const pkg = JSON.parse(fs.readFileSync(path.join(fx.repo, "package.json"), "utf8")) as Record<string, unknown>
+        write(path.join(fx.repo, "package.json"), JSON.stringify({ ...pkg, license: "MIT" }))
+        write(path.join(fx.repo, "LICENSE"), "synthetic MIT licence of the project")
+    }
+
+    test("the project LICENSE and, for @koromix/koffi-win32-x64, koffi's own LICENSE.txt of the same version are shipped and recorded", async () => {
+        assert.equal(sha256Bytes(KOFFI_LICENSE), SUPPLIED_LICENSES[0]?.sha256, "the pinned hash is the one of the real koffi@3.3.4 notice")
+        const fx = fixture()
+        licensed(fx)
+        const result = await buildPortable(options(fx), fakes(fx, { afterInstall: (prefix) => write(path.join(prefix, "node_modules", "koffi", "LICENSE.txt"), KOFFI_LICENSE) }).deps)
+        const entries = new Map(readZip(fs.readFileSync(result.zipPath)).map((e) => [e.name.slice("FluentReaderMCP/".length), e.read()]))
+        assert.equal(entries.get(PROJECT_LICENSE)?.toString("utf8"), "synthetic MIT licence of the project")
+        assert.deepEqual(entries.get("licenses/npm/@koromix+koffi-win32-x64@3.3.4/LICENSE.txt"), KOFFI_LICENSE)
+        assert.deepEqual(entries.get("licenses/npm/koffi@3.3.4/LICENSE.txt"), KOFFI_LICENSE)
+        const manifest = result.manifest
+        assert.ok(manifest !== null)
+        assert.equal(manifest.licenses.projectLicense, "MIT")
+        assert.equal(manifest.licenses.review, "required")
+        assert.deepEqual(manifest.licenses.records.filter((r) => r.status !== "file-included"), [
+            { component: "@koromix/koffi-win32-x64@3.3.4", declared: "MIT", files: ["licenses/npm/@koromix+koffi-win32-x64@3.3.4/LICENSE.txt"], status: "file-supplied", source: "koffi@3.3.4/LICENSE.txt" },
+        ])
+        assert.ok(manifest.licenses.records.some((r) => r.component === "fluent-reader-mcp (this project)" && r.declared === "MIT" && isDeepStrictEqual(r.files, [PROJECT_LICENSE])))
+        assert.deepEqual(result.warnings.filter((w) => /licen[cs]e/i.test(w)), [], "no licence warning left")
+    })
+
+    test("a koffi LICENSE.txt that is not the pinned text is not supplied: the record and the warning stay", async () => {
+        const fx = fixture()
+        licensed(fx)
+        const result = await buildPortable(options(fx), fakes(fx).deps)
+        assert.deepEqual(result.manifest?.licenses.records.filter((r) => r.status !== "file-included").map((r) => [r.component, r.status]), [["@koromix/koffi-win32-x64@3.3.4", "no-license-file"]])
+        assert.ok(result.warnings.some((w) => /no licence file in @koromix\/koffi-win32-x64@3\.3\.4/.test(w)))
+        assert.equal(readZip(fs.readFileSync(result.zipPath)).some((e) => e.name.includes("koffi-win32-x64@3.3.4/")), false)
+    })
+
+    test("a licence declared in package.json without the repository's LICENSE file is refused, also in a dry run, before anything is written", async () => {
+        const fx = fixture()
+        licensed(fx)
+        fs.rmSync(path.join(fx.repo, "LICENSE"))
+        for (const dryRun of [true, false]) {
+            const opts = options(fx, { dryRun })
+            const f = fakes(fx)
+            await assert.rejects(buildPortable(opts, f.deps), (error: unknown) => error instanceof BuildError && /declares the licence MIT but the repository has no LICENSE file/.test(error.message))
+            assert.equal(fs.existsSync(opts.outDir), false, "--out not created")
+            assert.deepEqual(f.fetched, [])
+        }
     })
 })
 
