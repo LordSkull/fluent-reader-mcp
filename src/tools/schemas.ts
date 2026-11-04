@@ -7,7 +7,7 @@
 
 import { z } from "zod"
 import { SAMPLE_MAX } from "../domain/group-catalog.js"
-import { NOTE_ORDERS_MAX, NOTES_PER_PAGE_MAX, RULE_DIAGNOSTICS } from "../domain/rules.js"
+import { NOTE_ORDERS_MAX, NOTES_PER_PAGE_MAX, REGEX_CHECK_MAX, RULE_DIAGNOSTICS } from "../domain/rules.js"
 import { OPEN_TARGETS, TEXT_DIRECTIONS } from "../domain/sources.js"
 import { normalizeQuery, QUERY_CODE_POINTS_MAX } from "../domain/text-match.js"
 
@@ -655,6 +655,21 @@ export const listRulesOutput = z.strictObject({
 
 const actionFlag = z.enum(["read", "star", "hide", "notify"])
 
+const chainConflict = z.strictObject({
+    kind: z.enum([
+        "duplicateRule",
+        "oppositeActionsSameCondition",
+        "sameFlagDifferentConditions",
+        "contradictoryActionsInRule",
+        "stateDependentCondition",
+    ]),
+    certainty: z.enum(["proven", "possible", "notStaticallyDecidable"]),
+    flag: actionFlag.nullable(),
+    orders: z.array(count).max(NOTE_ORDERS_MAX),
+    ordersCount: count,
+    ordersTruncated: z.boolean(),
+})
+
 export const getRuleChainOutput = z.strictObject({
     target: z.strictObject({
         scope: z.enum(["all", "group", "source"]),
@@ -692,24 +707,7 @@ export const getRuleChainOutput = z.strictObject({
         countByOrigin: z.strictObject({ all: count, group: count, source: count }),
     }),
     semantics: z.literal(CHAIN_SEMANTICS),
-    conflicts: z
-        .array(
-            z.strictObject({
-                kind: z.enum([
-                    "duplicateRule",
-                    "oppositeActionsSameCondition",
-                    "sameFlagDifferentConditions",
-                    "contradictoryActionsInRule",
-                    "stateDependentCondition",
-                ]),
-                certainty: z.enum(["proven", "possible", "notStaticallyDecidable"]),
-                flag: actionFlag.nullable(),
-                orders: z.array(count).max(NOTE_ORDERS_MAX),
-                ordersCount: count,
-                ordersTruncated: z.boolean(),
-            }),
-        )
-        .max(NOTES_PER_PAGE_MAX),
+    conflicts: z.array(chainConflict).max(NOTES_PER_PAGE_MAX),
     conflictsOmitted: count,
     conflictCounts: z.strictObject({
         duplicateRule: count,
@@ -737,3 +735,182 @@ export type ListRulesInput = z.output<typeof listRulesInput>
 export type ListRulesOutput = z.output<typeof listRulesOutput>
 export type GetRuleChainInput = z.output<typeof getRuleChainInput>
 export type GetRuleChainOutput = z.output<typeof getRuleChainOutput>
+
+// ---- Rule change tools (FR-MCP-03-RULE-WRITE-01) ----
+
+/** Fixed description of when a saved rule takes effect (returned by every rule change tool). */
+export const RULE_CHANGE_EFFECT =
+    "Fluent Reader loads the saved rules when it starts, and applies them to the articles it fetches or syncs from then on. " +
+    "Articles already stored are not changed, unless the user asks for the app's explicit retroactive hide. " +
+    "Star means marking an article as favorite, never downloading its full content."
+
+/** Fixed description of what a preview cannot show (returned by every preview_rule_change call). */
+export const RULE_PREVIEW_LIMITS =
+    "Static analysis only: no pattern is executed and no article is read, so this does not show which real articles a rule would match. " +
+    "A preview writes nothing, creates no backup and does not authorize a change: saving takes its own call of add_rule, update_rule or delete_rule."
+
+const ruleTargetShape = {
+    scope: z.enum(["source", "group"]).describe("source: the rules of one source (source:<sourceId>); group: those of one group (group:<groupId>). Global rules cannot be changed with these tools."),
+    sourceId: sourceId.optional().describe("Required with scope source, not allowed otherwise."),
+    groupId: groupId.optional().describe("Required with scope group, not allowed otherwise. A unique group with several sources, never a single-source entry."),
+}
+
+const sourceRefOptional = sourceRefInput.optional()
+const expectedRevision = z.string().regex(/^rr1\.[A-Za-z0-9_-]{22}$/)
+const ruleIndex = count.max(Number.MAX_SAFE_INTEGER)
+
+const ruleDefinition = z.strictObject({
+    field: z.enum(["title", "text", "creator"]).describe("Where the pattern is searched: title, text (title or the stored plain-text snippet) or creator (author)."),
+    pattern: z
+        .string()
+        .min(1)
+        .max(REGEX_CHECK_MAX * 2)
+        .describe(`JavaScript regular expression, as in the app's editor (1..${REGEX_CHECK_MAX} code points). Only its syntax is checked; it is never executed here.`),
+    caseSensitive: z.boolean().describe("false ignores case (the app's default)."),
+    match: z
+        .boolean()
+        .describe(
+            "true: the actions apply when the whole condition holds (the app's 'matches', Italian 'Risultati'). " +
+                "false: inverted, they apply when it does not hold ('doesn't match', Italian 'Non ci sono risultati'). The condition includes stateMask, not only the pattern.",
+        ),
+    stateMask: z
+        .strictObject({ requireUnread: z.boolean(), requireStarred: z.boolean(), requireVisible: z.boolean() })
+        .optional()
+        .describe("Conditions on the article's state, all false by default. The app honors them, but its editor cannot show them and drops them if the rule is saved again from there."),
+    actions: z
+        .array(z.strictObject({ action: z.enum(["read", "star", "hide", "notify"]), value: z.boolean() }))
+        .min(1)
+        .max(4)
+        .describe("What to do, at most once per action. read: mark read/unread; star: favorite or not; hide: hide/show; notify: notify or not."),
+})
+
+function validTarget(v: { scope: "source" | "group"; sourceId?: number | undefined; groupId?: number | undefined; sourceRef?: string | undefined }, requireRef: boolean): boolean {
+    if (v.scope === "group") return v.groupId !== undefined && v.sourceId === undefined && v.sourceRef === undefined
+    return v.sourceId !== undefined && v.groupId === undefined && (!requireRef || v.sourceRef !== undefined)
+}
+
+const writeShape = {
+    ...ruleTargetShape,
+    sourceRef: sourceRefOptional.describe("Required with scope source: sourceRef from list_sources, get_source or preview_rule_change. SOURCE_IDENTITY_CHANGED if the id now designates another source."),
+    expectedRevision: expectedRevision.describe("revision from list_rules or currentRevision from preview_rule_change for this target. REVISION_CONFLICT, without writing, if the target's rules changed."),
+}
+
+export const addRuleInput = z
+    .strictObject({ ...writeShape, rule: ruleDefinition })
+    .superRefine((v, ctx) => {
+        if (!validTarget(v, true)) ctx.addIssue({ code: "custom", message: "target" })
+    })
+
+export const updateRuleInput = z
+    .strictObject({ ...writeShape, index: ruleIndex.describe("Index of the rule in the target's list (list_rules)."), rule: ruleDefinition })
+    .superRefine((v, ctx) => {
+        if (!validTarget(v, true)) ctx.addIssue({ code: "custom", message: "target" })
+    })
+
+export const deleteRuleInput = z
+    .strictObject({ ...writeShape, index: ruleIndex.describe("Index of the rule in the target's list (list_rules).") })
+    .superRefine((v, ctx) => {
+        if (!validTarget(v, true)) ctx.addIssue({ code: "custom", message: "target" })
+    })
+
+export const previewRuleChangeInput = z
+    .strictObject({
+        operation: z.enum(["add", "update", "delete"]).describe("The change to examine."),
+        ...ruleTargetShape,
+        sourceRef: sourceRefOptional.describe("Only with scope source: SOURCE_IDENTITY_CHANGED if the id now designates another source."),
+        index: ruleIndex.optional().describe("Required with update and delete, not allowed with add."),
+        rule: ruleDefinition.optional().describe("Required with add and update, not allowed with delete."),
+        expectedRevision: expectedRevision.optional().describe("If given, the result says whether it is still current; a stale one is not an error here."),
+    })
+    .superRefine((v, ctx) => {
+        const ok = validTarget(v, false) && (v.operation === "add" ? v.index === undefined : v.index !== undefined) && (v.operation === "delete" ? v.rule === undefined : v.rule !== undefined)
+        if (!ok) ctx.addIssue({ code: "custom", message: "operation" })
+    })
+
+const ruleChangeTarget = {
+    scope: z.enum(["source", "group"]),
+    key: z.string(),
+    sourceId: sourceId.nullable(),
+    sourceRef: z.string().nullable(),
+    groupId: groupId.nullable(),
+}
+
+const RULE_CHANGE_WARNINGS = [
+    "chainIncomplete",
+    "stateConditionsNotEditableInApp",
+    "invertedMatchIncludesState",
+    "previousRuleNonStandard",
+    "laterRuleMayOverride",
+    "fetchBlockersInChain",
+    "groupHasNoEffectiveMembers",
+    "expectedRevisionStale",
+    "fluentReaderOpen",
+] as const
+export type RuleChangeWarning = (typeof RULE_CHANGE_WARNINGS)[number]
+
+export const ruleWriteOutput = z.strictObject({
+    operation: z.enum(["add", "update", "delete"]),
+    /** false only for an update identical to the stored rule: nothing was written and no backup taken. */
+    applied: z.boolean(),
+    target: z.strictObject(ruleChangeTarget),
+    index: count,
+    previousRule: ruleSummary.nullable(),
+    rule: ruleSummary.nullable(),
+    previousRevision: z.string(),
+    revision: z.string(),
+    ruleCount: count,
+    keyRemoved: z.boolean(),
+    backup: z.strictObject({ location: z.string(), name: z.string() }).nullable(),
+    warnings: z.array(z.enum(RULE_CHANGE_WARNINGS)).max(RULE_CHANGE_WARNINGS.length),
+    effect: z.literal(RULE_CHANGE_EFFECT),
+    meta: groupMeta,
+})
+
+export const previewRuleChangeOutput = z.strictObject({
+    operation: z.enum(["add", "update", "delete"]),
+    target: z.strictObject({ ...ruleChangeTarget, name: z.string().nullable() }),
+    index: count,
+    previousRule: ruleSummary.nullable(),
+    newRule: ruleSummary.nullable(),
+    currentRevision: z.string(),
+    expectedRevisionCurrent: z.boolean().nullable(),
+    ruleCountBefore: count,
+    ruleCountAfter: count,
+    keyWouldBeRemoved: z.boolean(),
+    order: z.strictObject({
+        /** Rules of this target from this index on would move up by one (delete only). */
+        shiftedFromIndex: count.nullable(),
+        shiftedCount: count,
+        otherRulesUnchanged: z.literal(true),
+    }),
+    chain: z.strictObject({
+        complete: z.boolean(),
+        lengthBefore: count,
+        lengthAfter: count,
+        orderBefore: count.nullable(),
+        orderAfter: count.nullable(),
+        laterRulesInChain: count,
+        /** Sources whose first group is this group; null for a source target. */
+        affectedSourceCount: count.nullable(),
+    }),
+    /** Notes on the chain holding the changed rule (after the change; before it for delete), in that chain's orders. */
+    conflicts: z.array(chainConflict).max(NOTES_PER_PAGE_MAX),
+    conflictsOmitted: count,
+    /** Other rules of that chain setting a flag the changed rule sets. Whether they apply to the same article cannot be told statically. */
+    overlaps: z
+        .array(z.strictObject({ order: count, originKey: z.string(), index: count, flags: z.array(actionFlag).max(4) }))
+        .max(NOTE_ORDERS_MAX),
+    overlapsOmitted: count,
+    warnings: z.array(z.enum(RULE_CHANGE_WARNINGS)).max(RULE_CHANGE_WARNINGS.length),
+    writeAvailability: z.strictObject({ writesEnabled: z.boolean(), fluentReaderOpen: z.boolean() }),
+    limits: z.literal(RULE_PREVIEW_LIMITS),
+    effect: z.literal(RULE_CHANGE_EFFECT),
+    meta: groupMeta,
+})
+
+export type AddRuleInput = z.output<typeof addRuleInput>
+export type UpdateRuleInput = z.output<typeof updateRuleInput>
+export type DeleteRuleInput = z.output<typeof deleteRuleInput>
+export type PreviewRuleChangeInput = z.output<typeof previewRuleChangeInput>
+export type RuleWriteOutput = z.output<typeof ruleWriteOutput>
+export type PreviewRuleChangeOutput = z.output<typeof previewRuleChangeOutput>

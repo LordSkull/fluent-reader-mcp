@@ -167,7 +167,7 @@ function accessFailure(code: string | undefined): TransientRead {
     throw new FrMcpError("SETTINGS_UNAVAILABLE", "inaccessible")
 }
 
-function samePath(a: string, b: string): boolean {
+export function samePath(a: string, b: string): boolean {
     return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b
 }
 
@@ -247,7 +247,7 @@ function readAttempt(
     }
 }
 
-async function readConfigBytes(
+export async function readConfigBytes(
     configPath: string,
     profileDir: string,
     hooks: ReadSettingsHooks | undefined,
@@ -437,7 +437,11 @@ async function readAllowlisted(
     }
     if (parsed === INVALID) throw new FrMcpError("SETTINGS_INVALID", "not-json")
     if (!isPlainObject(parsed)) throw new FrMcpError("SETTINGS_INVALID", "not-object")
+    return snapshotOf(parsed, read.attempts)
+}
 
+/** The allowlisted sections of a parsed config.json. */
+export function snapshotOf(parsed: Record<string, unknown>, attempts: number): SettingsSnapshot {
     const sourceGroups = section(parsed, "sourceGroups", [], extractGroups)
     const sourceRules = section<ReadonlyMap<string, readonly StoredRuleEntry[]>>(
         parsed,
@@ -452,6 +456,59 @@ async function readAllowlisted(
         nextGroupId,
         effectiveNextGroupId: computeEffectiveNextGroupId(sourceGroups, sourceRules, nextGroupId),
         dbVersion: section(parsed, "dbVersion", null, extractDbVersion),
-        attempts: read.attempts,
+        attempts,
+    }
+}
+
+/**
+ * The whole config.json as stored, for the rule change tools only: it holds
+ * credentials, so nothing of it but `snapshot` may leave those tools. `bytes`
+ * is zeroed by whoever holds it when done.
+ */
+export interface SettingsDocument {
+    readonly bytes: Buffer
+    readonly text: string
+    readonly root: Record<string, unknown>
+    readonly snapshot: SettingsSnapshot
+}
+
+function decodeDocument(bytes: Buffer): { text: string; root: unknown } | typeof INVALID {
+    try {
+        const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes)
+        return { text, root: JSON.parse(text) as unknown }
+    } catch {
+        return INVALID
+    }
+}
+
+/**
+ * The read sequence of readSettings, keeping the document. A byte order mark
+ * is refused: the app's JSON.parse of the file would fail on it.
+ */
+export async function readSettingsDocument(configPath: string, profileDir: string): Promise<SettingsDocument> {
+    try {
+        let read = await readConfigBytes(configPath, profileDir, undefined)
+        let decoded = decodeDocument(read.bytes)
+        if (decoded === INVALID) {
+            read.bytes.fill(0)
+            await sleep(PARSE_RETRY_DELAY_MS)
+            read = await readConfigBytes(configPath, profileDir, undefined)
+            decoded = decodeDocument(read.bytes)
+        }
+        if (decoded === INVALID) {
+            read.bytes.fill(0)
+            throw new FrMcpError("SETTINGS_INVALID", "not-json")
+        }
+        if (read.bytes[0] === 0xef && read.bytes[1] === 0xbb && read.bytes[2] === 0xbf) {
+            read.bytes.fill(0)
+            throw new FrMcpError("SETTINGS_INVALID", "byte-order-mark")
+        }
+        if (!isPlainObject(decoded.root)) {
+            read.bytes.fill(0)
+            throw new FrMcpError("SETTINGS_INVALID", "not-object")
+        }
+        return { bytes: read.bytes, text: decoded.text, root: decoded.root, snapshot: snapshotOf(decoded.root, read.attempts) }
+    } catch (error) {
+        throw toSafeError(error)
     }
 }

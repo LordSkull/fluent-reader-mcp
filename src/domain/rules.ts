@@ -44,12 +44,12 @@ export const NOTE_ORDERS_MAX = 20
 /** Notes returned with one page. */
 export const NOTES_PER_PAGE_MAX = 20
 
-const SHOW_READ = 1
-const SHOW_NOT_STARRED = 2
-const SHOW_HIDDEN = 4
-const FULL_SEARCH = 8
-const CASE_INSENSITIVE = 16
-const CREATOR_SEARCH = 32
+export const SHOW_READ = 1
+export const SHOW_NOT_STARRED = 2
+export const SHOW_HIDDEN = 4
+export const FULL_SEARCH = 8
+export const CASE_INSENSITIVE = 16
+export const CREATOR_SEARCH = 32
 const STANDARD_FILTERS: ReadonlySet<number> = new Set([7, 15, 23, 31, 39, 55])
 
 export type RuleScope = "all" | "group" | "source"

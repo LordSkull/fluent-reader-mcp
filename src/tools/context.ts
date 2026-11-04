@@ -9,6 +9,7 @@ import { logEvent } from "../log.js"
 import { CursorRegistry } from "../scan/cursors.js"
 import { SourceIdentity } from "../scan/identity.js"
 import { readSettings } from "../settings/read-settings.js"
+import type { RuleWriteSettings } from "../settings/rule-store.js"
 
 export interface ToolContext {
     readonly database: Pick<DatabaseAccess, "withReadConnection">
@@ -17,6 +18,8 @@ export interface ToolContext {
     readonly cursors: CursorRegistry
     readonly identity: SourceIdentity
     readonly now: () => number
+    /** Disabled unless the user enabled it explicitly (see settings/rule-store.ts). */
+    readonly ruleWrites: RuleWriteSettings
 }
 
 export interface ToolContextOptions {
@@ -25,6 +28,7 @@ export interface ToolContextOptions {
     readonly profileDir: string
     readonly cursors?: CursorRegistry
     readonly now?: () => number
+    readonly ruleWrites?: RuleWriteSettings
 }
 
 export function createToolContext(options: ToolContextOptions): ToolContext {
@@ -36,6 +40,7 @@ export function createToolContext(options: ToolContextOptions): ToolContext {
         cursors: options.cursors ?? new CursorRegistry({ now }),
         identity: new SourceIdentity(),
         now,
+        ruleWrites: options.ruleWrites ?? { enabled: false },
     }
 }
 

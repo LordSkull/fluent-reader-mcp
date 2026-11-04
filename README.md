@@ -1,8 +1,8 @@
 # Fluent Reader MCP
 
-**Fluent Reader MCP** è un server [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) locale, indipendente e **in sola lettura**, che permette ai client compatibili — come **Claude Desktop** e **Claude Code** — di consultare i dati salvati da [Fluent Reader](https://github.com/yang991178/fluent-reader) attraverso il linguaggio naturale.
+**Fluent Reader MCP** è un server [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) locale, indipendente e, **per impostazione predefinita, in sola lettura**, che permette ai client compatibili — come **Claude Desktop** e **Claude Code** — di consultare i dati salvati da [Fluent Reader](https://github.com/yang991178/fluent-reader) attraverso il linguaggio naturale.
 
-Il server espone fonti RSS, gruppi, articoli e regole di filtraggio già presenti nel profilo Fluent Reader. Non modifica il database, non aggiorna i feed, non applica le regole e non scarica da Internet il contenuto degli articoli.
+Il server espone fonti RSS, gruppi, articoli e regole di filtraggio già presenti nel profilo Fluent Reader. Non modifica il database, non aggiorna i feed, non applica le regole e non scarica da Internet il contenuto degli articoli. Solo se l'utente lo abilita esplicitamente può modificare le regole delle fonti e dei gruppi: vedi [Modifica delle regole](#modifica-delle-regole-disabilitata-per-impostazione-predefinita).
 
 > **Stato:** `v0.1.2-beta` — il codice sorgente attuale implementa **nove strumenti MCP read-only**, compresi l'elenco paginato (`list_articles`) e la ricerca testuale (`search_articles`) degli articoli. I pacchetti Windows costruiti dal codice attuale (ZIP e installer) contengono tutti e nove gli strumenti e lo verificano con un auto-test MCP su un profilo sintetico. Il primo installer `v0.1.0-beta` costruito il 2026-10-29 conteneva invece soltanto i **sette** strumenti iniziali (FR-MCP-02A); il setup `v0.1.2-beta` riconosce le versioni precedenti (`0.1.0`, `0.1.1`) e le aggiorna. Dalla `0.1.2` il wizard configura Claude Desktop invece di Claude Code. Il nuovo installer è in **collaudo**: non è ancora approvato per la distribuzione.
 
@@ -188,9 +188,35 @@ La descrizione completa è in [installer/INSTALLER.md](installer/INSTALLER.md); 
 - Il profilo Fluent Reader è selezionato separatamente e **non viene copiato, modificato o cancellato** durante installazione/disinstallazione.
 - Per la rimozione usa il disinstallatore fornito (`uninstall.exe`), non la cancellazione manuale della cartella; le modifiche alle configurazioni MCP eventualmente fatte **manualmente** vanno rimosse separatamente dal client interessato.
 
+## Modifica delle regole (disabilitata per impostazione predefinita)
+
+Il codice sorgente attuale (FR-MCP-03-RULE-WRITE-01, non ancora in un pacchetto rilasciato) contiene quattro strumenti aggiuntivi: `preview_rule_change` (solo lettura), `add_rule`, `update_rule` e `delete_rule`. Senza abilitazione **non vengono nemmeno elencati**: il server espone gli stessi nove strumenti in sola lettura, e il wizard non cambia.
+
+**Abilitazione.** Aggiungi la variabile alla voce `fluent-reader` del file di configurazione di Claude Desktop, poi riavvia del tutto Claude Desktop. Vale solo il valore esatto `1`; toglierla le disabilita di nuovo.
+
+```json
+"env": { "FLUENT_READER_MCP_ENABLE_RULE_WRITES": "1" }
+```
+
+Una voce così modificata non è più quella scritta dall'installer: rieseguendo il setup viene segnalata e, se ne confermi la sostituzione, l'abilitazione si perde; la disinstallazione non la rimuove, e va tolta a mano. Non impostare la variabile a livello di sistema: l'auto-test dei pacchetti richiede esattamente nove strumenti.
+
+**Fluent Reader deve essere chiuso.** Con l'app aperta le scritture sono rifiutate (`FLUENT_READER_RUNNING`), mentre anteprima e letture restano disponibili. Il motivo è concreto: l'app salva `config.json` con una lettura-modifica-scrittura che un processo esterno non può coordinare, e tiene le regole in memoria dall'avvio, quindi le ignorerebbe fino al riavvio e, salvando lo stesso obiettivo dal suo editor, le sovrascriverebbe. L'app aperta si riconosce dal file `lockfile` nel profilo; il server non termina mai alcun processo. Se l'app è chiusa ma il file è rimasto (per esempio dopo un'interruzione di corrente), basta aprirla e chiuderla una volta.
+
+**Cosa cambia e cosa no.**
+
+- Solo `source:<id>` e `group:<id>`: le regole globali restano consultabili ma non modificabili, e l'appartenenza delle fonti ai gruppi non cambia.
+- Ogni scrittura richiede `expectedRevision` (da `list_rules` o `preview_rule_change`); per le fonti anche `sourceRef`. Se le regole sono cambiate, o la richiesta è un duplicato, viene rifiutata senza scrivere. Revisione e `sourceRef` valgono per l'esecuzione corrente del server.
+- Le regole nuove valgono per gli articoli che l'app elaborerà dal successivo avvio: quelli già presenti non cambiano, salvo il comando retroattivo esplicito dell'app. "Salva" significa contrassegnare come preferito, non scaricare il contenuto.
+- La condizione invertita (`match: false`, in italiano "Non ci sono risultati") si applica a tutta la condizione, stato dell'articolo compreso. Le condizioni sullo stato sono rispettate dall'app, ma il suo editor non le mostra e le perde se la regola viene risalvata da lì.
+- L'anteprima è analisi statica: non esegue i pattern e non prova il comportamento di una regex sugli articoli reali, né autorizza il salvataggio. Una regex con backtracking eccessivo si può salvare come dall'editor dell'app, e rallentare l'elaborazione.
+
+**Scrittura e backup.** Viene sostituita soltanto la porzione di `config.json` relativa all'obiettivo: tutto il resto resta identico byte per byte, campi sconosciuti compresi. Prima della scrittura una copia esatta del file va in `%LOCALAPPDATA%\FluentReaderMCP-Data\rule-backups\<chiave>\config.json.<data>.bak`; se la copia non riesce, non si scrive nulla. Il nuovo contenuto va in un file temporaneo, poi il file viene sostituito con un rename atomico e riletto per conferma.
+
+I backup **contengono l'intera configurazione, credenziali comprese**: non condividerli. Non vengono mai cancellati automaticamente. Per tornare indietro, con Fluent Reader chiuso, copia il backup scelto su `config.json`: nessun ripristino è automatico, perché potrebbe sovrascrivere modifiche successive.
+
 ## Sicurezza, privacy e limiti
 
-- **Sola lettura:** il server non segna articoli come letti e non modifica fonti, gruppi o regole.
+- **Sola lettura per impostazione predefinita:** il server non segna articoli come letti e non modifica fonti o gruppi; modifica le regole soltanto se abilitato (vedi sopra).
 - **Processo locale:** MCP su `stdio`, senza endpoint di rete previsto; ciò non sostituisce i controlli di accesso di Windows ai file del profilo.
 - **Dati sensibili:** URL e credenziali non vengono esposti per default; gli output e gli errori sono limitati e sanitizzati secondo le verifiche implementate.
 - **Contenuti RSS non attendibili:** titoli e testi possono contenere tentativi di *prompt injection*. Il client deve trattarli come dati, non come istruzioni autorizzate.
@@ -212,6 +238,7 @@ La descrizione completa è in [installer/INSTALLER.md](installer/INSTALLER.md); 
 - **FR-MCP-04-BETA-RELEASE-01 (completato):** documentazione e checklist di collaudo Windows ([WINDOWS-SMOKE-TEST.md](installer/WINDOWS-SMOKE-TEST.md)).
 - **FR-MCP-04-BETA-RELEASE-02 (completato):** versione 0.1.1, licenza MIT del progetto e notice di Koffi nei pacchetti, build pulita.
 - **FR-MCP-04-BETA-RELEASE-03 (in corso):** versione 0.1.2 con il wizard Desktop-first; poi build pulita e collaudo su Windows reale. La distribuzione resta subordinata alla review e all'approvazione del proprietario.
+- **FR-MCP-03-RULE-WRITE-01 (implementato, in review):** `add_rule`, `update_rule`, `preview_rule_change` e `delete_rule`, disabilitati per impostazione predefinita; verificati su profili sintetici, non ancora collaudati con Claude Desktop reale né inclusi in un pacchetto.
 - **Successivamente:** hardening di sicurezza, benchmark su archivi grandi, miglioramento della distribuzione Windows, CI e release pubblica quando autorizzata.
 
 Il progetto Fluent Reader MCP è indipendente dal fork dell'applicazione e non richiede modifiche a Fluent Reader per le funzionalità read-only attuali.

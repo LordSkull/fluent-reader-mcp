@@ -32,6 +32,14 @@ export const ERROR_CODES = [
     "CURSOR_EXPIRED",
     "CURSOR_MISMATCH",
     "CURSOR_STALE",
+    "RULE_WRITES_DISABLED",
+    "FLUENT_READER_RUNNING",
+    "REVISION_CONFLICT",
+    "RULE_NOT_FOUND",
+    "RULE_WRITE_BUSY",
+    "RULE_BACKUP_UNAVAILABLE",
+    "RULE_WRITE_FAILED",
+    "RULE_WRITE_UNVERIFIED",
     "INTERNAL_ERROR",
 ] as const
 
@@ -112,6 +120,25 @@ export type ErrorReason =
     | "sources-changed"
     | "position-changed"
     | "source-identity-unverifiable"
+    // rule writes
+    | "writes-disabled"
+    | "lockfile-present"
+    | "app-started"
+    | "revision-mismatch"
+    | "settings-changed"
+    | "rule-not-found"
+    | "invalid-regex"
+    | "pattern-too-long"
+    | "duplicate-action"
+    | "duplicate-key"
+    | "byte-order-mark"
+    | "hard-linked"
+    | "write-in-progress"
+    | "backup-location"
+    | "backup-failed"
+    | "write-failed"
+    | "replace-failed"
+    | "read-back-failed"
     // generic
     | "async-callback"
     | "unexpected"
@@ -132,7 +159,7 @@ const TEXT: Readonly<Record<ErrorCode, { message: string; hint: string }>> = {
     },
     SETTINGS_INVALID: {
         message: "The profile settings could not be parsed or have an unexpected structure.",
-        hint: "Open Fluent Reader to repair its settings; the server never modifies config.json.",
+        hint: "Open Fluent Reader to repair its settings; this server never repairs config.json.",
     },
     SETTINGS_TOO_LARGE: {
         message: "The profile settings exceed the supported size or structural limits.",
@@ -181,7 +208,7 @@ const TEXT: Readonly<Record<ErrorCode, { message: string; hint: string }>> = {
     },
     GROUP_AMBIGUOUS: {
         message: "The group id appears more than once in the profile settings, so its members cannot be determined.",
-        hint: "Open Fluent Reader so that it can repair its groups; the server never modifies config.json.",
+        hint: "Open Fluent Reader so that it can repair its groups; this server never repairs config.json.",
     },
     ID_RANGE_UNSUPPORTED: {
         message:
@@ -215,6 +242,38 @@ const TEXT: Readonly<Record<ErrorCode, { message: string; hint: string }>> = {
     CURSOR_STALE: {
         message: "The data behind the cursor changed, or can no longer be verified, in a way that invalidates the listing.",
         hint: "Start the listing again without a cursor. A list_articles or search_articles listing filtered on a source whose feed URL cannot be verified (larger than 64 KiB, or not text) cannot be continued past its first page.",
+    },
+    RULE_WRITES_DISABLED: {
+        message: "Changing rules is disabled for this server; nothing was written.",
+        hint: "The user can enable it by setting FLUENT_READER_MCP_ENABLE_RULE_WRITES to 1 in this server's entry of the MCP client configuration and restarting the client.",
+    },
+    FLUENT_READER_RUNNING: {
+        message: "Fluent Reader is open on this profile, or its lock file is present, so config.json cannot be changed safely; nothing was written.",
+        hint: "Close Fluent Reader completely (also from the notification area), then retry; this server never terminates it. If it is already closed, open and close it once: that clears a lock file left by a power loss.",
+    },
+    REVISION_CONFLICT: {
+        message: "The rules or config.json changed since the revision the request is based on; nothing was written.",
+        hint: "Call preview_rule_change or list_rules for the current revision, review the rules again and retry only if the change is still wanted. A revision is valid only for the current run of the server.",
+    },
+    RULE_NOT_FOUND: {
+        message: "The target has no rule at this index; nothing was written.",
+        hint: "Call list_rules for the target's current rules and indexes.",
+    },
+    RULE_WRITE_BUSY: {
+        message: "Another rule change on this profile is in progress; nothing was written.",
+        hint: "Retry shortly; another copy of this server may be saving a change.",
+    },
+    RULE_BACKUP_UNAVAILABLE: {
+        message: "The private backup of config.json could not be created, so no change was made.",
+        hint: "Backups are kept only in %LOCALAPPDATA%\\FluentReaderMCP-Data\\rule-backups, which must be made of regular local folders inside the user profile, with free space; they are never saved elsewhere.",
+    },
+    RULE_WRITE_FAILED: {
+        message: "The change could not be saved; config.json was not replaced.",
+        hint: "Retry later: another program may be holding the file, or the disk may be full or read-only.",
+    },
+    RULE_WRITE_UNVERIFIED: {
+        message: "config.json was replaced, but the saved result could not be verified; nothing was restored automatically.",
+        hint: "Do not retry blindly. Call list_rules to check the rules. A private copy taken before the change is in %LOCALAPPDATA%\\FluentReaderMCP-Data\\rule-backups; it holds the whole configuration, credentials included.",
     },
     INTERNAL_ERROR: {
         message: "An internal error occurred.",
