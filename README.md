@@ -4,7 +4,7 @@
 
 Il server espone fonti RSS, gruppi, articoli e regole di filtraggio già presenti nel profilo Fluent Reader. Non modifica il database, non aggiorna i feed, non applica le regole e non scarica da Internet il contenuto degli articoli. Solo se l'utente lo abilita esplicitamente può modificare le regole delle fonti e dei gruppi: vedi [Modifica delle regole](#modifica-delle-regole-disabilitata-per-impostazione-predefinita).
 
-> **Stato:** `v0.1.2-beta` — il codice sorgente attuale implementa **nove strumenti MCP read-only**, compresi l'elenco paginato (`list_articles`) e la ricerca testuale (`search_articles`) degli articoli. I pacchetti Windows costruiti dal codice attuale (ZIP e installer) contengono tutti e nove gli strumenti e lo verificano con un auto-test MCP su un profilo sintetico. Il primo installer `v0.1.0-beta` costruito il 2026-10-29 conteneva invece soltanto i **sette** strumenti iniziali (FR-MCP-02A); il setup `v0.1.2-beta` riconosce le versioni precedenti (`0.1.0`, `0.1.1`) e le aggiorna. Dalla `0.1.2` il wizard configura Claude Desktop invece di Claude Code. Il nuovo installer è in **collaudo**: non è ancora approvato per la distribuzione.
+> **Stato:** `v0.1.3-beta` — per impostazione predefinita il server espone **nove strumenti MCP in sola lettura**. Solo impostando manualmente la variabile opt-in documentata espone **tredici strumenti**: i nove di lettura, `preview_rule_change` (sola lettura) e tre scritture di regole (`add_rule`, `update_rule`, `delete_rule`). Il setup non abilita mai questa modalità. L'auto-test dei pacchetti verifica entrambi i conteggi su un profilo sintetico. Il primo installer `v0.1.0-beta` costruito il 2026-10-29 conteneva soltanto i **sette** strumenti iniziali; `v0.1.1-beta` e `v0.1.2-beta` ne contenevano nove. Dalla `0.1.2` il wizard configura Claude Desktop invece di Claude Code. Il nuovo installer è in **collaudo**: non è ancora approvato per la distribuzione.
 
 ## Come funziona
 
@@ -94,7 +94,7 @@ npm.cmd run package:win -- --out "D:\FluentReaderMCP-build"
 **Installer NSIS**, generato a partire dallo ZIP appena costruito e verificato con SHA-256:
 
 ```powershell
-$zip = "D:\FluentReaderMCP-build\fluent-reader-mcp-v0.1.2-beta-win-x64.zip"
+$zip = "D:\FluentReaderMCP-build\fluent-reader-mcp-v0.1.3-beta-win-x64.zip"
 $sha = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
 
 # Prima verifica senza compilare l'EXE.
@@ -108,7 +108,7 @@ Gli artefatti generati devono essere verificati tramite i relativi checksum e re
 
 ## Strumenti MCP disponibili
 
-Il codice sorgente attuale implementa **nove strumenti**, tutti in sola lettura: nessuno strumento modifica articoli, feed, gruppi, regole o impostazioni. I pacchetti costruiti dal codice attuale li contengono tutti; il primo installer `v0.1.0-beta` (2026-10-29) conteneva soltanto i primi sette. `list_articles` e `search_articles` sono stati validati con test automatici e smoke MCP su profili sintetici, mentre il collaudo reale con Claude Desktop riguarda finora solo i sette strumenti FR-MCP-02A.
+Senza opt-in il server implementa i **nove strumenti in sola lettura** elencati qui sotto: non modificano articoli, feed, gruppi, regole o impostazioni. Il pacchetto 0.1.3 contiene anche i quattro strumenti di regole descritti più avanti, ma non li elenca né permette scritture finché l'utente non li abilita esplicitamente. Il primo installer `v0.1.0-beta` (2026-10-29) conteneva soltanto i primi sette strumenti. `list_articles` e `search_articles` sono stati validati con test automatici e smoke MCP su profili sintetici, mentre il collaudo reale con Claude Desktop riguarda finora solo i sette strumenti FR-MCP-02A.
 
 | Strumento | Cosa fa |
 |---|---|
@@ -167,7 +167,7 @@ Il wizard Windows configura **Claude Desktop** come unico client, in modo facolt
 
 **Che cosa cambia.** Soltanto `mcpServers.fluent-reader`, dopo aver mostrato file e voce e con un consenso specifico. Ogni altro byte del file resta com'è (altri server come `foundry-mcp`, preferenze, campi sconosciuti, `env`, credenziali). Il file viene copiato prima in una cartella personale; un JSON non valido, una struttura diversa o una voce `fluent-reader` non attribuibile non vengono sovrascritti in silenzio.
 
-**Verifica obbligatoria nel client.** Dopo l'installazione chiudi del tutto Claude Desktop (anche dall'area di notifica), riaprilo e controlla che compaia `fluent-reader` con nove strumenti. Se non compare, probabilmente il file selezionato non è quello attivo: esegui di nuovo il setup e seleziona l'altro. Il setup non dichiara mai riuscito il collegamento.
+**Verifica obbligatoria nel client.** Dopo l'installazione chiudi del tutto Claude Desktop (anche dall'area di notifica), riaprilo e controlla che compaia `fluent-reader` con **nove strumenti**, il comportamento predefinito. Se hai poi aggiunto manualmente l'opt-in, dopo un altro riavvio completo devono comparirne **tredici**. Se il server non compare, probabilmente il file selezionato non è quello attivo: esegui di nuovo il setup e seleziona l'altro. Il setup non dichiara mai riuscito il collegamento.
 
 ### Claude Code
 
@@ -190,7 +190,7 @@ La descrizione completa è in [installer/INSTALLER.md](installer/INSTALLER.md); 
 
 ## Modifica delle regole (disabilitata per impostazione predefinita)
 
-Il codice sorgente attuale (FR-MCP-03-RULE-WRITE-01, non ancora in un pacchetto rilasciato) contiene quattro strumenti aggiuntivi: `preview_rule_change` (solo lettura), `add_rule`, `update_rule` e `delete_rule`. Senza abilitazione **non vengono nemmeno elencati**: il server espone gli stessi nove strumenti in sola lettura, e il wizard non cambia.
+Il codice sorgente 0.1.3 contiene quattro strumenti aggiuntivi: `preview_rule_change` (solo lettura), `add_rule`, `update_rule` e `delete_rule`. Senza abilitazione **non vengono nemmeno elencati**: il server espone gli stessi nove strumenti in sola lettura. Il wizard installa questi file ma non aggiunge la variabile e non abilita le scritture.
 
 **Abilitazione.** Aggiungi la variabile alla voce `fluent-reader` del file di configurazione di Claude Desktop, poi riavvia del tutto Claude Desktop. Vale solo il valore esatto `1`; toglierla le disabilita di nuovo.
 
@@ -198,7 +198,7 @@ Il codice sorgente attuale (FR-MCP-03-RULE-WRITE-01, non ancora in un pacchetto 
 "env": { "FLUENT_READER_MCP_ENABLE_RULE_WRITES": "1" }
 ```
 
-Una voce così modificata non è più quella scritta dall'installer: rieseguendo il setup viene segnalata e, se ne confermi la sostituzione, l'abilitazione si perde; la disinstallazione non la rimuove, e va tolta a mano. Non impostare la variabile a livello di sistema: l'auto-test dei pacchetti richiede esattamente nove strumenti.
+Una voce così modificata non è più quella scritta dall'installer: rieseguendo il setup viene segnalata e, se ne confermi la sostituzione, l'abilitazione si perde; la disinstallazione non la rimuove, e va tolta a mano. Non impostare la variabile a livello di sistema: aggiungila soltanto alla voce MCP interessata. L'auto-test del pacchetto rimuove esplicitamente la variabile per verificare i nove strumenti predefiniti, poi la imposta a `1` nel solo processo sintetico per verificare tutti i tredici.
 
 **Fluent Reader deve essere chiuso.** Con l'app aperta le scritture sono rifiutate (`FLUENT_READER_RUNNING`), mentre anteprima e letture restano disponibili. Il motivo è concreto: l'app salva `config.json` con una lettura-modifica-scrittura che un processo esterno non può coordinare, e tiene le regole in memoria dall'avvio, quindi le ignorerebbe fino al riavvio e, salvando lo stesso obiettivo dal suo editor, le sovrascriverebbe. L'app aperta si riconosce dal file `lockfile` nel profilo; il server non termina mai alcun processo. Se l'app è chiusa ma il file è rimasto (per esempio dopo un'interruzione di corrente), basta aprirla e chiuderla una volta.
 
@@ -237,11 +237,12 @@ I backup **contengono l'intera configurazione, credenziali comprese**: non condi
 - **FR-MCP-04-BETA-UX-01 (implementato e approvato in review; non ancora collaudato con Claude Desktop reale):** wizard Desktop-first con selezione assistita del file di configurazione, `Program Files` non rifiutata per il solo nome, nessuna finestra di conferma della cartella. La proposta storica di scelta fra Code, Desktop, entrambi o nessuno è superata. Questi comportamenti sono inclusi dalla `0.1.2`, non nella build 0.1.1 già costruita.
 - **FR-MCP-04-BETA-RELEASE-01 (completato):** documentazione e checklist di collaudo Windows ([WINDOWS-SMOKE-TEST.md](installer/WINDOWS-SMOKE-TEST.md)).
 - **FR-MCP-04-BETA-RELEASE-02 (completato):** versione 0.1.1, licenza MIT del progetto e notice di Koffi nei pacchetti, build pulita.
-- **FR-MCP-04-BETA-RELEASE-03 (in corso):** versione 0.1.2 con il wizard Desktop-first; poi build pulita e collaudo su Windows reale. La distribuzione resta subordinata alla review e all'approvazione del proprietario.
-- **FR-MCP-03-RULE-WRITE-01 (implementato, in review):** `add_rule`, `update_rule`, `preview_rule_change` e `delete_rule`, disabilitati per impostazione predefinita; verificati su profili sintetici, non ancora collaudati con Claude Desktop reale né inclusi in un pacchetto.
+- **FR-MCP-04-BETA-RELEASE-03 (completato):** versione 0.1.2 con il wizard Desktop-first.
+- **FR-MCP-03-RULE-WRITE-01 (implementato e approvato):** `add_rule`, `update_rule`, `preview_rule_change` e `delete_rule`, disabilitati per impostazione predefinita e verificati su profili sintetici; il collaudo con Claude Desktop reale resta da eseguire.
+- **FR-MCP-04-BETA-RELEASE-04 (in corso):** versione 0.1.3, pacchetti con nove strumenti predefiniti e tredici solo dopo opt-in; poi build pulita e collaudo su Windows reale. La distribuzione resta subordinata alla review e all'approvazione del proprietario.
 - **Successivamente:** hardening di sicurezza, benchmark su archivi grandi, miglioramento della distribuzione Windows, CI e release pubblica quando autorizzata.
 
-Il progetto Fluent Reader MCP è indipendente dal fork dell'applicazione e non richiede modifiche a Fluent Reader per le funzionalità read-only attuali.
+Il progetto Fluent Reader MCP è indipendente dal fork dell'applicazione e non richiede modifiche a Fluent Reader per le funzionalità attuali.
 
 ## Sviluppo e contributi
 

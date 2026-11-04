@@ -21,8 +21,12 @@ export const MANIFEST = "manifest.json"
 export const INFO = "PACKAGING-INFO.md"
 /** P-INS-05; still subject to the owner's approval. */
 export const DEFAULT_INSTALL_DIR = "%LOCALAPPDATA%\\FluentReaderMCP"
-/** The nine read-only tools (FR-MCP-02A, list_articles of FR-MCP-02B-01 and search_articles of FR-MCP-02B-02), sorted; the self-test requires exactly these. */
+/** The nine tools exposed by default, all read-only, sorted. */
 export const TOOLS = ["get_article", "get_group", "get_rule_chain", "get_source", "list_articles", "list_groups", "list_rules", "list_sources", "search_articles"] as const
+/** The four tools exposed only after the user explicitly enables rule writes; three write and preview_rule_change is read-only. */
+export const RULE_TOOLS = ["add_rule", "delete_rule", "preview_rule_change", "update_rule"] as const
+export const ALL_TOOLS = [...TOOLS, ...RULE_TOOLS].sort(compareOrdinal)
+export const RULE_WRITES_ENV_VAR = "FLUENT_READER_MCP_ENABLE_RULE_WRITES"
 /** Top-level entries owned by the product (for a future uninstaller). */
 export const OWNED_ENTRIES = ["runtime/", "server/", "licenses/", MANIFEST, INFO] as const
 export const KOFFI_NATIVE = "server/node_modules/@koromix/koffi-win32-x64/win32_x64/koffi.node"
@@ -301,10 +305,12 @@ export function packagingInfo(version: string, lock: RuntimeLock): string {
     return [
         `# ${PRODUCT_NAME} ${version} — private beta (Windows x64)`,
         "",
-        "Read-only MCP server (stdio) for one local Fluent Reader profile.",
-        `Tools: ${TOOLS.join(", ")}. No write tools; Fluent Reader data is never modified.`,
+        "Local MCP server (stdio) for one Fluent Reader profile, read-only by default.",
+        `Default tools (9, all read-only): ${TOOLS.join(", ")}.`,
+        `Explicit opt-in tools (13 total): ${RULE_TOOLS.join(", ")}; three can change source or group rules and preview_rule_change is read-only.`,
         "",
-        "This beta is limited to nine read-only tools: the seven of FR-MCP-02A, list_articles (FR-MCP-02B-01) and search_articles (FR-MCP-02B-02, literal search of the locally stored articles only).",
+        `Rule writes stay disabled unless the MCP client entry sets ${RULE_WRITES_ENV_VAR} to the exact value 1; this package and its installer never enable it automatically.`,
+        "With the default configuration Fluent Reader data is not modified. With rule writes enabled, close Fluent Reader before changing rules and keep the generated backups.",
         "It is not an installer: nothing is registered, no service or network port is created.",
         "",
         "## Contents",

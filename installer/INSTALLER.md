@@ -4,10 +4,11 @@ Installer NSIS per l'utente corrente (Windows 10/11 x64) costruito **a partire d
 (`fluent-reader-mcp-v<versione>-beta-win-x64.zip`, FR-MCP-04-BETA-01). Il server non viene ricompilato: l'installer
 contiene esattamente i file del pacchetto, più il programma di supporto del setup.
 
-Beta privata: nove strumenti in sola lettura (i sette di FR-MCP-02A, `list_articles` di FR-MCP-02B-01 e
-`search_articles` di FR-MCP-02B-02). Il builder rifiuta un pacchetto il cui manifest non elenca esattamente questi nove
-strumenti e l'auto-test MCP (a build e durante l'installazione, su un profilo sintetico) richiede che `tools/list`
-restituisca esattamente quei nove.
+Beta privata: nove strumenti in sola lettura per impostazione predefinita. Il pacchetto contiene anche quattro strumenti
+di regole: `preview_rule_change` è in sola lettura; `add_rule`, `update_rule` e `delete_rule` scrivono solo dopo l'opt-in
+manuale. Il wizard non aggiunge mai la variabile di abilitazione. Il builder continua a richiedere nel manifest i nove
+strumenti predefiniti e l'auto-test MCP (a build e durante l'installazione, su un profilo sintetico) verifica sia i nove
+senza variabile sia tutti i tredici con il valore esatto `1`.
 
 Integrazioni con i client Claude:
 
@@ -17,7 +18,7 @@ Integrazioni con i client Claude:
 - **Claude Code:** non più gestito dal wizard (né ricerca di `claude.exe`, né registrazione). Le voci create dalle beta
   0.1.0 e 0.1.1 restano al loro posto; vedi "Installazioni delle beta 0.1.x" e "Registrazione manuale".
 
-Questo documento descrive il codice attuale (FR-MCP-04-BETA-UX-01, dalla versione 0.1.2). La build 0.1.1 già costruita registra invece in Claude
+Questo documento descrive il codice 0.1.3; il wizard Desktop-first esiste dalla versione 0.1.2. La build 0.1.1 già costruita registra invece in Claude
 Code e chiede conferma della cartella con una finestra.
 
 ## Prerequisiti (solo per chi costruisce l'installer)
@@ -34,10 +35,10 @@ Code e chiede conferma della cartella con una finestra.
 
 ```powershell
 # 1. Prova a secco: verifica bundle, checksum, manifest, NSIS e percorsi; non scrive nulla e non avvia makensis
-npm.cmd run installer:win -- --bundle "D:\FluentReaderMCP-build\fluent-reader-mcp-v0.1.2-beta-win-x64.zip" --bundle-sha256 <sha256 del bundle> --out "D:\FluentReaderMCP-build" --dry-run
+npm.cmd run installer:win -- --bundle "D:\FluentReaderMCP-build\fluent-reader-mcp-v0.1.3-beta-win-x64.zip" --bundle-sha256 <sha256 del bundle> --out "D:\FluentReaderMCP-build" --dry-run
 
 # 2. Installer
-npm.cmd run installer:win -- --bundle "D:\FluentReaderMCP-build\fluent-reader-mcp-v0.1.2-beta-win-x64.zip" --bundle-sha256 <sha256 del bundle> --out "D:\FluentReaderMCP-build"
+npm.cmd run installer:win -- --bundle "D:\FluentReaderMCP-build\fluent-reader-mcp-v0.1.3-beta-win-x64.zip" --bundle-sha256 <sha256 del bundle> --out "D:\FluentReaderMCP-build"
 ```
 
 Come per il builder portatile, il comando npm compila prima con TypeScript (rigenera `dist-test\`, già ignorata da
@@ -59,7 +60,8 @@ fissato negli script: va passato ogni volta con `--bundle-sha256`.
 1. Windows x64; nome del pacchetto, file `.sha256` e `--bundle-sha256` tutti uguali allo SHA-256 del file.
 2. Ogni voce dello ZIP riletta (CRC, nomi sicuri, nessuna voce fuori da `FluentReaderMCP/`); manifest (schema 1)
    uguale al contenuto, con dimensione e SHA-256 di ogni file; versione uguale a `package.json`; runtime uguale a
-   `installer/runtime-lock.json` (Node.js 24.22.1, hash dell'archivio ufficiale); entrypoint e i nove strumenti;
+   `installer/runtime-lock.json` (Node.js 24.22.1, hash dell'archivio ufficiale); entrypoint, nove strumenti predefiniti
+   nel manifest e auto-test dei tredici dopo opt-in;
    presenti `runtime\node.exe`, `server\dist\main.js`, il modulo Koffi win32-x64, le licenze; nessun contenuto
    vietato. Un pacchetto incompleto, alterato o di un'altra versione viene rifiutato prima di scrivere qualsiasi file.
 3. Percorsi canonici (collegamenti e junction risolti); `--out` fuori dalla repository; nessun artefatto o cartella
@@ -77,9 +79,9 @@ Output:
 
 ```text
 D:\FluentReaderMCP-build\
-  FluentReaderMCP-Setup-v0.1.2-beta-win-x64.exe
-  FluentReaderMCP-Setup-v0.1.2-beta-win-x64.exe.sha256
-  FluentReaderMCP-Setup-v0.1.2-beta-win-x64.exe.build-report.json
+  FluentReaderMCP-Setup-v0.1.3-beta-win-x64.exe
+  FluentReaderMCP-Setup-v0.1.3-beta-win-x64.exe.sha256
+  FluentReaderMCP-Setup-v0.1.3-beta-win-x64.exe.build-report.json
 ```
 
 Il report contiene SHA-256 e dimensione dell'installer, versione NSIS, commit degli script, e la provenienza del
@@ -90,7 +92,7 @@ pacchetto (nome file, SHA-256, commit, data, runtime); **nessun percorso locale*
 Nessun servizio, nessuna porta, nessun processo residente, nessuna scrittura in `HKLM`, `RequestExecutionLevel user`
 (niente UAC). Il server viene avviato da Claude Desktop quando serve.
 
-Pagine: benvenuto (beta in sola lettura) → cartella di installazione → profilo Fluent Reader (Sfoglia) → riepilogo
+Pagine: benvenuto (beta in sola lettura per impostazione predefinita) → cartella di installazione → profilo Fluent Reader (Sfoglia) → riepilogo
 (destinazione, tipo di operazione, avvisi sulla posizione, profilo) e informativa privacy (conferma obbligatoria) →
 Claude Desktop (registrare o installare solo il server; file di configurazione) → file e voce esatti, con il consenso
 alla modifica → installazione → risultato e istruzioni.
@@ -248,7 +250,7 @@ stata osservata anche una cartella `%LOCALAPPDATA%\Claude-Data\<identificatore>`
   nuovo il setup e se ne seleziona un altro; la voce nel primo resta attribuibile e la disinstallazione la rimuove se è
   ancora quella.
 - Selezionare non è verificare: né il wizard né la pagina finale dichiarano il collegamento riuscito. La prova è nel
-  client (riavvio completo, `fluent-reader` con nove strumenti).
+  client (riavvio completo, `fluent-reader` con nove strumenti predefiniti; tredici soltanto dopo l'opt-in manuale).
 - Se una policy ha `isLocalDevMcpEnabled` a 0 (`HKLM` poi `HKCU`, `SOFTWARE\Policies\Claude`; lettura con `reg query`),
   la registrazione non è disponibile e il server si installa comunque.
 
@@ -317,7 +319,7 @@ contiene dati di Claude Code né di Fluent Reader.
 | Fase | Che cosa è già persistente quando inizia |
 |---|---|
 | `staging` | il journal, prima che esista `.staging` |
-| `prepared` | `.staging` verificata con il proprio runtime (inventario, manifest, `node --version`, handshake MCP con i nove strumenti su un profilo **sintetico**); il nuovo disinstallatore in `state\uninstall.exe.new`; copia del registro precedente in `state\install-record.previous.json`; per i nove valori HKCU del prodotto presenza, tipo e valore, e la presenza delle due chiavi |
+| `prepared` | `.staging` verificata con il proprio runtime (inventario, manifest, `node --version`, handshake MCP con nove strumenti predefiniti e tredici dopo opt-in su un profilo **sintetico**); il nuovo disinstallatore in `state\uninstall.exe.new`; copia del registro precedente in `state\install-record.previous.json`; per i nove valori HKCU del prodotto presenza, tipo e valore, e la presenza delle due chiavi |
 | `swapping` | inizio delle due rinomine `current` → `previous`, `.staging` → `current` |
 | `metadata` | nuova versione in `current`; poi nuovo registro, disinstallatore precedente spostato in `state\uninstall.exe.previous` e nuovo al suo posto, valori HKCU (ciascuno scritto e riletto) |
 | `committed` | tutti i controlli superati: la nuova versione è definitiva |
@@ -467,15 +469,16 @@ finale, la cancellazione della copia di recupero dall'elenco compilato, CopyFile
 e tramite un modello che le riproduce: vanno provate con l'installer compilato, compreso il caso di un processo
 terminato durante l'installazione o la disinstallazione. La modifica del file di Claude Desktop è provata con fixture
 sintetiche: **nessun test automatico dimostra che Claude Desktop reale legga il file selezionato o carichi i nove
-strumenti**. Vanno provati anche l'aspetto delle pagine (testo aggiornato in pagina, lunghezza delle righe) e il
+strumenti predefiniti o i tredici opt-in**. Vanno provati anche l'aspetto delle pagine (testo aggiornato in pagina, lunghezza delle righe) e il
 comportamento su `LocalCache` di un'app in pacchetto. La checklist del collaudo manuale (con le prove distruttive
 riservate a una VM o a un ambiente sacrificabile) è in [WINDOWS-SMOKE-TEST.md](WINDOWS-SMOKE-TEST.md).
 
 ### Privacy
 
-Il wizard dichiara che il profilo è letto in sola lettura, che il server non fa richieste di rete proprie, che i
-risultati degli strumenti possono essere inviati da Claude Desktop al servizio Anthropic, che la beta espone nove
-strumenti in sola lettura (la ricerca lavora solo sui dati già salvati) e che non viene installato alcun servizio. Il setup non scrive file di log; i
+Il wizard dichiara che il server usa il profilo in sola lettura **per impostazione predefinita**, che non fa richieste di
+rete proprie, che i risultati possono essere inviati da Claude Desktop al servizio Anthropic, che la beta espone nove
+strumenti in sola lettura per default e tredici solo dopo opt-in manuale (tre possono allora modificare regole), e che
+non viene installato alcun servizio. Il setup non scrive file di log; i
 messaggi e i file di risultato non contengono contenuti della configurazione Claude, del
 database, URL dei feed, titoli o token. Il registro di installazione e i backup restano sulla macchina dell'utente.
 
@@ -484,6 +487,8 @@ database, URL dei feed, titoli o token. Il registro di installazione e i backup 
 **Claude Desktop**, se la registrazione del wizard non è possibile: dopo una copia di sicurezza, aggiungi nella sezione
 `mcpServers` del file che Claude Desktop usa davvero la voce `fluent-reader` indicata in "Claude Desktop" (nel JSON le
 barre rovesciate vanno raddoppiate), lasciando intatto il resto, poi riavvia del tutto l'app.
+
+Per abilitare le tre scritture di regole, aggiungi manualmente alla stessa voce `"env": {"FLUENT_READER_MCP_ENABLE_RULE_WRITES":"1"}` e riavvia del tutto il client. Il setup non lo fa e una voce modificata a mano non è più attribuibile all'installer: riparazione e disinstallazione restano conservative. Per scrivere regole Fluent Reader deve essere chiuso; togliendo la variabile e riavviando si torna ai nove strumenti in sola lettura.
 
 **Claude Code**, che il wizard non configura: da PowerShell 7.3 o successivo (Windows PowerShell 5.1 non passa
 correttamente le virgolette ai programmi esterni):

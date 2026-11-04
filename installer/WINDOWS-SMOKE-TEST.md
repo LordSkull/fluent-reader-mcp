@@ -5,7 +5,7 @@ qualsiasi distribuzione. I test automatici (`npm.cmd test`) provano il programma
 sintetiche e lo script NSIS solo staticamente; questa checklist copre ciò che resta: il wizard reale, Windows, **Claude
 Desktop reale**.
 
-Vale per il wizard Desktop-first, dalla versione **0.1.2**. **Non si applica alla build 0.1.1 già costruita**, che registra in Claude Code e conferma
+Vale per il wizard Desktop-first della build **0.1.3** (comportamento introdotto nella 0.1.2). **Non si applica alla build 0.1.1 già costruita**, che registra in Claude Code e conferma
 la cartella con una finestra: per quella resta la versione di questo documento al commit `bd3337d`.
 
 Riferimenti per il comportamento atteso: [INSTALLER.md](INSTALLER.md) (installer, recupero, disinstallazione) e
@@ -23,7 +23,7 @@ distribuzione.
 | 1 | Si prepara una copia di sicurezza indipendente e si annota quale file apre **Modifica configurazione** | C.3, C.4, C.5 | Qualsiasi | 10 min |
 | 2 | Cartelle: valida senza finestre, `D:\` mostrata nel campo, `D:\Windows` rifiutata, `D:\Program Files (x86)\FRMCP` accettata, `C:\Program Files\FRMCP` rifiutata con messaggio chiaro; poi **Annulla** | N-03, N-04, N-08, N-19 | Anche la macchina personale: non installa nulla | 5 min |
 | 3 | Installazione con registrazione nel file giusto | N-13 | Account di prova o VM | 5 min |
-| 4 | **La prova che conta:** Claude Desktop reale mostra `fluent-reader` con nove strumenti e le altre voci, come `foundry-mcp`, funzionano ancora | N-14, N-15 | Come il passo 3 | 5 min |
+| 4 | **La prova che conta:** Claude Desktop reale mostra `fluent-reader` con nove strumenti predefiniti e le altre voci, come `foundry-mcp`, funzionano ancora | N-14, N-15 | Come il passo 3 | 5 min |
 | 5 | Più file candidati: il setup non sceglie da solo e tocca solo quello selezionato | N-20 | Come il passo 3 | 5 min |
 | 6 | Riparazione ripetuta: nessuna modifica al file, nessun nuovo backup | U-02 | Come il passo 3 | 5 min |
 | 7 | Sopra un'installazione Code-first, se ne hai una di prova: Code intatto | U-08 | Come il passo 3 | 5 min |
@@ -51,9 +51,9 @@ per questo esiste il passo 4.
 | Unità secondarie | Lettere disponibili (`D:`, `H:`...), tipo (fisso, rimovibile), file system. **Facoltative**: le prove che ne hanno bisogno si segnano NON ESEGUITO se l'unità non c'è |
 | Ambiente | Macchina personale, account Windows di prova, VM o snapshot: indicarlo per ogni prova (sezione H) |
 
-**Quale EXE.** Il collaudo che vale è quello su una build pulita **0.1.2** (`FluentReaderMCP-Setup-v0.1.2-beta-win-x64.exe`,
-`gitDirty: false` e `scriptsDirty: false` nei report). Sopra una 0.1.0 o 0.1.1 il setup propone un **aggiornamento**, sopra
-la stessa 0.1.2 una **riparazione**; una versione più recente viene rifiutata. Lo SHA-256 dell'EXE si **annota a
+**Quale EXE.** Il collaudo che vale è quello su una build pulita **0.1.3** (`FluentReaderMCP-Setup-v0.1.3-beta-win-x64.exe`,
+`gitDirty: false` e `scriptsDirty: false` nei report). Sopra una 0.1.0, 0.1.1 o 0.1.2 il setup propone un **aggiornamento**, sopra
+la stessa 0.1.3 una **riparazione**; una versione più recente viene rifiutata. Lo SHA-256 dell'EXE si **annota a
 ogni collaudo** dal file effettivamente provato: non esiste un valore fisso in questo documento, perché cambia a ogni
 ricompilazione.
 
@@ -136,17 +136,18 @@ categoria 1 si fermano con **Annulla** prima della pagina di installazione.
 **N-01 — Avvio del wizard** (cat. 1)
 - Preparazione: EXE identificato (sezione A).
 - Azione: avvia l'EXE; avvialo una seconda volta mentre il primo è aperto.
-- Atteso: nessuna richiesta UAC; pagina di benvenuto della beta in sola lettura; la seconda istanza dice che il setup è
+- Atteso: nessuna richiesta UAC; pagina di benvenuto della beta in sola lettura per impostazione predefinita; la seconda istanza dice che il setup è
   già in esecuzione.
 - Fallimento: richiesta di elevazione, avvio di due wizard, errore all'avvio.
 - Evidenza: screenshot della pagina di benvenuto; versione mostrata.
 
-**N-02 — Informativa sui nove strumenti** (cat. 1)
+**N-02 — Informativa sui nove strumenti predefiniti e sull'opt-in** (cat. 1)
 - Preparazione: wizard aperto.
 - Azione: leggi benvenuto e pagina di riepilogo/informativa.
-- Atteso: nove strumenti in sola lettura; la ricerca degli articoli lavora solo sui dati già salvati; nessun servizio
-  Windows; il server non fa richieste di rete proprie; i risultati possono essere inviati da Claude Desktop al servizio
-  Anthropic.
+- Atteso: nove strumenti in sola lettura per default; tredici soltanto dopo un opt-in manuale che il setup non aggiunge,
+  con un'anteprima in sola lettura e tre scritture di regole; la ricerca degli articoli lavora solo sui dati già salvati;
+  nessun servizio Windows; il server non fa richieste di rete proprie; i risultati possono essere inviati da Claude
+  Desktop al servizio Anthropic.
 - Fallimento: "sette" o "otto" strumenti, ricerca "non disponibile", affermazioni diverse da INSTALLER.md.
 - Evidenza: screenshot delle due pagine.
 
@@ -319,7 +320,7 @@ vi è già installata: i suoi file verranno reinstallati (riparazione)"). Annota
 - Preparazione: VM o account di prova con una beta precedente installata (di norma nella cartella predefinita); hash del
   file di Claude Desktop registrati.
 - Azione: avvia il nuovo setup, stessa cartella.
-- Atteso: riepilogo di **aggiornamento** dalla versione trovata alla 0.1.2; al termine
+- Atteso: riepilogo di **aggiornamento** dalla versione trovata alla 0.1.3; al termine
   nove strumenti (N-14, se registri); profilo e altre voci MCP invariati; registro di installazione e "App installate" con
   la nuova versione.
 - Fallimento: rifiuto senza motivo; versione precedente persa senza nuova versione; altre voci cambiate.
@@ -372,9 +373,9 @@ U-06 e R-02 hanno risultati separati nel modulo (sezione H).
 
 - Preparazione:
   - solo VM o installazione sacrificabile, con snapshot ripristinabile preso **dopo** la preparazione qui sotto;
-  - un'installazione valida e funzionante: la beta precedente (sette strumenti, come in U-01) oppure questa build
+  - un'installazione valida e funzionante: una beta precedente (sette o nove strumenti, come in U-01) oppure questa build
     (nove strumenti, come in U-02), registrata o no in Claude Desktop; Claude Desktop e Fluent Reader chiusi;
-  - annota la versione iniziale (0.1.0 con sette strumenti, oppure 0.1.1 o 0.1.2 con nove: annota anche il numero di
+  - annota la versione iniziale (0.1.0 con sette strumenti, oppure 0.1.1 o 0.1.2 con nove, oppure 0.1.3 con nove per default: annota anche il numero di
     strumenti visto con N-14), il percorso di installazione e lo stato dei file gestiti: nomi in `current`,
     `state\` e nella radice (`Get-ChildItem -Force -Name`) e SHA-256 di `current\installer-files.json`,
     `fluent-reader-mcp.install.json` e `uninstall.exe`; `.staging`, `previous` e `state\install-journal.json` devono

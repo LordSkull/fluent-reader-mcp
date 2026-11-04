@@ -518,6 +518,23 @@ describe("FR-MCP-04-BETA-RELEASE-03: the 0.1.1 beta is an earlier version than 0
     })
 })
 
+describe("FR-MCP-04-BETA-RELEASE-04: the 0.1.2 beta is an earlier version than 0.1.3", { timeout: 120_000 }, () => {
+    test("0.1.2 installed: the 0.1.3 setup upgrades it; then 0.1.3 is a repair and 0.1.2 a refused downgrade", async () => {
+        const w = world()
+        assert.equal(await install(w, "0.1.2"), "installed")
+        const offered = checkInstallDir({ installDir: w.installDir, version: "0.1.3", maxRelative: 150, env: w.env })
+        assert.deepEqual([offered.mode, offered.installedVersion], ["upgrade", "0.1.2"])
+        assert.equal(await install(w, "0.1.3"), "installed")
+        const after = snapshot(w)
+        assert.equal(after.version, "0.1.3")
+        assert.deepEqual(after.dirs, ["current"])
+        assert.equal(w.reg.keys.get(UNINSTALL_KEY)?.get("DisplayVersion")?.value, "0.1.3")
+        assert.equal(checkInstallDir({ installDir: w.installDir, version: "0.1.3", maxRelative: 150, env: w.env }).mode, "repair")
+        assert.equal(await install(w, "0.1.3"), "installed")
+        assert.throws(() => checkInstallDir({ installDir: w.installDir, version: "0.1.2", maxRelative: 150, env: w.env }), /contiene la versione 0\.1\.3, più recente di 0\.1\.2; il downgrade non è supportato/)
+    })
+})
+
 describe("installation transaction: HKCU types and values (Major 1)", { timeout: 120_000 }, () => {
     test("values absent, present with the expected types, and REG_EXPAND_SZ: a failed upgrade restores each with its type", async () => {
         const w = world()

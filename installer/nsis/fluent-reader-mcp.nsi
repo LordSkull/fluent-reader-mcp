@@ -70,7 +70,7 @@ Var PreviewText
 
 !define MUI_ABORTWARNING
 !define MUI_WELCOMEPAGE_TITLE "${PRODUCT_NAME} ${PRODUCT_VERSION} (beta privata)"
-!define MUI_WELCOMEPAGE_TEXT "Questo programma installa Fluent Reader MCP, un server MCP in SOLA LETTURA che permette a Claude Desktop di consultare un tuo profilo locale di Fluent Reader.$\r$\n$\r$\nLa beta offre nove strumenti di sola lettura (fonti, gruppi, regole, elenco, ricerca testuale e lettura degli articoli salvati). Include il proprio runtime Node.js: non serve installare altro.$\r$\n$\r$\nNon vengono installati servizi, porte di rete o processi residenti. Puoi scegliere se registrare il server in Claude Desktop: prima vedrai il file e la voce esatti da modificare."
+!define MUI_WELCOMEPAGE_TEXT "Questo programma installa Fluent Reader MCP, un server MCP in SOLA LETTURA PER IMPOSTAZIONE PREDEFINITA che permette a Claude Desktop di consultare un tuo profilo locale di Fluent Reader.$\r$\n$\r$\nLa beta offre nove strumenti di sola lettura. Contiene anche quattro strumenti per le regole (uno di anteprima e tre di scrittura), disponibili solo con un opt-in manuale: il setup non li abilita.$\r$\n$\r$\nNon vengono installati servizi, porte di rete o processi residenti. Puoi scegliere se registrare il server in Claude Desktop: prima vedrai il file e la voce esatti da modificare."
 !insertmacro MUI_PAGE_WELCOME
 !define MUI_DIRECTORYPAGE_TEXT_TOP "Cartella proposta: %LOCALAPPDATA%\FluentReaderMCP. Puoi sceglierne un'altra su qualsiasi unità locale dove il tuo utente può scrivere: il setup non chiede privilegi di amministratore. Se la cartella scelta non può essere usata così com'è (radice di un'unità, altri file già presenti), il campo qui sotto mostrerà la sottocartella FluentReaderMCP prima di continuare."
 !define MUI_PAGE_CUSTOMFUNCTION_LEAVE DirectoryLeave
@@ -337,7 +337,7 @@ FunctionEnd
 ; ---------------------------------------------------------------- profile
 
 Function ProfilePageShow
-  !insertmacro MUI_HEADER_TEXT "Profilo Fluent Reader" "Scegli la cartella del profilo da consultare in sola lettura"
+  !insertmacro MUI_HEADER_TEXT "Profilo Fluent Reader" "Scegli la cartella del profilo, usato in sola lettura per impostazione predefinita"
   nsDialogs::Create 1018
   Pop $Dialog
   ${If} $Dialog == error
@@ -407,10 +407,10 @@ Function PrivacyPageShow
   ${EndIf}
   !insertmacro BoxLine "Profilo scelto: $ProfileDir"
   !insertmacro BoxLine ""
-  !insertmacro BoxLine "- Fluent Reader MCP legge questo profilo in sola lettura: non modifica il database né la configurazione di Fluent Reader."
+  !insertmacro BoxLine "- Per impostazione predefinita Fluent Reader MCP legge il profilo senza modificarlo. Il database resta sempre in sola lettura."
   !insertmacro BoxLine "- Il server non effettua richieste di rete proprie e non resta in esecuzione: lo avvia Claude Desktop quando serve."
   !insertmacro BoxLine "- I risultati degli strumenti (per esempio titoli e testi degli articoli richiesti) possono essere inviati da Claude Desktop al servizio Anthropic come parte della conversazione."
-  !insertmacro BoxLine "- La beta espone soltanto nove strumenti in sola lettura; la ricerca degli articoli lavora solo sui dati già salvati da Fluent Reader."
+  !insertmacro BoxLine "- Il setup espone nove strumenti in sola lettura e non abilita le scritture. La ricerca usa solo dati già salvati. Un opt-in manuale porta a tredici strumenti: tre possono modificare solo le regole."
   !insertmacro BoxLine "- Nessun servizio Windows viene installato."
   SendMessage $PreviewText ${EM_SETSEL} 0 0
   ${NSD_CreateCheckbox} 0 116u 100% 12u "Confermo destinazione e profilo e ho letto l'informativa"
@@ -1050,7 +1050,7 @@ Section "Fluent Reader MCP" SectionMain
     !insertmacro RequestEnd
     !insertmacro RunHelper "desktop-register"
     ${If} $HelperExit == "0"
-      StrCpy $FinishText "$FinishText$\r$\n$\r$\nLa voce $\"fluent-reader$\" è nel file che hai selezionato:$\r$\n$DesktopConfig$\r$\n$\r$\nIl setup non può dimostrare che Claude Desktop legga proprio questo file. Chiudi del tutto Claude Desktop (anche dall'area di notifica), riaprilo e controlla che compaia fluent-reader con nove strumenti in sola lettura. Se non compare, esegui di nuovo il setup e seleziona l'altro file."
+      StrCpy $FinishText "$FinishText$\r$\n$\r$\nLa voce $\"fluent-reader$\" è nel file che hai selezionato:$\r$\n$DesktopConfig$\r$\n$\r$\nIl setup non può dimostrare che Claude Desktop legga proprio questo file. Chiudi del tutto Claude Desktop (anche dall'area di notifica), riaprilo e controlla che compaia fluent-reader con nove strumenti in sola lettura. I tredici strumenti compaiono solo dopo l'opt-in manuale, che il setup non aggiunge. Se non compare, esegui di nuovo il setup e seleziona l'altro file."
     ${Else}
       Call ShowHelperMessage
       StrCpy $FinishText "$FinishText$\r$\n$\r$\nIl server è installato ma NON è registrato in Claude Desktop (vedi il messaggio mostrato). Puoi registrarlo eseguendo di nuovo questo setup."

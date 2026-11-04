@@ -1,10 +1,10 @@
 # FR-MCP-04-BETA-01 — Pacchetto portatile Windows x64 (beta privata)
 
-Builder del pacchetto ZIP autonomo di Fluent Reader MCP, limitato ai nove strumenti read-only (i sette di FR-MCP-02A, `list_articles` di FR-MCP-02B-01 e `search_articles` di FR-MCP-02B-02).
+Builder del pacchetto ZIP autonomo di Fluent Reader MCP. Per impostazione predefinita espone nove strumenti in sola lettura; dopo l'opt-in manuale espone tredici strumenti, dei quali `preview_rule_change` resta in sola lettura e `add_rule`, `update_rule`, `delete_rule` possono modificare le regole.
 Il pacchetto non è un installer: non registra nulla, non crea servizi né porte di rete, non legge profili.
 
-> Stato (FR-MCP-04-BETA-RELEASE-03): la beta attuale ha la versione **0.1.2**, nove strumenti e il wizard Desktop-first (il
-> setup aggiorna la 0.1.1, che ha nove strumenti e registra in Claude Code, e la 0.1.0, che ne ha sette); il progetto è sotto licenza **MIT** (D-13, [LICENSE](../LICENSE));
+> Stato (FR-MCP-04-BETA-RELEASE-04): la beta attuale ha la versione **0.1.3**, nove strumenti predefiniti e tredici solo con opt-in; il wizard resta Desktop-first (il
+> setup aggiorna anche la 0.1.2, che ha nove strumenti); il progetto è sotto licenza **MIT** (D-13, [LICENSE](../LICENSE));
 > la notice di Koffi è inclusa anche per il pacchetto nativo che non ne contiene una (vedi "Licenze"). Lo ZIP e l'EXE
 > preliminari 0.1.0 di FR-MCP-04-BETA-RELEASE-01 (`--allow-dirty`, `gitDirty: true`) **non sono la build finale**: va
 > costruita da albero pulito, senza `--allow-dirty`, in una cartella di output nuova, e il wizard reale va collaudato
@@ -129,8 +129,10 @@ Opzioni:
 6. **Archivio:** ZIP deterministico (ordine stabile, data del commit, nomi UTF-8), riletto, estratto in
    `work-<versione>\verify`, ogni file confrontato con il manifest; quindi **auto-test** del pacchetto estratto:
    il suo `runtime\node.exe` avvia il suo `server\dist\main.js` su un profilo **sintetico** (la fixture dello smoke
-   test) in una cartella temporanea, con handshake MCP, `tools/list` (esattamente nove strumenti), `list_sources`
-   e `get_article` (SQLite e lock Win32/Koffi), chiusura con EOF.
+    test) in una cartella temporanea, con handshake MCP e `tools/list` due volte: senza variabile di opt-in devono
+    esserci esattamente nove strumenti in sola lettura, con il valore esatto `1` esattamente tredici. Nel percorso
+    predefinito prova anche `list_sources` e `get_article` (SQLite e lock Win32/Koffi), quindi chiude con EOF. La
+    variabile viene impostata solo nel processo sintetico dell'auto-test e non viene aggiunta dall'installer.
 7. **Pubblicazione, fase A (preparazione):** ZIP, `.sha256` e report vengono scritti come
    `<nome>.partial`, ciascuno **creato in modo esclusivo** (fallisce se il nome esiste già); un `.partial`
    appartiene alla build solo se questa creazione è riuscita. Dopo tutte le verifiche e l'auto-test la cartella di
@@ -159,14 +161,14 @@ va cancellata prima della build successiva.
 
 ```text
 D:\FluentReaderMCP-build\
-  fluent-reader-mcp-v0.1.2-beta-win-x64.zip
-  fluent-reader-mcp-v0.1.2-beta-win-x64.zip.sha256
-  fluent-reader-mcp-v0.1.2-beta-win-x64.zip.build-report.json
+  fluent-reader-mcp-v0.1.3-beta-win-x64.zip
+  fluent-reader-mcp-v0.1.3-beta-win-x64.zip.sha256
+  fluent-reader-mcp-v0.1.3-beta-win-x64.zip.build-report.json
   runtime-cache\node-v24.22.1-win-x64.zip
 ```
 
-Il nome deriva da `package.json` (`0.1.2`) più l'etichetta di canale `beta` e la piattaforma `win-x64`.
-Una nuova beta ha una nuova versione in `package.json` (decisione del proprietario: 0.1.0 → 0.1.1 → 0.1.2, suffisso `-beta`
+Il nome deriva da `package.json` (`0.1.3`) più l'etichetta di canale `beta` e la piattaforma `win-x64`.
+Una nuova beta ha una nuova versione in `package.json` (decisione del proprietario: 0.1.0 → 0.1.1 → 0.1.2 → 0.1.3, suffisso `-beta`
 solo dal canale). Due build della stessa versione hanno lo stesso nome, e la seconda viene rifiutata se la prima è
 ancora nella cartella di output.
 
@@ -189,7 +191,7 @@ FluentReaderMCP/
 ## Verifica manuale
 
 ```powershell
-$zip = "D:\FluentReaderMCP-build\fluent-reader-mcp-v0.1.2-beta-win-x64.zip"
+$zip = "D:\FluentReaderMCP-build\fluent-reader-mcp-v0.1.3-beta-win-x64.zip"
 (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLower()
 Get-Content -LiteralPath "$zip.sha256"
 ```
@@ -265,7 +267,7 @@ Il manifest (`schemaVersion: 1`) è l'interfaccia per l'installer:
 | --- | --- |
 | `product` | `fluent-reader-mcp`, versione, canale `beta`, piattaforma `win-x64` |
 | `runtime.executable` | `runtime/node.exe` |
-| `server.entrypoint` | `server/dist/main.js`, trasporto `stdio`, i nove strumenti |
+| `server.entrypoint` | `server/dist/main.js`, trasporto `stdio`, i nove strumenti predefiniti; l'auto-test verifica separatamente i tredici opt-in |
 | `launch` | `runtime/node.exe` + `["server/dist/main.js", "--profile-dir", "{profileDir}"]`, `profileDirRequired: true` |
 | `install` | `scope: currentUser`, `defaultDirectory: %LOCALAPPDATA%\FluentReaderMCP` (P-INS-05), `approved: false` |
 | `install.ownedEntries` | `runtime/`, `server/`, `licenses/`, `manifest.json`, `PACKAGING-INFO.md`: ciò che l'installer potrà rimuovere |

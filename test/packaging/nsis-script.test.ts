@@ -286,8 +286,8 @@ describe("NSIS script", () => {
         for (const m of CODE.matchAll(/RemoveOwnTree "[^"]*" "[^"]*" "([^"]*)"/g)) assert.ok(["current", ".staging", "previous"].includes(m[1] as string), m[0])
     })
 
-    test("the wizard states the privacy facts and the beta limits", () => {
-        for (const fact of ["sola lettura", "non effettua richieste di rete proprie", "servizio Anthropic", "nove strumenti", "la ricerca degli articoli lavora solo sui dati già salvati", "Nessun servizio Windows"]) {
+    test("the wizard states the privacy facts, the default mode and the explicit opt-in mode", () => {
+        for (const fact of ["sola lettura", "impostazione predefinita", "non effettua richieste di rete proprie", "servizio Anthropic", "nove strumenti", "tredici strumenti", "setup non li abilita", "La ricerca usa solo dati già salvati", "Nessun servizio Windows"]) {
             assert.ok(SCRIPT.includes(fact), fact)
         }
         assert.match(SCRIPT, /non cerca profili da solo/)

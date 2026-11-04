@@ -64,7 +64,8 @@ export interface VerifyDeps {
 /**
  * Verifies an installed tree: exactly the inventory (sizes and SHA-256), the
  * package manifest, the bundled runtime's version and platform and,
- * optionally, the MCP handshake with the nine tools on a SYNTHETIC profile.
+ * optionally, the MCP handshake with nine default tools and thirteen after
+ * explicit opt-in on a SYNTHETIC profile.
  * The user's profile is never used. Returns the report lines.
  */
 export async function verifyTree(root: string, deps: VerifyDeps): Promise<string[]> {
