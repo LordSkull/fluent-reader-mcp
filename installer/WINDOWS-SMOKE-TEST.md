@@ -5,7 +5,7 @@ qualsiasi distribuzione. I test automatici (`npm.cmd test`) provano il programma
 sintetiche e lo script NSIS solo staticamente; questa checklist copre ciò che resta: il wizard reale, Windows, **Claude
 Desktop reale**.
 
-Vale per il wizard Desktop-first. **Non si applica alla build 0.1.1 già costruita**, che registra in Claude Code e conferma
+Vale per il wizard Desktop-first, dalla versione **0.1.2**. **Non si applica alla build 0.1.1 già costruita**, che registra in Claude Code e conferma
 la cartella con una finestra: per quella resta la versione di questo documento al commit `bd3337d`.
 
 Riferimenti per il comportamento atteso: [INSTALLER.md](INSTALLER.md) (installer, recupero, disinstallazione) e
@@ -51,9 +51,9 @@ per questo esiste il passo 4.
 | Unità secondarie | Lettere disponibili (`D:`, `H:`...), tipo (fisso, rimovibile), file system. **Facoltative**: le prove che ne hanno bisogno si segnano NON ESEGUITO se l'unità non c'è |
 | Ambiente | Macchina personale, account Windows di prova, VM o snapshot: indicarlo per ogni prova (sezione H) |
 
-**Quale EXE.** Il collaudo che vale è quello su una build pulita **successiva a questa milestone** (`gitDirty: false` e
-`scriptsDirty: false` nei report). Se il numero di versione non cambia rispetto alla 0.1.1, un'installazione 0.1.1 esistente
-viene trattata come **riparazione**, non come aggiornamento: annota quale delle due vedi. Lo SHA-256 dell'EXE si **annota a
+**Quale EXE.** Il collaudo che vale è quello su una build pulita **0.1.2** (`FluentReaderMCP-Setup-v0.1.2-beta-win-x64.exe`,
+`gitDirty: false` e `scriptsDirty: false` nei report). Sopra una 0.1.0 o 0.1.1 il setup propone un **aggiornamento**, sopra
+la stessa 0.1.2 una **riparazione**; una versione più recente viene rifiutata. Lo SHA-256 dell'EXE si **annota a
 ogni collaudo** dal file effettivamente provato: non esiste un valore fisso in questo documento, perché cambia a ogni
 ricompilazione.
 
@@ -319,7 +319,7 @@ vi è già installata: i suoi file verranno reinstallati (riparazione)"). Annota
 - Preparazione: VM o account di prova con una beta precedente installata (di norma nella cartella predefinita); hash del
   file di Claude Desktop registrati.
 - Azione: avvia il nuovo setup, stessa cartella.
-- Atteso: riepilogo di **aggiornamento** (o di riparazione se il numero di versione è lo stesso, vedi sezione A); al termine
+- Atteso: riepilogo di **aggiornamento** dalla versione trovata alla 0.1.2; al termine
   nove strumenti (N-14, se registri); profilo e altre voci MCP invariati; registro di installazione e "App installate" con
   la nuova versione.
 - Fallimento: rifiuto senza motivo; versione precedente persa senza nuova versione; altre voci cambiate.
@@ -374,7 +374,7 @@ U-06 e R-02 hanno risultati separati nel modulo (sezione H).
   - solo VM o installazione sacrificabile, con snapshot ripristinabile preso **dopo** la preparazione qui sotto;
   - un'installazione valida e funzionante: la beta precedente (sette strumenti, come in U-01) oppure questa build
     (nove strumenti, come in U-02), registrata o no in Claude Desktop; Claude Desktop e Fluent Reader chiusi;
-  - annota la versione iniziale (0.1.0 con sette strumenti, oppure 0.1.1 con nove: annota anche il numero di
+  - annota la versione iniziale (0.1.0 con sette strumenti, oppure 0.1.1 o 0.1.2 con nove: annota anche il numero di
     strumenti visto con N-14), il percorso di installazione e lo stato dei file gestiti: nomi in `current`,
     `state\` e nella radice (`Get-ChildItem -Force -Name`) e SHA-256 di `current\installer-files.json`,
     `fluent-reader-mcp.install.json` e `uninstall.exe`; `.staging`, `previous` e `state\install-journal.json` devono

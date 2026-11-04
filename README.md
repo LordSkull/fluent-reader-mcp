@@ -4,7 +4,7 @@
 
 Il server espone fonti RSS, gruppi, articoli e regole di filtraggio già presenti nel profilo Fluent Reader. Non modifica il database, non aggiorna i feed, non applica le regole e non scarica da Internet il contenuto degli articoli.
 
-> **Stato:** `v0.1.1-beta` — il codice sorgente attuale implementa **nove strumenti MCP read-only**, compresi l'elenco paginato (`list_articles`) e la ricerca testuale (`search_articles`) degli articoli. I pacchetti Windows costruiti dal codice attuale (ZIP e installer) contengono tutti e nove gli strumenti e lo verificano con un auto-test MCP su un profilo sintetico. Il primo installer `v0.1.0-beta` costruito il 2026-10-29 conteneva invece soltanto i **sette** strumenti iniziali (FR-MCP-02A); il setup `v0.1.1-beta` lo riconosce come versione precedente e lo aggiorna. Il nuovo installer è in **collaudo**: non è ancora approvato per la distribuzione.
+> **Stato:** `v0.1.2-beta` — il codice sorgente attuale implementa **nove strumenti MCP read-only**, compresi l'elenco paginato (`list_articles`) e la ricerca testuale (`search_articles`) degli articoli. I pacchetti Windows costruiti dal codice attuale (ZIP e installer) contengono tutti e nove gli strumenti e lo verificano con un auto-test MCP su un profilo sintetico. Il primo installer `v0.1.0-beta` costruito il 2026-10-29 conteneva invece soltanto i **sette** strumenti iniziali (FR-MCP-02A); il setup `v0.1.2-beta` riconosce le versioni precedenti (`0.1.0`, `0.1.1`) e le aggiorna. Dalla `0.1.2` il wizard configura Claude Desktop invece di Claude Code. Il nuovo installer è in **collaudo**: non è ancora approvato per la distribuzione.
 
 ## Come funziona
 
@@ -94,7 +94,7 @@ npm.cmd run package:win -- --out "D:\FluentReaderMCP-build"
 **Installer NSIS**, generato a partire dallo ZIP appena costruito e verificato con SHA-256:
 
 ```powershell
-$zip = "D:\FluentReaderMCP-build\fluent-reader-mcp-v0.1.1-beta-win-x64.zip"
+$zip = "D:\FluentReaderMCP-build\fluent-reader-mcp-v0.1.2-beta-win-x64.zip"
 $sha = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
 
 # Prima verifica senza compilare l'EXE.
@@ -208,9 +208,10 @@ La descrizione completa è in [installer/INSTALLER.md](installer/INSTALLER.md); 
 
   Entrambi validati con test automatici, smoke MCP e benchmark su database sintetici; inclusi nei pacchetti costruiti dal codice attuale, non ancora collaudati con un profilo reale.
 - **FR-MCP-04-BETA-03A (implementato, in collaudo):** installazione in cartelle personalizzate su unità locali (SIMPLE-01) e backup della configurazione in un'area personale separata (SIMPLE-02).
-- **FR-MCP-04-BETA-UX-01 (implementato nel codice, in review; non ancora collaudato con Claude Desktop reale):** wizard Desktop-first con selezione assistita del file di configurazione, `Program Files` non rifiutata per il solo nome, nessuna finestra di conferma della cartella. La proposta storica di scelta fra Code, Desktop, entrambi o nessuno è superata. Questi comportamenti non sono nella build 0.1.1 già costruita.
+- **FR-MCP-04-BETA-UX-01 (implementato e approvato in review; non ancora collaudato con Claude Desktop reale):** wizard Desktop-first con selezione assistita del file di configurazione, `Program Files` non rifiutata per il solo nome, nessuna finestra di conferma della cartella. La proposta storica di scelta fra Code, Desktop, entrambi o nessuno è superata. Questi comportamenti sono inclusi dalla `0.1.2`, non nella build 0.1.1 già costruita.
 - **FR-MCP-04-BETA-RELEASE-01 (completato):** documentazione e checklist di collaudo Windows ([WINDOWS-SMOKE-TEST.md](installer/WINDOWS-SMOKE-TEST.md)).
-- **FR-MCP-04-BETA-RELEASE-02 (in corso):** versione 0.1.1, licenza MIT del progetto e notice di Koffi nei pacchetti; poi build pulita e collaudo su Windows reale. La distribuzione resta subordinata alla review e all'approvazione del proprietario.
+- **FR-MCP-04-BETA-RELEASE-02 (completato):** versione 0.1.1, licenza MIT del progetto e notice di Koffi nei pacchetti, build pulita.
+- **FR-MCP-04-BETA-RELEASE-03 (in corso):** versione 0.1.2 con il wizard Desktop-first; poi build pulita e collaudo su Windows reale. La distribuzione resta subordinata alla review e all'approvazione del proprietario.
 - **Successivamente:** hardening di sicurezza, benchmark su archivi grandi, miglioramento della distribuzione Windows, CI e release pubblica quando autorizzata.
 
 Il progetto Fluent Reader MCP è indipendente dal fork dell'applicazione e non richiede modifiche a Fluent Reader per le funzionalità read-only attuali.

@@ -480,6 +480,44 @@ describe("FR-MCP-04-BETA-RELEASE-02: the 0.1.0 beta is an earlier version than 0
     })
 })
 
+describe("FR-MCP-04-BETA-RELEASE-03: the 0.1.1 beta is an earlier version than 0.1.2", { timeout: 120_000 }, () => {
+    test("0.1.1 installed and registered in Claude Code: the 0.1.2 setup offers an upgrade and completes it, the registration carried over untouched; then 0.1.2 is a repair and 0.1.1 a refused downgrade", async () => {
+        const w = world()
+        assert.equal(await install(w, "0.1.1"), "installed")
+        const app = path.join(w.installDir, "current", "app")
+        const entry = { type: "stdio" as const, command: path.join(app, "runtime", "node.exe"), args: [path.join(app, "server", "dist", "main.js"), "--profile-dir", w.profile], env: {} }
+        const codeConfig = path.join(w.home, ".claude.json")
+        fs.writeFileSync(codeConfig, JSON.stringify({ mcpServers: { "fluent-reader": entry, altro: { command: "a" } } }))
+        const code = fs.readFileSync(codeConfig)
+        const recordFile = path.join(w.installDir, RECORD_NAME)
+        const claude = { state: "registered" as const, name: "fluent-reader", scope: "user" as const, configPath: codeConfig, claudeExe: path.join(w.home, "claude.exe"), entry, fingerprint: entryFingerprint(entry), backup: null, updatedAt: "2026-11-03T09:00:00.000Z" }
+        writeRecord(recordFile, { ...(readRecord(recordFile) as InstallRecord), claude })
+        const offered = checkInstallDir({ installDir: w.installDir, version: "0.1.2", maxRelative: 150, env: w.env })
+        assert.deepEqual([offered.mode, offered.installedVersion], ["upgrade", "0.1.1"])
+        assert.equal(await install(w, "0.1.2"), "installed")
+        const after = snapshot(w)
+        assert.equal(after.version, "0.1.2")
+        assert.deepEqual(after.dirs, ["current"])
+        assert.equal(w.reg.keys.get(UNINSTALL_KEY)?.get("DisplayVersion")?.value, "0.1.2")
+        const record = readRecord(recordFile) as InstallRecord
+        assert.deepEqual(record.claude, claude, "the Claude Code registration is carried over")
+        assert.equal(record.desktop, undefined, "and implies no Claude Desktop registration")
+        assert.ok(fs.readFileSync(codeConfig).equals(code), "~/.claude.json is not touched")
+        assert.equal(checkInstallDir({ installDir: w.installDir, version: "0.1.2", maxRelative: 150, env: w.env }).mode, "repair")
+        assert.equal(await install(w, "0.1.2"), "installed")
+        assert.deepEqual((readRecord(recordFile) as InstallRecord).claude, claude, "the repair keeps it too")
+        assert.throws(() => checkInstallDir({ installDir: w.installDir, version: "0.1.1", maxRelative: 150, env: w.env }), /contiene la versione 0\.1\.2, più recente di 0\.1\.1; il downgrade non è supportato/)
+    })
+
+    test("a 0.1.0 record is still recognised: the 0.1.2 setup offers an upgrade from it", async () => {
+        const { w } = await installedV1()
+        const offered = checkInstallDir({ installDir: w.installDir, version: "0.1.2", maxRelative: 150, env: w.env })
+        assert.deepEqual([offered.mode, offered.installedVersion], ["upgrade", "0.1.0"])
+        assert.equal(await install(w, "0.1.2"), "installed")
+        assert.equal(snapshot(w).version, "0.1.2")
+    })
+})
+
 describe("installation transaction: HKCU types and values (Major 1)", { timeout: 120_000 }, () => {
     test("values absent, present with the expected types, and REG_EXPAND_SZ: a failed upgrade restores each with its type", async () => {
         const w = world()

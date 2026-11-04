@@ -3,8 +3,8 @@
 Builder del pacchetto ZIP autonomo di Fluent Reader MCP, limitato ai nove strumenti read-only (i sette di FR-MCP-02A, `list_articles` di FR-MCP-02B-01 e `search_articles` di FR-MCP-02B-02).
 Il pacchetto non è un installer: non registra nulla, non crea servizi né porte di rete, non legge profili.
 
-> Stato (FR-MCP-04-BETA-RELEASE-02): la beta a nove strumenti ha la versione **0.1.1** (la beta precedente a sette
-> strumenti è la 0.1.0, che il setup 0.1.1 aggiorna); il progetto è sotto licenza **MIT** (D-13, [LICENSE](../LICENSE));
+> Stato (FR-MCP-04-BETA-RELEASE-03): la beta attuale ha la versione **0.1.2**, nove strumenti e il wizard Desktop-first (il
+> setup aggiorna la 0.1.1, che ha nove strumenti e registra in Claude Code, e la 0.1.0, che ne ha sette); il progetto è sotto licenza **MIT** (D-13, [LICENSE](../LICENSE));
 > la notice di Koffi è inclusa anche per il pacchetto nativo che non ne contiene una (vedi "Licenze"). Lo ZIP e l'EXE
 > preliminari 0.1.0 di FR-MCP-04-BETA-RELEASE-01 (`--allow-dirty`, `gitDirty: true`) **non sono la build finale**: va
 > costruita da albero pulito, senza `--allow-dirty`, in una cartella di output nuova, e il wizard reale va collaudato
@@ -159,14 +159,14 @@ va cancellata prima della build successiva.
 
 ```text
 D:\FluentReaderMCP-build\
-  fluent-reader-mcp-v0.1.1-beta-win-x64.zip
-  fluent-reader-mcp-v0.1.1-beta-win-x64.zip.sha256
-  fluent-reader-mcp-v0.1.1-beta-win-x64.zip.build-report.json
+  fluent-reader-mcp-v0.1.2-beta-win-x64.zip
+  fluent-reader-mcp-v0.1.2-beta-win-x64.zip.sha256
+  fluent-reader-mcp-v0.1.2-beta-win-x64.zip.build-report.json
   runtime-cache\node-v24.22.1-win-x64.zip
 ```
 
-Il nome deriva da `package.json` (`0.1.1`) più l'etichetta di canale `beta` e la piattaforma `win-x64`.
-Una nuova beta ha una nuova versione in `package.json` (decisione del proprietario: 0.1.0 → 0.1.1, suffisso `-beta`
+Il nome deriva da `package.json` (`0.1.2`) più l'etichetta di canale `beta` e la piattaforma `win-x64`.
+Una nuova beta ha una nuova versione in `package.json` (decisione del proprietario: 0.1.0 → 0.1.1 → 0.1.2, suffisso `-beta`
 solo dal canale). Due build della stessa versione hanno lo stesso nome, e la seconda viene rifiutata se la prima è
 ancora nella cartella di output.
 
@@ -189,7 +189,7 @@ FluentReaderMCP/
 ## Verifica manuale
 
 ```powershell
-$zip = "D:\FluentReaderMCP-build\fluent-reader-mcp-v0.1.1-beta-win-x64.zip"
+$zip = "D:\FluentReaderMCP-build\fluent-reader-mcp-v0.1.2-beta-win-x64.zip"
 (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLower()
 Get-Content -LiteralPath "$zip.sha256"
 ```
