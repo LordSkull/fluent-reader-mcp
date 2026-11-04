@@ -272,7 +272,7 @@ Il manifest (`schemaVersion: 1`) è l'interfaccia per l'installer:
 | `files` | percorso (separatore `/`), dimensione, SHA-256 di ogni file installabile; il manifest non elenca sé stesso |
 
 Il percorso di installazione resta da approvare. Non sono anticipati: installer `.exe`, scelta del profilo,
-registrazione in Claude Code, backup/rollback, rimozione selettiva e relativi test.
+registrazione in un client, backup/rollback, rimozione selettiva e relativi test (vedi [INSTALLER.md](INSTALLER.md) per l'installer).
 
 ## Limiti dei test automatici
 

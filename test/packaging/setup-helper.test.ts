@@ -12,19 +12,20 @@ import crypto from "node:crypto"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { after, before, describe, test } from "node:test"
+import { after, before, describe, test, type TestContext } from "node:test"
 import { fileURLToPath } from "node:url"
 import { type ExecFn } from "../../installer/lib/common.js"
 import { buildManifest, MANIFEST, type LicenseRecord } from "../../installer/lib/package-content.js"
 import { parseRuntimeLock } from "../../installer/lib/runtime-lock.js"
 import { setupClosure } from "../../installer/lib/installer-build.js"
 import { buildInventory, INVENTORY, removalPlan, removeTree, verifyTree } from "../../installer/setup/app.js"
-import { BACKUP_NAME, migrateLegacyBackups, privateBackupDir, recordedBackup, type MigrationCheckpoint } from "../../installer/setup/backups.js"
-import { DEFAULT_SUBDIR, otherProfileLocation, writeProbe } from "../../installer/setup/checks.js"
-import { desiredEntry, SERVER_NAME } from "../../installer/setup/claude.js"
+import { BACKUP_NAME, createDesktopBackup, migrateLegacyBackups, privateBackupDir, privateDesktopBackupDir, recordedBackup, recordedDesktopBackup, type MigrationCheckpoint } from "../../installer/setup/backups.js"
+import { createProbe, DEFAULT_SUBDIR, otherProfileLocation, writeProbe, type DirectoryProbe } from "../../installer/setup/checks.js"
+import { SERVER_NAME } from "../../installer/setup/claude.js"
+import { desiredDesktopEntry } from "../../installer/setup/desktop.js"
 import { main, type HelperDeps } from "../../installer/setup/fr-setup.js"
 import { decodeResult } from "../../installer/setup/protocol.js"
-import { entryFingerprint, PRODUCT, RECORD_NAME, readRecord, writeRecord, type InstallRecord } from "../../installer/setup/record.js"
+import { DESKTOP_BACKUP_NAME, entryFingerprint, PRODUCT, RECORD_NAME, readRecord, writeRecord, type DesktopRegistration, type InstallRecord } from "../../installer/setup/record.js"
 import { buildSmokeProfile } from "../e2e/smoke-fixture.js"
 import { createTempRoot, removeTempRoot, snapshotDir } from "../helpers/fixtures.js"
 
@@ -40,45 +41,34 @@ const VERSION = "0.1.0"
 const MAX_RELATIVE = "120"
 /** Sentinels of personal Claude configuration content: never in a result, record or message. */
 const SECRET = "CLAUDE_PERSONAL_SECRET_7c1d"
-const CLAUDE_VERSION = "2.1.312"
 
 interface World {
     readonly home: string
     readonly env: NodeJS.ProcessEnv
     readonly installDir: string
     readonly profile: string
-    readonly claudeExe: string
+    /** The synthetic configuration of Claude Desktop the tests select. */
     readonly configPath: string
+    /** Every program the helper tried to start. */
     readonly calls: string[][]
-    claude: FakeClaude
     /** Concurrent changes or failures injected at the helper's named steps. */
     checkpoint?: HelperDeps["checkpoint"]
-}
-
-/** How the simulated claude.exe behaves. */
-interface FakeClaude {
-    addFails?: "before-write" | "after-write" | undefined
-    addWritesWrong?: boolean
-    addTouchesOther?: boolean
-    removeFails?: boolean
-    helpWithoutScope?: boolean
-    /** Like a client that stores fields of its own: the saved entry differs from the JSON sent. */
-    addsMeta?: boolean
+    /** The rename that replaces the configuration. */
+    replace?: ((from: string, to: string) => void) | undefined
+    /** What reg.exe answers for a key (policies): nothing found by default. */
+    policy?: Record<string, string>
 }
 
 function world(config?: unknown | string, homeDir?: string): World {
     counter++
     const home = homeDir ?? path.join(root, `user ${counter} é`)
-    fs.mkdirSync(path.join(home, "AppData", "Roaming"), { recursive: true })
+    fs.mkdirSync(path.join(home, "AppData", "Roaming", "Claude"), { recursive: true })
     fs.mkdirSync(path.join(home, "AppData", "Local"), { recursive: true })
-    const claudeExe = path.join(home, ".vscode", "extensions", `anthropic.claude-code-${CLAUDE_VERSION}-win32-x64`, "resources", "native-binary", "claude.exe")
-    fs.mkdirSync(path.dirname(claudeExe), { recursive: true })
-    fs.writeFileSync(claudeExe, "synthetic claude.exe")
-    const configPath = path.join(home, ".claude.json")
+    const configPath = path.join(home, "AppData", "Roaming", "Claude", "claude_desktop_config.json")
     if (config !== undefined) fs.writeFileSync(configPath, typeof config === "string" ? config : JSON.stringify(config, null, 2))
     const profile = buildSmokeProfile(path.join(home, "Profili Fluent", "profilo è 😀")).dir
-    const env = { USERPROFILE: home, APPDATA: path.join(home, "AppData", "Roaming"), LOCALAPPDATA: path.join(home, "AppData", "Local"), PATH: "" }
-    return { home, env, installDir: path.join(home, "AppData", "Local", "Fluent Reader MCP é 😀"), profile, claudeExe, configPath, calls: [], claude: {} }
+    const env = { USERPROFILE: home, APPDATA: path.join(home, "AppData", "Roaming"), LOCALAPPDATA: path.join(home, "AppData", "Local"), PATH: "", SystemRoot: process.env.SystemRoot ?? "" }
+    return { home, env, installDir: path.join(home, "AppData", "Local", "Fluent Reader MCP é 😀"), profile, configPath, calls: [] }
 }
 
 /** A synthetic package (manifest schema 1) in dir/app. */
@@ -100,13 +90,13 @@ function syntheticTree(dir: string, lockRaw: unknown): void {
 
 function otherServers(): Record<string, unknown> {
     return {
-        "other-tool": { type: "stdio", command: "C:\\Tools\\other.exe", args: ["--x"], env: { API_KEY: SECRET } },
+        "foundry-mcp": { command: "C:\\Tools\\foundry.exe", args: ["--stdio"], env: { FOUNDRY_API_KEY: SECRET } },
         remote: { type: "http", url: "https://mcp.example.com/mcp", headers: { Authorization: `Bearer ${SECRET}` } },
     }
 }
 
 function personalConfig(extra: Record<string, unknown> = {}): Record<string, unknown> {
-    return { numStartups: 42, oauthAccount: { emailAddress: `${SECRET}@example.com` }, mcpServers: { ...otherServers(), ...extra }, projects: { "C:\\Work": { allowedTools: [], mcpServers: {} } } }
+    return { preferences: { sidebarMode: "chat", token: SECRET, future: { nested: [1, { deep: true }] } }, unknownField: 42, mcpServers: { ...otherServers(), ...extra } }
 }
 
 function readConfig(w: World): Record<string, unknown> {
@@ -117,47 +107,20 @@ function servers(w: World): Record<string, unknown> {
     return (readConfig(w).mcpServers ?? {}) as Record<string, unknown>
 }
 
-/** A simulated Claude Code CLI over the synthetic ~/.claude.json, as documented for `claude mcp`. */
-function fakeExec(w: World): ExecFn {
-    return (file, args) => {
-        w.calls.push([...args])
-        if (file !== w.claudeExe) return { status: 1, stdout: "", stderr: "unexpected program" }
-        const ok = (stdout = ""): ReturnType<ExecFn> => ({ status: 0, stdout, stderr: "" })
-        if (args[0] === "--version") return ok(`${CLAUDE_VERSION} (Claude Code)\n`)
-        if (args[0] === "mcp" && args[2] === "--help") return ok(`Usage: claude mcp ${args[1] as string} [options] <name>${w.claude.helpWithoutScope === true ? "" : "\n  -s, --scope <scope>  Configuration scope (local, user, or project)"}\n`)
-        const load = (): Record<string, unknown> => (fs.existsSync(w.configPath) ? JSON.parse(fs.readFileSync(w.configPath, "utf8")) as Record<string, unknown> : {})
-        const save = (doc: Record<string, unknown>): void => fs.writeFileSync(w.configPath, JSON.stringify(doc, null, 2))
-        if (args[0] === "mcp" && args[1] === "add-json" && args[4] === "--scope" && args[5] === "user") {
-            if (w.claude.addFails === "before-write") {
-                w.claude.addFails = undefined // one failure: a later add-json (a rollback restore) works
-                return { status: 1, stdout: "", stderr: "crashed" }
-            }
-            const doc = load()
-            const mcp = (doc.mcpServers ?? {}) as Record<string, unknown>
-            if (Object.hasOwn(mcp, args[2] as string)) return { status: 1, stdout: "", stderr: "already exists" }
-            const sent = JSON.parse(args[3] as string) as Record<string, unknown>
-            const entry = w.claude.addsMeta === true ? { meta: { source: "cli", flags: [1, 2] }, ...sent } : sent
-            mcp[args[2] as string] = w.claude.addWritesWrong === true ? { ...entry, args: [] } : entry
-            if (w.claude.addTouchesOther === true) mcp["other-tool"] = { type: "stdio", command: "C:\\Tools\\changed.exe" }
-            save({ ...doc, mcpServers: mcp })
-            if (w.claude.addFails === "after-write") return { status: 1, stdout: "", stderr: "interrupted" }
-            return ok(`Added stdio MCP server ${args[2] as string} to user config\n`)
-        }
-        if (args[0] === "mcp" && args[1] === "remove" && args[3] === "--scope" && args[4] === "user") {
-            if (w.claude.removeFails === true) return { status: 1, stdout: "", stderr: "locked" }
-            const doc = load()
-            const mcp = (doc.mcpServers ?? {}) as Record<string, unknown>
-            if (!Object.hasOwn(mcp, args[2] as string)) return { status: 1, stdout: "", stderr: "not found" }
-            delete mcp[args[2] as string]
-            save({ ...doc, mcpServers: mcp })
-            return ok()
-        }
-        return { status: 1, stdout: "", stderr: `unexpected arguments ${args.join(" ")}` }
-    }
-}
-
 function deps(w: World): HelperDeps {
-    return { env: w.env, exec: fakeExec(w), selfTest: async () => ["self-test: synthetic"], now: () => new Date("2026-10-28T10:00:00Z"), checkpoint: (step) => w.checkpoint?.(step) }
+    return {
+        env: w.env,
+        // the only program the helper may start here is reg.exe, read-only, for the policy
+        exec: (file, args) => {
+            w.calls.push([path.basename(file), ...args])
+            const answer = w.policy?.[args[1] as string]
+            return answer === undefined ? { status: 1, stdout: "", stderr: "not found" } : { status: 0, stdout: answer, stderr: "" }
+        },
+        selfTest: async () => ["self-test: synthetic"],
+        now: () => new Date("2026-10-28T10:00:00Z"),
+        checkpoint: (step) => w.checkpoint?.(step),
+        desktopReplace: (from, to) => (w.replace ?? fs.renameSync)(from, to),
+    }
 }
 
 interface Answer {
@@ -224,21 +187,21 @@ async function installed(w: World, dir = w.installDir): Promise<void> {
     writeRecord(file, { schemaVersion: 1, product: PRODUCT, installDir: dir, generation: "ab".repeat(16), version: VERSION, bundleSha256: "a".repeat(64), installedAt: "2026-10-28T10:00:00.000Z", profileDir: w.profile, claude: previous?.claude ?? null })
 }
 
-/** The registered entry as stored in the synthetic ~/.claude.json, with one change applied. */
+/** The registered entry as stored in the synthetic configuration, with one change applied. */
 function changeEntry(w: World, change: (entry: Record<string, unknown>) => Record<string, unknown>): void {
     const doc = readConfig(w)
     const mcp = doc.mcpServers as Record<string, unknown>
     fs.writeFileSync(w.configPath, JSON.stringify({ ...doc, mcpServers: { ...mcp, [SERVER_NAME]: change(structuredClone(mcp[SERVER_NAME]) as Record<string, unknown>) } }))
 }
 
-function calls(w: World, sub: "remove" | "add-json"): string[][] {
-    return mutating(w).filter((c) => c[1] === sub)
+function planRequest(w: World, extra: Record<string, string> = {}): Record<string, string> {
+    return installRequest(w, { configPath: w.configPath, profileDir: w.profile, ...extra })
 }
 
 async function planAndRegister(w: World, extra: Record<string, string> = {}): Promise<{ plan: Answer; register: Answer }> {
-    const plan = await call(w, "plan", installRequest(w, { claudeExe: w.claudeExe, profileDir: w.profile }))
+    const plan = await call(w, "desktop-plan", planRequest(w))
     assert.equal(plan.code, 0, plan.one("message"))
-    const register = await call(w, "register", installRequest(w, { claudeExe: w.claudeExe, profileDir: w.profile, planHash: plan.one("planHash"), consent: "yes", ...extra }))
+    const register = await call(w, "desktop-register", planRequest(w, { planHash: plan.one("planHash"), consent: "yes", ...extra }))
     return { plan, register }
 }
 
@@ -246,15 +209,16 @@ function record(w: World): InstallRecord {
     return JSON.parse(fs.readFileSync(path.join(w.installDir, RECORD_NAME), "utf8")) as InstallRecord
 }
 
-function mutating(w: World): string[][] {
-    return w.calls.filter((c) => c[0] === "mcp" && c[2] !== "--help")
+/** The copies of the configuration: only in the user's private directory, never under the installation directory. */
+function backups(w: World): string[] {
+    assert.equal(fs.existsSync(path.join(w.installDir, "state", "desktop-config-backups")), false, "no copy under the installation directory")
+    const dir = privateDesktopBackupDir(w.env, w.installDir)
+    return fs.existsSync(dir) ? fs.readdirSync(dir) : []
 }
 
-/** The copies of the configuration: only in the user's private directory (SIMPLE-02), never under the installation directory. */
-function backups(w: World): string[] {
-    assert.equal(fs.existsSync(path.join(w.installDir, "state", "claude-config-backups")), false, "no copy under the installation directory")
-    const dir = privateBackupDir(w.env, w.installDir)
-    return fs.existsSync(dir) ? fs.readdirSync(dir) : []
+/** Everything but our entry, as read now. */
+function others(w: World): Record<string, unknown> {
+    return Object.fromEntries(Object.entries(servers(w)).filter(([n]) => n !== SERVER_NAME))
 }
 
 describe("setup helper: installation directory", () => {
@@ -379,58 +343,164 @@ describe("setup helper: Fluent Reader profile", () => {
     })
 })
 
-describe("setup helper: Claude Code client", () => {
-    test("detection runs only on request and lists the newest VS Code extension binary first", async () => {
+// ------------------------------------------------------------------ FR-MCP-04-BETA-UX-01: Claude Desktop
+
+/** A synthetic file named as Claude Desktop's configuration, somewhere under the user's folders. */
+function configAt(w: World, relative: string[], content: unknown = {}): string {
+    const file = path.join(w.home, "AppData", ...relative, "claude_desktop_config.json")
+    assertInTestArea(file)
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, typeof content === "string" ? content : JSON.stringify(content))
+    return file
+}
+
+describe("Claude Desktop: which file (read-only discovery, assisted selection)", () => {
+    const candidates = async (w: World, extra: Record<string, string> = {}): Promise<Answer> => {
+        const r = await call(w, "desktop-candidates", extra)
+        assert.equal(r.code, 0, r.one("message"))
+        return r
+    }
+
+    test("Desktop absent: nothing found, nothing proposed, nothing created", async () => {
         const w = world()
-        const older = path.join(w.home, ".vscode", "extensions", "anthropic.claude-code-2.1.99-win32-x64", "resources", "native-binary", "claude.exe")
-        fs.mkdirSync(path.dirname(older), { recursive: true })
-        fs.writeFileSync(older, "older")
-        const r = await call(w, "detect-claude", {})
-        assert.equal(r.code, 0)
-        assert.equal(r.one("claudeExe"), w.claudeExe)
-        assert.equal(r.one("candidates"), "2")
-        assert.deepEqual(w.calls, [], "detection starts no program")
+        const before = snapshotDir(w.home)
+        const r = await candidates(w)
+        assert.deepEqual([r.one("proposal"), r.one("selected"), r.one("packaged")], ["none", "", "no"])
+        assert.match(r.one("preview"), /Nessun file di configurazione/)
+        assert.deepEqual(snapshotDir(w.home), before)
     })
 
-    test("the chosen claude.exe must answer --version and offer mcp add-json/remove with --scope", async () => {
-        const w = world()
-        const ok = await call(w, "check-claude", { claudeExe: w.claudeExe })
-        assert.equal(ok.one("version"), CLAUDE_VERSION)
-        assert.deepEqual(w.calls, [["--version"], ["mcp", "add-json", "--help"], ["mcp", "remove", "--help"]])
-        w.claude.helpWithoutScope = true
-        assert.match((await call(w, "check-claude", { claudeExe: w.claudeExe })).one("message"), /non è disponibile con --scope/)
-        assert.match((await call(w, "check-claude", { claudeExe: path.join(w.home, "claude.cmd") })).one("message"), /claude\.exe/)
-        assert.match((await call(w, "check-claude", { claudeExe: path.join(w.home, "missing.exe") })).one("message"), /non esiste/)
+    test("one file and no packaged app: proposed, listed with its place and date, never opened", async () => {
+        const w = world(`{"mcpServers": {"x": {"env": {"K": "${SECRET}"}}`) // not even valid JSON: nobody reads it here
+        const r = await candidates(w)
+        assert.deepEqual([r.one("proposal"), r.one("selected")], ["single", w.configPath])
+        assert.match(r.one("preview"), /cartella Roaming, modificato il \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC/)
+        assert.equal(r.text.includes(SECRET), false)
     })
 
-    test("CLAUDE_CONFIG_DIR: the configuration location is not guessed, registration is refused", async () => {
+    test("more than one file: nothing proposed, every one listed, no identifier assumed", async () => {
+        const w = world(personalConfig())
+        const dataDir = configAt(w, ["Local", "Claude-Data", "qualsiasi-identificatore"])
+        const thirdParty = configAt(w, ["Local", "Claude-3p"])
+        const packaged = configAt(w, ["Local", "Packages", "Claude_abc123", "LocalCache", "Roaming", "Claude"])
+        const notClaude = configAt(w, ["Local", "AltroProgramma"])
+        const r = await candidates(w)
+        assert.deepEqual([r.one("proposal"), r.one("selected"), r.one("packaged")], ["ambiguous", "", "yes"])
+        for (const file of [w.configPath, dataDir, thirdParty, packaged]) assert.ok(r.one("preview").includes(file), file)
+        assert.equal(r.one("preview").includes(notClaude), false, "only the per-user folders of Claude")
+        assert.match(r.one("preview"), /può aprire un file diverso da quello che l'app legge davvero/)
+    })
+
+    test("a packaged app with only the documented file: not proposed, the app may read another one", async () => {
+        const w = world(personalConfig())
+        fs.mkdirSync(path.join(w.home, "AppData", "Local", "Packages", "Claude_zzz999"), { recursive: true })
+        const r = await candidates(w)
+        assert.deepEqual([r.one("proposal"), r.one("selected"), r.one("packaged")], ["ambiguous", "", "yes"])
+    })
+
+    test("a packaged app with only its private file: proposed", async () => {
+        const w = world()
+        const packaged = configAt(w, ["Local", "Packages", "Claude_any", "LocalCache", "Roaming", "Claude"])
+        const r = await candidates(w)
+        assert.deepEqual([r.one("proposal"), r.one("selected")], ["single", packaged])
+    })
+
+    test("a junction is not followed: what is behind it is not listed", async () => {
+        const w = world()
+        const elsewhere = path.join(w.home, "altrove")
+        fs.mkdirSync(elsewhere)
+        fs.writeFileSync(path.join(elsewhere, "claude_desktop_config.json"), "{}")
+        fs.symlinkSync(elsewhere, path.join(w.home, "AppData", "Local", "Claude-Link"), "junction")
+        assert.equal((await candidates(w)).one("proposal"), "none")
+    })
+
+    test("a repair proposes the file of its own registration, also among several", async () => {
         const w = world(personalConfig())
         await installed(w)
-        const r = await call(w, "plan", installRequest(w, { claudeExe: w.claudeExe, profileDir: w.profile }), { ...deps(w), env: { ...w.env, CLAUDE_CONFIG_DIR: path.join(w.home, "alt") } })
-        assert.equal(r.code, 1)
-        assert.match(r.one("message"), /CLAUDE_CONFIG_DIR/)
+        configAt(w, ["Local", "Claude-Data", "id"])
+        assert.equal((await planAndRegister(w)).register.code, 0)
+        const r = await candidates(w, { installDir: w.installDir })
+        assert.deepEqual([r.one("proposal"), r.one("selected")], ["recorded", w.configPath])
     })
-})
 
-describe("setup helper: preview and registration", () => {
-    test("the preview has no side effect and shows only this installation's paths", async () => {
+    test("a policy that disables local MCP servers: reported; the page and the registration refuse, the machine's value first", async () => {
         const w = world(personalConfig())
         await installed(w)
         const before = fs.readFileSync(w.configPath)
-        const r = await call(w, "plan", installRequest(w, { claudeExe: w.claudeExe, profileDir: w.profile }))
+        const ok = await call(w, "desktop-plan", planRequest(w))
+        w.policy = { "HKLM\\SOFTWARE\\Policies\\Claude": "    isLocalDevMcpEnabled    REG_DWORD    0x0\r\n", "HKCU\\SOFTWARE\\Policies\\Claude": "    isLocalDevMcpEnabled    REG_DWORD    0x1\r\n" }
+        assert.equal((await candidates(w)).one("policy"), "blocked")
+        assert.match((await call(w, "desktop-plan", planRequest(w))).one("message"), /policy .*isLocalDevMcpEnabled.*installare solo il server/)
+        assert.match((await call(w, "desktop-register", planRequest(w, { planHash: ok.one("planHash"), consent: "yes" }))).one("message"), /policy/)
+        assert.ok(fs.readFileSync(w.configPath).equals(before))
+        assert.ok(w.calls.every((c) => c[0] === "reg.exe" && c[1] === "query"), "only a registry query is started")
+        w.policy = { "HKLM\\SOFTWARE\\Policies\\Claude": "    isLocalDevMcpEnabled    REG_DWORD    0x1\r\n", "HKCU\\SOFTWARE\\Policies\\Claude": "    isLocalDevMcpEnabled    REG_DWORD    0x0\r\n" }
+        assert.equal((await candidates(w)).one("policy"), "allowed")
+        w.policy = {}
+        assert.equal((await candidates(w)).one("policy"), "allowed", "no policy: nothing stops")
+    })
+
+    test("the selected file must be a regular file with the right name, in this user's folders, reached without links", async () => {
+        const w = world(personalConfig())
+        await installed(w)
+        const elsewhere = path.join(root, `elsewhere ${counter}`)
+        fs.mkdirSync(elsewhere)
+        const outside = path.join(elsewhere, "claude_desktop_config.json")
+        fs.writeFileSync(outside, "{}")
+        const wrongName = path.join(w.home, ".claude.json")
+        fs.writeFileSync(wrongName, "{}")
+        const junction = path.join(w.home, "AppData", "Roaming", "Claude-junction")
+        fs.symlinkSync(path.dirname(w.configPath), junction, "junction")
+        const directory = path.join(w.home, "AppData", "Local", "dir", "claude_desktop_config.json")
+        fs.mkdirSync(directory, { recursive: true })
+        const inInstall = path.join(w.installDir, "claude_desktop_config.json")
+        fs.writeFileSync(inInstall, "{}")
+        const cases: [string, RegExp][] = [
+            [wrongName, /deve chiamarsi claude_desktop_config\.json/],
+            [outside, /non è nelle cartelle del tuo utente/],
+            [path.join(junction, "claude_desktop_config.json"), /collegamento, una junction o un nome breve/],
+            [directory, /non è un file normale/],
+            [path.join(w.home, "AppData", "Roaming", "Assente", "claude_desktop_config.json"), /non esiste.*non lo crea in un percorso ipotizzato/],
+            [inInstall, /dentro la cartella di installazione/],
+            ["\\\\server\\share\\claude_desktop_config.json", /unità locale/],
+        ]
+        for (const [configPath, message] of cases) {
+            const r = await call(w, "desktop-check", { configPath, installDir: w.installDir })
+            assert.equal(r.code, 1, configPath)
+            assert.match(r.one("message"), message, configPath)
+        }
+        assert.equal(fs.readFileSync(wrongName, "utf8"), "{}", "~/.claude.json is never a target")
+        assert.equal(fs.existsSync(path.join(w.home, "AppData", "Roaming", "Assente")), false, "a missing file is not created")
+        assert.equal((await call(w, "desktop-check", { configPath: w.configPath, installDir: w.installDir })).one("canonical"), w.configPath)
+    })
+})
+
+describe("Claude Desktop: the change is mcpServers.fluent-reader and nothing else", () => {
+    test("the page has no side effect, names the file and the entry, says the selection is not a verification, shows no content", async () => {
+        const w = world(personalConfig())
+        await installed(w)
+        const before = fs.readFileSync(w.configPath)
+        const r = await call(w, "desktop-plan", planRequest(w))
         assert.equal(r.code, 0, r.one("message"))
         assert.equal(r.one("action"), "add")
         assert.match(r.one("planHash"), /^[0-9a-f]{64}$/)
-        const preview = r.one("preview")
-        const entry = desiredEntry(w.installDir, w.profile)
-        for (const expected of [SERVER_NAME, "Scope: user", entry.command, entry.args[0] as string, w.profile, w.configPath, CLAUDE_VERSION]) assert.ok(preview.includes(expected), expected)
-        assert.equal(r.text.includes(SECRET), false, "no configuration content in the preview")
-        assert.ok(fs.readFileSync(w.configPath).equals(before), "configuration unchanged")
-        assert.deepEqual(mutating(w), [], "no add or remove")
-        assert.deepEqual(backups(w), [], "no backup taken by a preview")
+        const entry = desiredDesktopEntry(w.installDir, w.profile)
+        for (const expected of [`File selezionato: ${w.configPath}`, "mcpServers.fluent-reader", entry.command, entry.args[0] as string, w.profile, "non può dimostrare che sia quello letto da Claude Desktop"]) assert.ok(r.one("preview").includes(expected), expected)
+        assert.equal(r.text.includes(SECRET), false)
+        assert.equal(r.text.includes("foundry"), false, "other servers are not even named")
+        assert.ok(fs.readFileSync(w.configPath).equals(before))
+        assert.deepEqual(backups(w), [], "no backup taken by a page")
     })
 
-    test("registration adds only fluent-reader, preserves every other server and setting, keeps a backup", async () => {
+    test("the entry is the bundle's real start command: absolute runtime, entrypoint, --profile-dir; nothing else", async () => {
+        const w = world({})
+        await installed(w)
+        assert.equal((await planAndRegister(w)).register.code, 0)
+        const app = path.join(w.installDir, "current", "app")
+        assert.deepEqual(servers(w)[SERVER_NAME], { command: path.join(app, "runtime", "node.exe"), args: [path.join(app, "server", "dist", "main.js"), "--profile-dir", w.profile] })
+    })
+
+    test("foundry-mcp, other servers, preferences and unknown fields stay exactly; a backup is kept; the record holds no content", async () => {
         const w = world(personalConfig())
         await installed(w)
         const original = fs.readFileSync(w.configPath)
@@ -438,342 +508,497 @@ describe("setup helper: preview and registration", () => {
         assert.equal(register.code, 0, register.one("message"))
         assert.equal(register.one("action"), "add")
         const after = readConfig(w)
-        assert.deepEqual(servers(w)[SERVER_NAME], desiredEntry(w.installDir, w.profile))
-        assert.deepEqual(Object.fromEntries(Object.entries(servers(w)).filter(([n]) => n !== SERVER_NAME)), otherServers())
-        assert.equal(after.numStartups, 42)
-        assert.deepEqual(after.projects, personalConfig().projects)
-        assert.deepEqual(mutating(w).map((c) => c.slice(0, 3)), [["mcp", "add-json", SERVER_NAME]])
+        assert.deepEqual(others(w), otherServers())
+        assert.deepEqual(after.preferences, personalConfig().preferences)
+        assert.equal(after.unknownField, 42)
         const [backup] = backups(w)
-        assert.ok(backup !== undefined && /^claude\.json\.\d{8}T\d{6}Z\.bak$/.test(backup))
-        assert.ok(fs.readFileSync(path.join(privateBackupDir(w.env, w.installDir), backup)).equals(original), "the backup is the configuration before the change")
+        assert.ok(backup !== undefined && DESKTOP_BACKUP_NAME.test(backup))
+        assert.ok(fs.readFileSync(path.join(privateDesktopBackupDir(w.env, w.installDir), backup)).equals(original))
         const rec = record(w)
-        assert.equal(rec.claude?.state, "registered")
-        assert.deepEqual(rec.claude?.entry, desiredEntry(w.installDir, w.profile))
-        assert.equal(JSON.stringify(rec).includes(SECRET), false, "the record holds no configuration content")
+        assert.equal(rec.desktop?.state, "registered")
+        assert.equal(rec.desktop?.configPath, w.configPath)
+        assert.equal(rec.desktop?.fingerprint, entryFingerprint(servers(w)[SERVER_NAME]))
+        assert.equal(rec.claude, null, "nothing recorded for Claude Code")
+        assert.equal(JSON.stringify(rec).includes(SECRET), false)
         assert.equal(register.text.includes(SECRET), false)
+        assert.deepEqual(w.calls.filter((c) => c[0] !== "reg.exe"), [], "no program but the policy query")
     })
 
-    test("a missing ~/.claude.json is left to Claude Code to create; no backup is needed", async () => {
-        const w = world()
+    const shapes: [string, string][] = [
+        ["an empty object", "{}"],
+        ["an empty object, multi-line", "{\n}\n"],
+        ["no mcpServers", '{\n  "preferences": {"a": 1}\n}\n'],
+        ["an empty mcpServers", '{"mcpServers": {}, "z": 1}'],
+        ["one line", `{"mcpServers":{"foundry-mcp":{"command":"f"}},"z":[1,{"y":"}{\\""}]}`],
+        ["CRLF and tabs", '{\r\n\t"mcpServers": {\r\n\t\t"foundry-mcp": {\r\n\t\t\t"command": "f"\r\n\t\t}\r\n\t}\r\n}\r\n'],
+        ["a UTF-8 BOM", '\uFEFF{"a": "è 😀"}'],
+    ]
+    for (const [label, text] of shapes) {
+        test(`${label}: add and remove are valid JSON, everything else preserved`, async () => {
+            const w = world(text)
+            await installed(w)
+            const before = JSON.parse(text.replace(/^\uFEFF/, "")) as Record<string, unknown>
+            const { register } = await planAndRegister(w)
+            assert.equal(register.code, 0, register.one("message"))
+            const saved = fs.readFileSync(w.configPath)
+            assert.equal(saved.subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf])), text.startsWith("\uFEFF"), "the BOM stays as it was")
+            const added = JSON.parse(saved.toString("utf8").replace(/^\uFEFF/, "")) as Record<string, unknown>
+            assert.deepEqual((added.mcpServers as Record<string, unknown>)[SERVER_NAME], desiredDesktopEntry(w.installDir, w.profile))
+            assert.equal((await call(w, "desktop-unregister", { installDir: w.installDir })).one("outcome"), "removed")
+            const removed = JSON.parse(fs.readFileSync(w.configPath, "utf8").replace(/^\uFEFF/, "")) as Record<string, unknown>
+            assert.deepEqual({ ...removed, mcpServers: removed.mcpServers ?? {} }, { ...before, mcpServers: before.mcpServers ?? {} })
+        })
+    }
+
+    test("every other byte stays: formatting, key order, numbers JSON.parse would round, a repeated key elsewhere", async () => {
+        const head = '{\n    "numbers": [12345678901234567890, 1.0e2],\n    "same": {"k": 1, "k": 2},\n    "mcpServers": {\n        "foundry-mcp"  :  {"command":"f"},\n        "zeta": {"command": "z"}'
+        const tail = '\n    },\n    "last": "\\u00e8"\n}\n'
+        const w = world(`${head}${tail}`)
         await installed(w)
-        const { register } = await planAndRegister(w)
-        assert.equal(register.code, 0, register.one("message"))
-        assert.deepEqual(servers(w), { [SERVER_NAME]: desiredEntry(w.installDir, w.profile) })
-        assert.deepEqual(backups(w), [])
+        assert.equal((await planAndRegister(w)).register.code, 0)
+        const text = fs.readFileSync(w.configPath, "utf8")
+        assert.ok(text.startsWith(`${head},\n        "fluent-reader": {\n`), text)
+        assert.ok(text.endsWith(tail), text)
+        assert.equal((await call(w, "desktop-unregister", { installDir: w.installDir })).one("outcome"), "removed")
+        assert.equal(fs.readFileSync(w.configPath, "utf8"), `${head}${tail}`, "byte for byte what it was")
+    })
+
+    const refused: [string, string, RegExp][] = [
+        ["invalid JSON", `{"mcpServers": {"foundry-mcp": {"env": {"K": "${SECRET}"}}`, /non è un JSON valido: non viene modificato né ricreato/],
+        ["an empty file", "", /non è un JSON valido/],
+        ["an array", "[1, 2]", /struttura attesa/],
+        ["a string", '"x"', /struttura attesa/],
+        ["mcpServers as an array", '{"mcpServers": []}', /sezione mcpServers non ha la struttura attesa/],
+        ["mcpServers null", '{"mcpServers": null}', /sezione mcpServers non ha la struttura attesa/],
+        ["mcpServers repeated", '{"mcpServers": {}, "mcpServers": {"a": {}}}', /"mcpServers" è ripetuta/],
+        ["fluent-reader repeated", '{"mcpServers": {"fluent-reader": {}, "fluent-reader": {"command": "x"}}}', /"fluent-reader" è ripetuta/],
+    ]
+    for (const [label, content, message] of refused) {
+        test(`${label}: refused at every step, left byte for byte, no backup`, async () => {
+            const w = world(content)
+            await installed(w)
+            const before = fs.readFileSync(w.configPath)
+            const check = await call(w, "desktop-check", { configPath: w.configPath, installDir: w.installDir })
+            const plan = await call(w, "desktop-plan", planRequest(w))
+            const register = await call(w, "desktop-register", planRequest(w, { planHash: "0".repeat(64), consent: "yes", replaceForeign: "yes" }))
+            for (const r of [check, plan, register]) {
+                assert.equal(r.code, 1)
+                assert.match(r.one("message"), message)
+                assert.equal(r.text.includes(SECRET), false)
+            }
+            assert.ok(fs.readFileSync(w.configPath).equals(before))
+            assert.deepEqual(backups(w), [])
+        })
+    }
+
+    test("invalid UTF-8: refused, not rewritten with replacement characters", async () => {
+        const w = world()
+        fs.writeFileSync(w.configPath, Buffer.from([0x7b, 0x22, 0x61, 0x22, 0x3a, 0x22, 0xff, 0x22, 0x7d]))
+        const before = fs.readFileSync(w.configPath)
+        assert.match((await call(w, "desktop-check", { configPath: w.configPath })).one("message"), /non è un JSON valido/)
+        assert.ok(fs.readFileSync(w.configPath).equals(before))
     })
 
     test("without explicit consent nothing is changed", async () => {
         const w = world(personalConfig())
         await installed(w)
         const before = fs.readFileSync(w.configPath)
-        const plan = await call(w, "plan", installRequest(w, { claudeExe: w.claudeExe, profileDir: w.profile }))
+        const plan = await call(w, "desktop-plan", planRequest(w))
         for (const consent of [{}, { consent: "no" }]) {
-            const r = await call(w, "register", installRequest(w, { claudeExe: w.claudeExe, profileDir: w.profile, planHash: plan.one("planHash"), ...consent }))
+            const r = await call(w, "desktop-register", planRequest(w, { planHash: plan.one("planHash"), ...consent }))
             assert.equal(r.code, 1)
             assert.match(r.one("message"), /consenso esplicito/)
         }
         assert.ok(fs.readFileSync(w.configPath).equals(before))
-        assert.deepEqual(mutating(w), [])
         assert.deepEqual(backups(w), [])
     })
 
-    test("a corrupted configuration stops everything and is neither modified nor recreated", async () => {
-        const corrupt = `{"mcpServers": {"other-tool": {"command": "x", "env": {"K": "${SECRET}"}}`
-        const w = world(corrupt)
+    test("several candidates: only the selected file changes", async () => {
+        const w = world(personalConfig())
         await installed(w)
-        const plan = await call(w, "plan", installRequest(w, { claudeExe: w.claudeExe, profileDir: w.profile }))
-        assert.equal(plan.code, 1)
-        assert.match(plan.one("message"), /non è un JSON valido.*non viene modificata né ricreata/)
-        const register = await call(w, "register", installRequest(w, { claudeExe: w.claudeExe, profileDir: w.profile, planHash: "0".repeat(64), consent: "yes" }))
-        assert.equal(register.code, 1)
-        assert.equal(fs.readFileSync(w.configPath, "utf8"), corrupt)
-        assert.deepEqual(mutating(w), [])
-        assert.equal(`${plan.text}${register.text}`.includes(SECRET), false)
+        const other = configAt(w, ["Local", "Claude-Data", "id"], personalConfig())
+        const before = fs.readFileSync(other)
+        assert.equal((await planAndRegister(w)).register.code, 0)
+        assert.ok(fs.readFileSync(other).equals(before), "the file not selected is untouched")
+        assert.ok(Object.hasOwn(servers(w), SERVER_NAME))
     })
 
-    test("a foreign fluent-reader entry is replaced only with specific consent; others preserved", async () => {
+    test("a foreign fluent-reader entry is replaced only with specific consent, shown without its values; a server-only choice leaves it", async () => {
         const foreign = { command: "C:\\Elsewhere\\node.exe", args: ["server.js"], env: { TOKEN: SECRET }, timeout: 5 }
         const w = world(personalConfig({ [SERVER_NAME]: foreign }))
         await installed(w)
-        const plan = await call(w, "plan", installRequest(w, { claudeExe: w.claudeExe, profileDir: w.profile }))
+        const before = fs.readFileSync(w.configPath)
+        const plan = await call(w, "desktop-plan", planRequest(w))
         assert.equal(plan.one("action"), "replace-foreign")
         assert.match(plan.one("preview"), /ATTENZIONE: esiste già una voce "fluent-reader".*C:\\Elsewhere\\node\.exe, 1 argomenti, 1 variabili/)
-        assert.equal(plan.text.includes(SECRET), false, "the foreign entry's values are not shown")
-        const refused = await call(w, "register", installRequest(w, { claudeExe: w.claudeExe, profileDir: w.profile, planHash: plan.one("planHash"), consent: "yes" }))
+        assert.equal(plan.text.includes(SECRET), false)
+        const refused = await call(w, "desktop-register", planRequest(w, { planHash: plan.one("planHash"), consent: "yes" }))
         assert.match(refused.one("message"), /non è stata confermata/)
-        assert.deepEqual(servers(w)[SERVER_NAME], foreign)
-        const replaced = await call(w, "register", installRequest(w, { claudeExe: w.claudeExe, profileDir: w.profile, planHash: plan.one("planHash"), consent: "yes", replaceForeign: "yes" }))
+        assert.ok(fs.readFileSync(w.configPath).equals(before), "not replaced silently")
+        assert.equal(record(w).desktop, undefined, "and not taken for ours")
+        const replaced = await call(w, "desktop-register", planRequest(w, { planHash: plan.one("planHash"), consent: "yes", replaceForeign: "yes" }))
         assert.equal(replaced.code, 0, replaced.one("message"))
-        assert.deepEqual(servers(w)[SERVER_NAME], desiredEntry(w.installDir, w.profile))
-        assert.deepEqual(Object.fromEntries(Object.entries(servers(w)).filter(([n]) => n !== SERVER_NAME)), otherServers())
+        assert.deepEqual(servers(w)[SERVER_NAME], desiredDesktopEntry(w.installDir, w.profile))
+        assert.deepEqual(others(w), otherServers())
         assert.equal(JSON.stringify(record(w)).includes(SECRET), false, "the replaced entry is not copied into the record")
+        const [backup] = backups(w)
+        assert.ok(fs.readFileSync(path.join(privateDesktopBackupDir(w.env, w.installDir), backup as string)).equals(before), "the replaced entry stays in the private copy")
     })
 
-    test("a configuration changed after the preview: registration refused, nothing changed", async () => {
+    test("an entry already identical but not written by this installer: nothing changes and it is not taken for ours", async () => {
+        const base = world()
+        const entry = desiredDesktopEntry(base.installDir, base.profile)
+        fs.writeFileSync(base.configPath, JSON.stringify(personalConfig({ [SERVER_NAME]: entry })))
+        await installed(base)
+        const before = fs.readFileSync(base.configPath)
+        const { plan, register } = await planAndRegister(base)
+        assert.equal(plan.one("action"), "none")
+        assert.match(plan.one("preview"), /non viene considerata sua/)
+        assert.equal(register.code, 0)
+        assert.ok(fs.readFileSync(base.configPath).equals(before))
+        assert.deepEqual(backups(base), [])
+        assert.equal((await call(base, "desktop-unregister", { installDir: base.installDir })).one("outcome"), "not-configured")
+        assert.ok(fs.readFileSync(base.configPath).equals(before), "the uninstaller leaves it")
+    })
+
+    test("the entry changed after the page: registration refused, nothing changed", async () => {
         const w = world(personalConfig())
         await installed(w)
-        const plan = await call(w, "plan", installRequest(w, { claudeExe: w.claudeExe, profileDir: w.profile }))
+        const plan = await call(w, "desktop-plan", planRequest(w))
         fs.writeFileSync(w.configPath, JSON.stringify(personalConfig({ [SERVER_NAME]: { command: "C:\\x.exe" } })))
         const before = fs.readFileSync(w.configPath)
-        const r = await call(w, "register", installRequest(w, { claudeExe: w.claudeExe, profileDir: w.profile, planHash: plan.one("planHash"), consent: "yes", replaceForeign: "yes" }))
-        assert.match(r.one("message"), /è cambiata dopo l'anteprima/)
+        const r = await call(w, "desktop-register", planRequest(w, { planHash: plan.one("planHash"), consent: "yes", replaceForeign: "yes" }))
+        assert.match(r.one("message"), /è cambiata dopo la conferma/)
         assert.ok(fs.readFileSync(w.configPath).equals(before))
-        assert.deepEqual(mutating(w), [])
     })
 
-    test("claude crashes before writing: nothing to undo, configuration as before", async () => {
+    test("another program changes the file between the read and the write: nothing overwritten, its change kept", async () => {
         const w = world(personalConfig())
         await installed(w)
-        const before = servers(w)
-        w.claude = { addFails: "before-write" }
+        const concurrent = JSON.stringify(personalConfig({ nuovo: { command: "n" } }))
+        w.checkpoint = (s) => {
+            if (s === "before-replace") fs.writeFileSync(w.configPath, concurrent)
+        }
         const { register } = await planAndRegister(w)
         assert.equal(register.code, 1)
-        assert.match(register.one("message"), /registrazione non completata .*riportata allo stato precedente.*FluentReaderMCP-Data\\claude-config-backups\\[0-9a-f]{32}\\claude\.json\./)
-        assert.deepEqual(servers(w), before)
-        assert.deepEqual(calls(w, "remove"), [], "nothing removed")
-        assert.equal(record(w).claude, null, "nothing recorded as registered")
-        assert.equal(backups(w).length, 1, "the backup stays available")
+        assert.match(register.one("message"), /modificato da un altro programma durante l'operazione/)
+        assert.equal(fs.readFileSync(w.configPath, "utf8"), concurrent)
+        assert.equal(record(w).desktop, undefined, "nothing recorded")
+        assert.deepEqual(fs.readdirSync(path.dirname(w.configPath)), ["claude_desktop_config.json"], "no temporary file left")
     })
 
-    const unattributable: [string, FakeClaude][] = [
-        ["claude reports a failure after writing", { addFails: "after-write" }],
-        ["claude saves an entry different from the approved one", { addWritesWrong: true }],
-    ]
-    for (const [label, behaviour] of unattributable) {
-        test(`${label}: the entry cannot be attributed, it is not removed; incomplete rollback reported`, async () => {
-            const w = world(personalConfig())
-            await installed(w)
-            w.claude = behaviour
-            const { register } = await planAndRegister(w)
-            assert.equal(register.code, 1)
-            assert.match(register.one("message"), /ripristino automatico NON è stato completato: .*non è attribuibile con certezza.*Serve un tuo intervento.*FluentReaderMCP-Data\\claude-config-backups\\[0-9a-f]{32}\\claude\.json\./)
-            assert.ok(Object.hasOwn(servers(w), SERVER_NAME), "the entry is left for the owner")
-            assert.deepEqual(calls(w, "remove"), [], "no remove without proven ownership")
-            assert.equal(record(w).claude?.state, "rollback-failed")
-            assert.equal(record(w).claude?.fingerprint, null, "not attributed to the installer")
-        })
-    }
-
-    test("another server changed during the registration (Claude Code open): our own entry undone, the change reported", async () => {
+    test("the file cannot be replaced (in use, read-only): the file as before, no temporary file, the record as before, a copy kept", async () => {
         const w = world(personalConfig())
         await installed(w)
-        w.claude = { addTouchesOther: true }
+        const before = fs.readFileSync(w.configPath)
+        w.replace = () => {
+            throw Object.assign(new Error("in use"), { code: "EBUSY" })
+        }
         const { register } = await planAndRegister(w)
         assert.equal(register.code, 1)
-        assert.match(register.one("message"), /altri server MCP risultano cambiati.*riportata allo stato precedente/)
-        assert.equal(Object.hasOwn(servers(w), SERVER_NAME), false, "our entry removed")
-        assert.deepEqual((servers(w)["other-tool"] as { command: string }).command, "C:\\Tools\\changed.exe", "the concurrent change is not overwritten")
-    })
-
-    test("reinstallation is idempotent: identical entry, no CLI change, no new backup", async () => {
-        const w = world(personalConfig())
-        await installed(w)
-        await planAndRegister(w)
-        const callsBefore = mutating(w).length
-        const config = fs.readFileSync(w.configPath)
-        const again = await planAndRegister(w)
-        assert.equal(again.plan.one("action"), "none")
-        assert.match(again.plan.one("preview"), /nessuna/)
-        assert.equal(again.register.code, 0)
-        assert.equal(mutating(w).length, callsBefore)
-        assert.ok(fs.readFileSync(w.configPath).equals(config))
+        assert.match(register.one("message"), /errore di scrittura EBUSY.*riportata allo stato precedente/)
+        assert.ok(fs.readFileSync(w.configPath).equals(before))
+        assert.deepEqual(fs.readdirSync(path.dirname(w.configPath)), ["claude_desktop_config.json"])
+        assert.equal(record(w).desktop, undefined)
         assert.equal(backups(w).length, 1)
-        assert.equal(record(w).claude?.state, "registered")
     })
 
-    test("upgrade simulation: an older installation's own entry (other profile) is updated as its own", async () => {
-        const w = world(personalConfig())
-        await installed(w)
-        await planAndRegister(w)
-        // The same installation, recorded as 0.0.9 with an earlier profile: no second package is built.
-        const oldProfile = buildSmokeProfile(path.join(w.home, "Profili Fluent", "vecchio")).dir
-        const rec = record(w)
-        const oldEntry = desiredEntry(w.installDir, oldProfile)
-        fs.writeFileSync(path.join(w.installDir, RECORD_NAME), JSON.stringify({ ...rec, version: "0.0.9", profileDir: oldProfile, claude: { ...rec.claude, entry: oldEntry, fingerprint: entryFingerprint(oldEntry) } }))
-        const doc = readConfig(w)
-        fs.writeFileSync(w.configPath, JSON.stringify({ ...doc, mcpServers: { ...(doc.mcpServers as object), [SERVER_NAME]: oldEntry } }))
-        const check = await call(w, "check-install-dir", installRequest(w))
-        assert.equal(check.one("mode"), "upgrade")
-        assert.equal(check.one("previousProfile"), oldProfile)
-        await installed(w)
-        assert.equal(record(w).claude?.state, "registered", "the new record keeps the registration")
-        const { plan, register } = await planAndRegister(w)
-        assert.equal(plan.one("action"), "replace-own")
-        assert.equal(register.code, 0, register.one("message"))
-        assert.deepEqual(servers(w)[SERVER_NAME], desiredEntry(w.installDir, w.profile))
-        assert.equal(record(w).version, VERSION)
-    })
-})
-
-describe("setup helper: conservative Claude Code rollback (Major 3)", () => {
-    const injected = (step: string): HelperDeps["checkpoint"] => (s) => {
-        if (s === step) throw new Error(`injected failure at ${s}`)
+    const afterWrite: HelperDeps["checkpoint"] = (s) => {
+        if (s === "after-replace") throw new Error("injected failure")
     }
 
-    test("add-json succeeded, immediate rollback: only the entry read back as ours is removed", async () => {
+    test("a failure right after the write, nobody else touched the file: its previous bytes go back", async () => {
         const w = world(personalConfig())
         await installed(w)
-        w.checkpoint = injected("after-readback")
+        const before = fs.readFileSync(w.configPath)
+        w.checkpoint = afterWrite
         const { register } = await planAndRegister(w)
-        assert.equal(register.code, 1)
         assert.match(register.one("message"), /injected failure.*riportata allo stato precedente/)
-        assert.equal(Object.hasOwn(servers(w), SERVER_NAME), false)
-        assert.equal(calls(w, "remove").length, 1)
-        assert.equal(record(w).claude, null)
+        assert.ok(fs.readFileSync(w.configPath).equals(before))
+        assert.equal(record(w).desktop, undefined)
     })
 
-    test("add-json succeeded, entry changed before the rollback: not removed, owner intervention required", async () => {
+    test("a failure after the write, others changed the file meanwhile: only our entry goes, their change stays, the old file is NOT restored", async () => {
         const w = world(personalConfig())
         await installed(w)
         w.checkpoint = (s) => {
-            if (s === "after-readback") throw new Error("injected failure")
+            if (s === "after-replace") throw new Error("injected failure")
+            if (s === "before-rollback") {
+                const doc = readConfig(w)
+                fs.writeFileSync(w.configPath, JSON.stringify({ ...doc, preferences: { changed: "by the app" } }))
+            }
+        }
+        const { register } = await planAndRegister(w)
+        assert.match(register.one("message"), /riportata allo stato precedente/)
+        assert.equal(Object.hasOwn(servers(w), SERVER_NAME), false)
+        assert.deepEqual(readConfig(w).preferences, { changed: "by the app" })
+        assert.deepEqual(others(w), otherServers())
+    })
+
+    test("a failure after the write, the entry changed by others: not touched, owner intervention required", async () => {
+        const w = world(personalConfig())
+        await installed(w)
+        w.checkpoint = (s) => {
+            if (s === "after-replace") throw new Error("injected failure")
             if (s === "before-rollback") changeEntry(w, (e) => ({ ...e, timeout: 9000 }))
         }
         const { register } = await planAndRegister(w)
-        assert.match(register.one("message"), /NON è stato completato: .*non è attribuibile con certezza/)
-        assert.equal((servers(w)[SERVER_NAME] as { timeout?: number }).timeout, 9000, "the concurrent change is preserved")
-        assert.deepEqual(calls(w, "remove"), [])
+        assert.match(register.one("message"), /NON è stato completato: .*non è attribuibile con certezza.*Serve un tuo intervento/)
+        assert.equal((servers(w)[SERVER_NAME] as { timeout?: number }).timeout, 9000)
+        assert.equal(record(w).desktop?.state, "rollback-failed")
     })
 
-    test("add-json failed and another fluent-reader entry appeared: not removed", async () => {
-        const w = world(personalConfig())
+    test("a failure after a consented replacement: the previous entry goes back exactly, unknown fields included", async () => {
+        const foreign = { command: "C:\\Elsewhere\\node.exe", env: { TOKEN: SECRET }, timeout: 5 }
+        const w = world(personalConfig({ [SERVER_NAME]: foreign }))
         await installed(w)
-        w.claude = { addFails: "before-write" }
         w.checkpoint = (s) => {
+            if (s === "after-replace") throw new Error("injected failure")
             if (s === "before-rollback") {
                 const doc = readConfig(w)
-                fs.writeFileSync(w.configPath, JSON.stringify({ ...doc, mcpServers: { ...(doc.mcpServers as object), [SERVER_NAME]: { command: "C:\\Someone\\else.exe" } } }))
-            }
-        }
-        const { register } = await planAndRegister(w)
-        assert.match(register.one("message"), /NON è stato completato/)
-        assert.deepEqual(servers(w)[SERVER_NAME], { command: "C:\\Someone\\else.exe" })
-        assert.deepEqual(calls(w, "remove"), [])
-    })
-
-    test("entry already absent at rollback time: no removal", async () => {
-        const w = world(personalConfig())
-        await installed(w)
-        w.checkpoint = (s) => {
-            if (s === "after-readback") throw new Error("injected failure")
-            if (s === "before-rollback") fs.writeFileSync(w.configPath, JSON.stringify(personalConfig()))
-        }
-        const { register } = await planAndRegister(w)
-        assert.match(register.one("message"), /riportata allo stato precedente/)
-        assert.deepEqual(calls(w, "remove"), [])
-        assert.deepEqual(servers(w), otherServers())
-    })
-
-    test("consented replacement, safe rollback: the previous entry is put back exactly", async () => {
-        const foreign = { command: "C:\\Elsewhere\\node.exe", args: ["server.js"], env: { TOKEN: SECRET }, timeout: 5 }
-        const w = world(personalConfig({ [SERVER_NAME]: foreign }))
-        await installed(w)
-        w.claude = { addFails: "before-write" }
-        const { register } = await planAndRegister(w, { replaceForeign: "yes" })
-        assert.match(register.one("message"), /riportata allo stato precedente/)
-        assert.deepEqual(servers(w)[SERVER_NAME], foreign, "unknown fields included")
-        assert.deepEqual(Object.fromEntries(Object.entries(servers(w)).filter(([n]) => n !== SERVER_NAME)), otherServers())
-        assert.deepEqual(calls(w, "add-json").map((c) => JSON.parse(c[3] as string) as unknown), [desiredEntry(w.installDir, w.profile), foreign])
-    })
-
-    test("consented replacement, concurrent change before the rollback: incomplete, the concurrent entry preserved", async () => {
-        const foreign = { command: "C:\\Elsewhere\\node.exe", args: ["server.js"] }
-        const w = world(personalConfig({ [SERVER_NAME]: foreign }))
-        await installed(w)
-        w.checkpoint = (s) => {
-            if (s === "after-readback") throw new Error("injected failure")
-            if (s === "before-rollback") changeEntry(w, (e) => ({ ...e, alwaysLoad: true }))
-        }
-        const { register } = await planAndRegister(w, { replaceForeign: "yes" })
-        assert.match(register.one("message"), /NON è stato completato/)
-        assert.equal((servers(w)[SERVER_NAME] as { alwaysLoad?: boolean }).alwaysLoad, true)
-        assert.equal(calls(w, "add-json").length, 1, "the previous entry is not forced back")
-    })
-
-    test("consented replacement, the name taken again before the restore: the previous entry is not written over it", async () => {
-        const foreign = { command: "C:\\Elsewhere\\node.exe" }
-        const w = world(personalConfig({ [SERVER_NAME]: foreign }))
-        await installed(w)
-        w.claude = { addFails: "before-write" }
-        w.checkpoint = (s) => {
-            if (s === "before-rollback-restore") {
-                const doc = readConfig(w)
-                fs.writeFileSync(w.configPath, JSON.stringify({ ...doc, mcpServers: { ...(doc.mcpServers as object), [SERVER_NAME]: { command: "C:\\New\\one.exe" } } }))
+                fs.writeFileSync(w.configPath, JSON.stringify({ ...doc, altro: 1 }))
             }
         }
         const { register } = await planAndRegister(w, { replaceForeign: "yes" })
-        assert.match(register.one("message"), /nel frattempo è comparsa un'altra voce/)
-        assert.deepEqual(servers(w)[SERVER_NAME], { command: "C:\\New\\one.exe" })
+        assert.match(register.one("message"), /riportata allo stato precedente/)
+        assert.deepEqual(servers(w)[SERVER_NAME], foreign)
+        assert.equal(readConfig(w).altro, 1)
     })
 
-    test("the CLI removal fails during the rollback: explicit error, no false success; the entry stays attributable", async () => {
+    test("a crash between the write and the record: the fingerprint was recorded first, so the next run recognises the entry", async () => {
         const w = world(personalConfig())
         await installed(w)
-        w.checkpoint = injected("after-readback")
-        w.claude = { removeFails: true }
-        const { register } = await planAndRegister(w)
-        assert.match(register.one("message"), /NON è stato completato: claude mcp remove non è riuscito/)
-        assert.equal(record(w).claude?.state, "rollback-failed")
-        assert.equal(record(w).claude?.fingerprint, entryFingerprint(servers(w)[SERVER_NAME]), "the uninstaller can still recognise it")
-        w.claude = {}
-        w.checkpoint = undefined
-        const r = await call(w, "unregister", { installDir: w.installDir })
-        assert.equal(r.one("outcome"), "removed")
+        assert.equal((await planAndRegister(w)).register.code, 0)
+        const rec = record(w)
+        writeRecord(path.join(w.installDir, RECORD_NAME), { ...rec, desktop: { ...(rec.desktop as DesktopRegistration), state: "pending" } })
+        const { plan, register } = await planAndRegister(w)
+        assert.equal(plan.one("action"), "none")
+        assert.equal(register.code, 0)
+        assert.equal(record(w).desktop?.state, "registered")
+    })
+
+    test("a repeated repair is idempotent: the same bytes, no new backup", async () => {
+        const w = world(personalConfig())
+        await installed(w)
+        assert.equal((await planAndRegister(w)).register.code, 0)
+        const config = fs.readFileSync(w.configPath)
+        for (let i = 0; i < 2; i++) {
+            const again = await planAndRegister(w)
+            assert.equal(again.plan.one("action"), "none")
+            assert.match(again.plan.one("preview"), /Modifica: nessuna/)
+            assert.equal(again.register.code, 0)
+        }
+        assert.ok(fs.readFileSync(w.configPath).equals(config))
+        assert.equal(backups(w).length, 1)
+        assert.equal(record(w).desktop?.state, "registered")
+    })
+
+    test("an upgrade with another profile: the installation's own entry is updated, the others stay, the record keeps it", async () => {
+        const w = world(personalConfig())
+        await installed(w)
+        assert.equal((await planAndRegister(w)).register.code, 0)
+        const oldProfile = buildSmokeProfile(path.join(w.home, "Profili Fluent", "vecchio")).dir
+        const rec = record(w)
+        const oldEntry = desiredDesktopEntry(w.installDir, oldProfile)
+        fs.writeFileSync(path.join(w.installDir, RECORD_NAME), JSON.stringify({ ...rec, version: "0.0.9", profileDir: oldProfile, desktop: { ...rec.desktop, entry: oldEntry, fingerprint: entryFingerprint(oldEntry) } }))
+        changeEntry(w, () => ({ ...oldEntry }))
+        const { plan, register } = await planAndRegister(w)
+        assert.equal(plan.one("action"), "replace-own")
+        assert.equal(register.code, 0, register.one("message"))
+        assert.deepEqual(servers(w)[SERVER_NAME], desiredDesktopEntry(w.installDir, w.profile))
+        assert.deepEqual(others(w), otherServers())
+    })
+
+    test("pointing a later run to another file: the first file is not touched then, its entry stays attributable and goes at uninstall", async () => {
+        const w = world(personalConfig())
+        await installed(w)
+        assert.equal((await planAndRegister(w)).register.code, 0)
+        const first = fs.readFileSync(w.configPath)
+        const second = configAt(w, ["Local", "Claude-Data", "id"], personalConfig())
+        const v: World = { ...w, configPath: second }
+        const { plan, register } = await planAndRegister(v)
+        assert.ok(plan.one("preview").includes(`La voce scritta in precedenza in ${w.configPath} non viene toccata`))
+        assert.equal(register.code, 0, register.one("message"))
+        assert.ok(fs.readFileSync(w.configPath).equals(first), "not modified by trial and error")
+        const rec = record(w).desktop as DesktopRegistration
+        assert.equal(rec.configPath, second)
+        assert.deepEqual(rec.formerTargets?.map((t) => t.configPath), [w.configPath])
+        // and the preference is the file of the last run
+        assert.equal((await call(w, "desktop-candidates", { installDir: w.installDir })).one("selected"), second)
+        const r = await call(w, "desktop-unregister", { installDir: w.installDir })
+        assert.equal(r.one("outcome"), "removed", r.one("message"))
+        assert.equal(Object.hasOwn(servers(w), SERVER_NAME), false, "the first file")
+        assert.equal(Object.hasOwn(servers(v), SERVER_NAME), false, "the second file")
+        assert.deepEqual(others(w), otherServers())
     })
 })
 
-describe("setup helper: identity of the registration (Major 2)", () => {
-    async function registered(claude: FakeClaude = { addsMeta: true }): Promise<World> {
+describe("Claude Desktop: uninstallation", () => {
+    async function registered(): Promise<World> {
         const w = world(personalConfig())
         await installed(w)
-        w.claude = claude
         const { register } = await planAndRegister(w)
         assert.equal(register.code, 0, register.one("message"))
-        w.claude = {}
         return w
     }
 
-    test("the identity is the entry as the CLI saved it (extra nested fields included)", async () => {
+    test("the entry as written is removed; every other server, preference and backup stays; a repeated attempt has nothing to do", async () => {
         const w = await registered()
-        const saved = servers(w)[SERVER_NAME]
-        assert.deepEqual((saved as { meta: unknown }).meta, { source: "cli", flags: [1, 2] })
-        assert.equal(record(w).claude?.fingerprint, entryFingerprint(saved))
-        assert.equal((await call(w, "plan", installRequest(w, { claudeExe: w.claudeExe, profileDir: w.profile }))).one("action"), "none")
+        const dir = privateDesktopBackupDir(w.env, w.installDir)
+        const snap = snapshotDir(dir)
+        const r = await call(w, "desktop-unregister", { installDir: w.installDir })
+        assert.equal(r.code, 0)
+        assert.equal(r.one("outcome"), "removed")
+        assert.deepEqual(servers(w), otherServers())
+        assert.deepEqual(readConfig(w).preferences, personalConfig().preferences)
+        assert.equal(record(w).desktop?.state, "removed")
+        assert.equal(r.text.includes(SECRET), false)
+        assert.deepEqual(snapshotDir(dir), snap, "the copies are never deleted")
+        assert.equal((await call(w, "desktop-unregister", { installDir: w.installDir })).one("outcome"), "not-configured")
     })
 
     const changes: [string, (e: Record<string, unknown>) => Record<string, unknown>][] = [
-        ["timeout added", (e) => ({ ...e, timeout: 30000 })],
-        ["alwaysLoad added", (e) => ({ ...e, alwaysLoad: true })],
-        ["an unknown field added", (e) => ({ ...e, "x-custom": "value" })],
-        ["a nested property changed", (e) => ({ ...e, meta: { ...(e.meta as object), source: "user" } })],
-        ["a nested array element changed", (e) => ({ ...e, meta: { ...(e.meta as object), flags: [2, 1] } })],
+        ["a field added", (e) => ({ ...e, timeout: 30000 })],
         ["an args element changed", (e) => ({ ...e, args: [...(e.args as string[]).slice(0, 2), "C:\\Other\\profile"] })],
-        ["an env value added", (e) => ({ ...e, env: { DEBUG: "1" } })],
+        ["env added", (e) => ({ ...e, env: { DEBUG: "1" } })],
+        ["the command changed", (e) => ({ ...e, command: "C:\\Other\\node.exe" })],
     ]
     for (const [label, change] of changes) {
-        test(`uninstall: ${label} → recognised as modified, not removed`, async () => {
+        test(`${label} by someone else: recognised as modified, not removed, not restored`, async () => {
             const w = await registered()
             changeEntry(w, change)
-            const changed = servers(w)[SERVER_NAME]
-            const r = await call(w, "unregister", { installDir: w.installDir })
+            const before = fs.readFileSync(w.configPath)
+            const r = await call(w, "desktop-unregister", { installDir: w.installDir })
             assert.equal(r.one("outcome"), "modified")
-            assert.deepEqual(servers(w)[SERVER_NAME], changed)
-            assert.deepEqual(calls(w, "remove"), [])
+            assert.match(r.one("message"), /non viene rimossa automaticamente/)
+            assert.ok(fs.readFileSync(w.configPath).equals(before))
+            assert.equal(record(w).desktop?.state, "registered", "repeatable")
         })
     }
 
-    test("uninstall: the identical entry with its keys in another order is recognised and removed", async () => {
+    test("the same entry with its keys in another order is recognised and removed", async () => {
         const w = await registered()
-        const stored = JSON.stringify(servers(w)[SERVER_NAME])
-        changeEntry(w, (e) => {
-            const reversed = Object.fromEntries(Object.entries(e).reverse())
-            reversed.meta = Object.fromEntries(Object.entries(e.meta as object).reverse())
-            return reversed
-        })
-        assert.notEqual(JSON.stringify(servers(w)[SERVER_NAME]), stored, "same content, other key order")
-        const r = await call(w, "unregister", { installDir: w.installDir })
-        assert.equal(r.one("outcome"), "removed")
+        changeEntry(w, (e) => Object.fromEntries(Object.entries(e).reverse()))
+        assert.equal((await call(w, "desktop-unregister", { installDir: w.installDir })).one("outcome"), "removed")
         assert.deepEqual(servers(w), otherServers())
+    })
+
+    test("others changed the rest of the file after the registration: their changes stay, no copy is restored over them", async () => {
+        const w = await registered()
+        const doc = readConfig(w)
+        fs.writeFileSync(w.configPath, JSON.stringify({ ...doc, preferences: { changed: true }, mcpServers: { ...(doc.mcpServers as object), nuovo: { command: "n" } } }))
+        assert.equal((await call(w, "desktop-unregister", { installDir: w.installDir })).one("outcome"), "removed")
+        assert.deepEqual(readConfig(w).preferences, { changed: true })
+        assert.deepEqual(servers(w), { ...otherServers(), nuovo: { command: "n" } })
+    })
+
+    test("the entry changes between the check and the removal: not removed", async () => {
+        const w = await registered()
+        w.checkpoint = (s) => {
+            if (s === "before-unregister") changeEntry(w, (e) => ({ ...e, timeout: 1 }))
+        }
+        const r = await call(w, "desktop-unregister", { installDir: w.installDir })
+        assert.equal(r.one("outcome"), "modified")
+        assert.equal((servers(w)[SERVER_NAME] as { timeout?: number }).timeout, 1)
+    })
+
+    test("the file changes in the last instant before the replacement: nothing overwritten, repeatable", async () => {
+        const w = await registered()
+        const concurrent = JSON.stringify(personalConfig({ nuovo: { command: "n" } }))
+        w.checkpoint = (s) => {
+            if (s === "before-replace") fs.writeFileSync(w.configPath, concurrent)
+        }
+        const r = await call(w, "desktop-unregister", { installDir: w.installDir })
+        assert.equal(r.one("outcome"), "write-error")
+        assert.equal(fs.readFileSync(w.configPath, "utf8"), concurrent)
+        assert.equal(record(w).desktop?.state, "registered")
+    })
+
+    test("a file that cannot be read any more, or a record pointing outside this user's folders: nothing touched", async () => {
+        const w = await registered()
+        fs.writeFileSync(w.configPath, `{ broken ${SECRET}`)
+        const broken = await call(w, "desktop-unregister", { installDir: w.installDir })
+        assert.equal(broken.one("outcome"), "config-error")
+        assert.equal(broken.text.includes(SECRET), false)
+        const v = await registered()
+        const elsewhere = path.join(root, `foreign ${counter}`)
+        fs.mkdirSync(elsewhere)
+        const foreign = path.join(elsewhere, "claude_desktop_config.json")
+        fs.copyFileSync(v.configPath, foreign)
+        const before = fs.readFileSync(foreign)
+        const rec = record(v)
+        writeRecord(path.join(v.installDir, RECORD_NAME), { ...rec, desktop: { ...(rec.desktop as DesktopRegistration), configPath: foreign } })
+        assert.equal((await call(v, "desktop-unregister", { installDir: v.installDir })).one("outcome"), "config-error")
+        assert.ok(fs.readFileSync(foreign).equals(before), "a record alone authorises nothing outside this user's folders")
+    })
+
+    test("desktop-unregister refuses a directory that is not a recorded installation", async () => {
+        const w = world(personalConfig())
+        assert.match((await call(w, "desktop-unregister", { installDir: w.installDir })).one("message"), /registro di installazione mancante/)
+    })
+})
+
+describe("Claude Desktop: installations of the Code-first beta", () => {
+    /** A record as the 0.1.x beta wrote it, with its entry in the synthetic ~/.claude.json. */
+    function codeFirst(w: World): Buffer {
+        const entry = codeEntry(w)
+        fs.writeFileSync(codeConfigPath(w), JSON.stringify({ numStartups: 7, oauthAccount: SECRET, mcpServers: { [SERVER_NAME]: entry, altro: { command: "a" } } }))
+        const file = path.join(w.installDir, RECORD_NAME)
+        writeRecord(file, { ...(readRecord(file) as InstallRecord), claude: { state: "registered", name: SERVER_NAME, scope: "user", configPath: codeConfigPath(w), claudeExe: path.join(w.home, "claude.exe"), entry, fingerprint: entryFingerprint(entry), backup: null, updatedAt: "2026-10-01T09:00:00.000Z" } })
+        return fs.readFileSync(codeConfigPath(w))
+    }
+
+    test("a Code registration does not count as a Desktop one: the page adds the entry, reports the old one, and ~/.claude.json is never written", async () => {
+        const w = world(personalConfig())
+        await installed(w)
+        const code = codeFirst(w)
+        assert.equal((await call(w, "uninstall-preflight", { installDir: w.installDir })).code, 1, "no helper in this fixture")
+        const { plan, register } = await planAndRegister(w)
+        assert.equal(plan.one("action"), "add", "no Desktop entry is implied")
+        assert.match(plan.one("preview"), /registrato il server in Claude Code: quella voce non viene modificata né rimossa, e non implica alcuna registrazione in Claude Desktop/)
+        assert.equal(plan.text.includes(SECRET), false)
+        assert.equal(register.code, 0, register.one("message"))
+        assert.ok(fs.readFileSync(codeConfigPath(w)).equals(code), "~/.claude.json byte for byte")
+        const rec = record(w)
+        assert.equal(rec.claude?.state, "registered", "the historical registration is carried over")
+        assert.equal(rec.desktop?.state, "registered")
+        assert.deepEqual(w.calls.filter((c) => c[0] !== "reg.exe"), [], "no claude.exe, no search")
+    })
+
+    test("uninstall: the Desktop entry goes, the Code entry stays and the user is told how to remove it", async () => {
+        const w = world(personalConfig())
+        await installed(w)
+        const code = codeFirst(w)
+        assert.equal((await planAndRegister(w)).register.code, 0)
+        assert.match((await call(w, "un-status", { installDir: w.installDir })).one("backups"), /registrato il server anche in Claude Code: quella voce non viene toccata.*claude mcp remove fluent-reader --scope user/)
+        const r = await call(w, "desktop-unregister", { installDir: w.installDir })
+        assert.equal(r.one("outcome"), "removed")
+        assert.ok(fs.readFileSync(codeConfigPath(w)).equals(code))
+        assert.equal(record(w).claude?.state, "registered")
+    })
+
+    test("uninstall of a Code-first installation that never registered Desktop: nothing is done to either client", async () => {
+        const w = world(personalConfig())
+        await installed(w)
+        const code = codeFirst(w)
+        const desktop = fs.readFileSync(w.configPath)
+        const r = await call(w, "desktop-unregister", { installDir: w.installDir })
+        assert.equal(r.one("outcome"), "not-configured")
+        assert.ok(fs.readFileSync(codeConfigPath(w)).equals(code))
+        assert.ok(fs.readFileSync(w.configPath).equals(desktop))
+    })
+
+    test("no helper command starts or looks for Claude Code any more", async () => {
+        const w = world(personalConfig())
+        await installed(w)
+        for (const command of ["detect-claude", "check-claude", "plan", "register", "unregister"]) {
+            const r = await call(w, command, { installDir: w.installDir })
+            assert.equal(r.code, 1, command)
+            assert.match(r.one("message"), /comando sconosciuto/, command)
+        }
+        assert.deepEqual(w.calls, [])
+        const shipped = setupClosure(COMPILED_ROOT).map((f) => fs.readFileSync(path.join(COMPILED_ROOT, f), "utf8")).join("\n")
+        assert.doesNotMatch(shipped, /add-json|claude\.exe"\)|detectClaude|checkClaude/, "the shipped helper holds none of the old flow")
     })
 })
 
@@ -817,15 +1042,15 @@ describe("setup helper: repeatable uninstallation (Major 4)", () => {
         const first = installedHelper(w, "uninstall-preflight", { installDir: w.installDir })
         assert.equal(first.code, 1)
         assert.match(first.get("message")?.join("") ?? "", /file che non appartengono all'installazione: app\/server\/my notes é\.txt.*nulla è stato rimosso/)
-        assert.ok(fs.readFileSync(w.configPath).equals(before), "the Claude Code entry is untouched")
+        assert.ok(fs.readFileSync(w.configPath).equals(before), "the Claude Desktop entry is untouched")
         const removeFirst = await call(w, "remove-tree", { installDir: w.installDir, tree: "current" })
         assert.equal(removeFirst.code, 1, "remove-tree refuses as well")
         assert.ok(fs.existsSync(path.join(current, "setup", "installer", "setup", "fr-setup.js")) && fs.existsSync(path.join(current, "app", "runtime", "node.exe")), "the helper is intact")
         fs.renameSync(foreign, path.join(w.home, "my notes é.txt"))
         const second = installedHelper(w, "uninstall-preflight", { installDir: w.installDir })
         assert.equal(second.code, 0, second.get("message")?.join(""))
-        assert.deepEqual(second.get("claude"), ["ours"])
-        assert.equal((await call(w, "unregister", { installDir: w.installDir })).one("outcome"), "removed")
+        assert.deepEqual(second.get("desktop"), ["ours"])
+        assert.equal((await call(w, "desktop-unregister", { installDir: w.installDir })).one("outcome"), "removed")
         const removed = await call(w, "remove-tree", { installDir: w.installDir, tree: "current" })
         assert.equal(removed.code, 0, removed.one("message"))
         assert.equal(fs.existsSync(current), false)
@@ -849,29 +1074,34 @@ describe("setup helper: repeatable uninstallation (Major 4)", () => {
     })
 
     const outcomes: [string, (w: World) => void, string][] = [
-        ["unregister fails (CLI error)", (w) => (w.claude = { removeFails: true }), "cli-error"],
+        ["the file cannot be replaced", (w) => (w.replace = () => {
+            throw Object.assign(new Error("busy"), { code: "EBUSY" })
+        }), "write-error"],
         ["registration already absent", (w) => fs.writeFileSync(w.configPath, JSON.stringify(personalConfig())), "absent"],
         ["corrupted configuration", (w) => fs.writeFileSync(w.configPath, "{ not json"), "config-error"],
-        ["claude.exe moved away", (w) => fs.rmSync(w.claudeExe), "claude-missing"],
+        ["the configuration is gone", (w) => fs.rmSync(w.configPath), "config-missing"],
     ]
     for (const [label, setup, expected] of outcomes) {
-        test(`unregister: ${label} → ${expected}; files and record untouched`, async () => {
+        test(`desktop-unregister: ${label} → ${expected}; files and record untouched`, async () => {
             const w = world(personalConfig())
             const current = await fullInstall(w)
             setup(w)
-            const r = await call(w, "unregister", { installDir: w.installDir })
+            const r = await call(w, "desktop-unregister", { installDir: w.installDir })
             assert.equal(r.one("outcome"), expected)
             assert.ok(fs.existsSync(path.join(current, INVENTORY)) && fs.existsSync(path.join(w.installDir, RECORD_NAME)))
-            if (expected === "cli-error") assert.ok(Object.hasOwn(servers(w), SERVER_NAME))
+            if (expected === "write-error") assert.ok(Object.hasOwn(servers(w), SERVER_NAME))
         })
     }
 
-    test("an installation without a Claude Code registration: not-configured, uninstall can proceed", async () => {
+    test("an installation without a Claude Desktop registration: not-configured, uninstall can proceed", async () => {
         const w = world(personalConfig())
         await fullInstall(w, false)
-        assert.deepEqual((await call(w, "uninstall-preflight", { installDir: w.installDir })).fields.get("claude"), ["not-configured"])
-        assert.equal((await call(w, "unregister", { installDir: w.installDir })).one("outcome"), "not-configured")
-        assert.deepEqual(mutating(w), [])
+        const before = fs.readFileSync(w.configPath)
+        const preflight = await call(w, "uninstall-preflight", { installDir: w.installDir })
+        assert.deepEqual(preflight.fields.get("desktop"), ["not-configured"])
+        assert.deepEqual(preflight.fields.get("claude"), ["not-configured"])
+        assert.equal((await call(w, "desktop-unregister", { installDir: w.installDir })).one("outcome"), "not-configured")
+        assert.ok(fs.readFileSync(w.configPath).equals(before))
     })
 
     test("record or helper not available: the preflight refuses, nothing is removed", async () => {
@@ -1037,46 +1267,6 @@ describe("setup helper: installed tree", () => {
     })
 })
 
-describe("setup helper: uninstallation of the Claude Code entry", () => {
-    async function registered(): Promise<World> {
-        const w = world(personalConfig())
-        await installed(w)
-        const { register } = await planAndRegister(w)
-        assert.equal(register.code, 0, register.one("message"))
-        return w
-    }
-
-    test("the entry created by the installer is removed; every other server stays", async () => {
-        const w = await registered()
-        const r = await call(w, "unregister", { installDir: w.installDir })
-        assert.equal(r.code, 0)
-        assert.equal(r.one("outcome"), "removed")
-        assert.deepEqual(servers(w), otherServers())
-        assert.equal(record(w).claude?.state, "removed")
-        assert.equal(r.text.includes(SECRET), false)
-        assert.equal((await call(w, "unregister", { installDir: w.installDir })).one("outcome"), "not-configured", "a repeated attempt has nothing left to do")
-    })
-
-    test("a moved claude.exe (extension updated): nothing removed (claude-missing); an override works", async () => {
-        const w = await registered()
-        const moved = path.join(w.home, "moved", "claude.exe")
-        fs.mkdirSync(path.dirname(moved), { recursive: true })
-        fs.renameSync(w.claudeExe, moved)
-        const r = await call(w, "unregister", { installDir: w.installDir })
-        assert.equal(r.one("outcome"), "claude-missing")
-        assert.ok(Object.hasOwn(servers(w), SERVER_NAME))
-        const fakeMoved: World = { ...w, claudeExe: moved }
-        const again = await call(w, "unregister", { installDir: w.installDir, claudeExe: moved }, deps(fakeMoved))
-        assert.equal(again.one("outcome"), "removed")
-        assert.deepEqual(servers(w), otherServers())
-    })
-
-    test("unregister refuses a directory that is not a recorded installation", async () => {
-        const w = world(personalConfig())
-        assert.match((await call(w, "unregister", { installDir: w.installDir })).one("message"), /registro di installazione mancante/)
-    })
-})
-
 describe("setup helper: process protocol", () => {
     test("the compiled helper runs as a process with UTF-16LE request and result files", () => {
         const w = world()
@@ -1133,14 +1323,14 @@ function away(config?: unknown): { w: World; volume: string; machine: string } {
 }
 
 /** deps whose write check records the directories it is asked about (and really probes them unless told otherwise). */
-function probing(w: World, probe: (dir: string) => void = writeProbe): { d: HelperDeps; probes: string[] } {
+function probing(w: World, probe: DirectoryProbe = (dir, exists) => (exists ? writeProbe(dir) : createProbe(dir))): { d: HelperDeps; probes: string[] } {
     const probes: string[] = []
     return {
         d: {
             ...deps(w),
-            writeProbe: (dir) => {
+            writeProbe: (dir, exists) => {
                 probes.push(dir)
-                probe(dir)
+                probe(dir, exists)
             },
         },
         probes,
@@ -1156,7 +1346,8 @@ describe("setup helper: destination on any drive (FR-MCP-04-BETA-03A-SIMPLE-01)"
             const rootDir = `${letter}:\\`
             const target = `${letter}:\\${DEFAULT_SUBDIR}`
             if (fs.existsSync(rootDir) && fs.existsSync(target)) continue // a real one on this machine: never checked by a test
-            const { d, probes } = probing(w, () => assert.fail("no write check on a destination that does not exist"))
+            // real drive roots are only inspected: the write check is the fixture's, it creates nothing there
+            const { d, probes } = probing(w, () => undefined)
             const r = await call(w, "check-install-dir", installRequest(w, { installDir: rootDir }), d)
             if (!fs.existsSync(rootDir)) {
                 assert.equal(r.code, 1)
@@ -1173,7 +1364,7 @@ describe("setup helper: destination on any drive (FR-MCP-04-BETA-03A-SIMPLE-01)"
             assert.equal(r.one("mode"), "new")
             assert.equal(r.one("outsideProfile"), "yes")
             assert.equal(fs.existsSync(target), false, "checking creates nothing")
-            assert.deepEqual(probes, [])
+            assert.deepEqual(probes.map((p) => p.toLowerCase()), [rootDir.toLowerCase()], "the place where the destination would be created is what gets checked")
         }
         const absent = [..."ZYXWVUTSRQPONMLKJI"].find((l) => !fs.existsSync(`${l}:\\`))
         if (absent !== undefined) {
@@ -1196,7 +1387,8 @@ describe("setup helper: destination on any drive (FR-MCP-04-BETA-03A-SIMPLE-01)"
         assert.equal(r.one("mode"), "new")
         assert.equal(r.one("outsideProfile"), "yes")
         assert.equal(fs.existsSync(path.join(volume, "Miei Programmi")), false, "checking creates nothing")
-        assert.deepEqual(probes, [])
+        assert.deepEqual(probes, [volume], "the nearest existing parent is checked")
+        assert.deepEqual(fs.readdirSync(volume), [], "the write check leaves nothing behind")
         const inside = await call(w, "check-install-dir", installRequest(w))
         assert.equal(inside.one("outsideProfile"), "no")
     })
@@ -1278,7 +1470,7 @@ describe("setup helper: destination on any drive (FR-MCP-04-BETA-03A-SIMPLE-01)"
         assert.deepEqual(snapshotDir(fake), before)
     })
 
-    test("Windows, program, shared and other users' directories are refused on every drive", async () => {
+    test("Windows, shared and other users' directories are refused on every drive", async () => {
         const { w, machine } = away()
         const sys = (name: string): string => {
             const dir = path.join(machine, name)
@@ -1286,32 +1478,132 @@ describe("setup helper: destination on any drive (FR-MCP-04-BETA-03A-SIMPLE-01)"
             return dir
         }
         const systemRoot = sys("Win")
-        const programs = sys("Programs")
-        const programsX86 = sys("Programs x86")
         const programData = sys("Data comuni")
         const pub = sys(path.join("Users", "Public"))
-        const env = { ...w.env, SystemRoot: systemRoot, ProgramFiles: programs, "ProgramFiles(x86)": programsX86, ProgramData: programData, PUBLIC: pub }
+        const env = { ...w.env, SystemRoot: systemRoot, ProgramData: programData, PUBLIC: pub }
         const drive = tempDrive()
         const cases: [string, RegExp][] = [
             [path.join(systemRoot, "FluentReaderMCP"), /cartella di Windows/],
-            [path.join(programs, "FluentReaderMCP"), /cartella dei programmi/],
-            [path.join(programsX86, "FluentReaderMCP"), /cartella dei programmi/],
             [path.join(programData, "FluentReaderMCP"), /ProgramData/],
             [path.join(pub, "FluentReaderMCP"), /cartella di un altro utente, in quella pubblica/],
             [path.join(machine, "Users", "altro utente", "FluentReaderMCP"), /cartella di un altro utente/],
             [path.join(machine, "Users"), /cartella di un altro utente/],
-            [`${drive}Windows\\FluentReaderMCP`, /cartella di Windows o dei programmi installati per tutti gli utenti/],
-            [`${drive}Program Files\\FluentReaderMCP`, /cartella di Windows o dei programmi/],
-            [`${drive}Program Files (x86)\\FluentReaderMCP`, /cartella di Windows o dei programmi/],
-            [`${drive}ProgramData\\FluentReaderMCP`, /cartella di Windows o dei programmi/],
-            [`${drive}$Recycle.Bin\\FluentReaderMCP`, /cartella di Windows o dei programmi/],
-            [`${drive}System Volume Information\\FluentReaderMCP`, /cartella di Windows o dei programmi/],
+            [`${drive}Windows\\FluentReaderMCP`, /riservata a Windows o ai dati comuni/],
+            [`${drive}ProgramData\\FluentReaderMCP`, /riservata a Windows o ai dati comuni/],
+            ["D:\\Windows", /riservata a Windows o ai dati comuni/],
+            ["D:\\ProgramData", /riservata a Windows o ai dati comuni/],
+            ["D:\\windows\\FluentReaderMCP", /riservata a Windows o ai dati comuni/],
+            [`${drive}$Recycle.Bin\\FluentReaderMCP`, /riservata a Windows o ai dati comuni/],
+            [`${drive}System Volume Information\\FluentReaderMCP`, /riservata a Windows o ai dati comuni/],
         ]
         for (const [installDir, message] of cases) {
             const r = await call(w, "check-install-dir", installRequest(w, { installDir }), { ...deps(w), env })
             assert.equal(r.code, 1, installDir)
             assert.match(r.one("message"), message, installDir)
         }
+    })
+
+    test("DEC-C12: a folder under Program Files or Program Files (x86) is not refused for its name, on any drive: the write check decides", async () => {
+        const { w } = away()
+        const drive = tempDrive()
+        for (const top of ["Program Files", "Program Files (x86)", "program files"]) {
+            const dir = `${drive}${top}\\FluentReaderMCP`
+            if (fs.existsSync(dir)) continue // a real one on this machine: never checked by a test
+            const { d, probes } = probing(w, () => undefined)
+            const r = await call(w, "check-install-dir", installRequest(w, { installDir: dir }), d)
+            assert.deepEqual([r.code, r.one("adjusted"), r.one("mode"), r.one("outsideProfile")], [0, "", "new", "yes"], `${top}: ${r.one("message")}`)
+            assert.equal(r.one("canonical").toLowerCase(), dir.toLowerCase())
+            assert.equal(probes.length, 1, "the write check is what decides")
+            // not writable: refused with a clear message, no permission touched, nothing elevated
+            const denied = probing(w, () => {
+                throw Object.assign(new Error("denied"), { code: "EPERM" })
+            })
+            const refused = await call(w, "check-install-dir", installRequest(w, { installDir: dir }), denied.d)
+            assert.equal(refused.code, 1)
+            assert.match(refused.one("message"), /non è possibile scrivere in .*\(EPERM\); scegli un'altra cartella\. Il setup non modifica i permessi delle cartelle e non chiede privilegi di amministratore/)
+        }
+    })
+
+    test("DEC-C12: the folders the environment calls ProgramFiles follow the same rule, wherever they are", async () => {
+        const { w, machine } = away()
+        const programs = path.join(machine, "Programs")
+        fs.mkdirSync(path.join(programs, "Altro"), { recursive: true })
+        const env = { ...w.env, ProgramFiles: programs, "ProgramFiles(x86)": programs }
+        const inside = path.join(programs, "FluentReaderMCP")
+        const r = await call(w, "check-install-dir", installRequest(w, { installDir: inside }), { ...deps(w), env })
+        assert.deepEqual([r.code, r.one("canonical"), r.one("adjusted")], [0, inside, ""], r.one("message"))
+        // the programs directory itself is not a destination: its own subfolder is shown, as for a drive root
+        const itself = await call(w, "check-install-dir", installRequest(w, { installDir: programs }), { ...deps(w), env })
+        assert.deepEqual([itself.code, itself.one("canonical"), itself.one("adjusted")], [0, inside, "programs"], itself.one("message"))
+        const direct = await call(w, "tx-begin", installRequest(w, { installDir: programs, bundleSha256: "a".repeat(64), profileDir: w.profile, expectMode: "new" }), { ...deps(w), env })
+        assert.match(direct.one("message"), /non può essere direttamente/)
+        // a foreign installation folder under it stays protected like any other
+        fs.writeFileSync(path.join(programs, "Altro", "app.exe"), "someone else's")
+        const foreign = await call(w, "check-install-dir", installRequest(w, { installDir: path.join(programs, "Altro") }), { ...deps(w), env })
+        assert.deepEqual([foreign.one("canonical"), foreign.one("adjusted")], [path.join(programs, "Altro", "FluentReaderMCP"), "not-empty"])
+        assert.equal(fs.readFileSync(path.join(programs, "Altro", "app.exe"), "utf8"), "someone else's")
+    })
+
+    test("DEC-C12: a destination that cannot be created is refused at the wizard, and the real write check leaves nothing behind", async () => {
+        const { w, volume } = away()
+        const blocker = path.join(volume, "un file.txt")
+        fs.writeFileSync(blocker, "a file, not a directory")
+        const r = await call(w, "check-install-dir", installRequest(w, { installDir: path.join(blocker, "Reader") }))
+        assert.equal(r.code, 1)
+        assert.match(r.one("message"), /non è possibile scrivere in .*un file\.txt/)
+        assert.equal(fs.readFileSync(blocker, "utf8"), "a file, not a directory")
+        const ok = await call(w, "check-install-dir", installRequest(w, { installDir: path.join(volume, "Nuova", "Reader") }))
+        assert.equal(ok.code, 0, ok.one("message"))
+        assert.deepEqual(fs.readdirSync(volume), ["un file.txt"])
+    })
+
+    /** Runs `during` right after the probe creates its own file in its temporary directory, with that file's path; the real probe code, no production hook. */
+    function duringProbe(t: TestContext, during: (ownFile: string, write: typeof fs.writeFileSync) => void): void {
+        const realWrite = fs.writeFileSync
+        t.mock.method(fs, "writeFileSync", (file: fs.PathOrFileDescriptor, data: string | NodeJS.ArrayBufferView, options?: fs.WriteFileOptions) => {
+            realWrite(file, data, options)
+            if (/\.fluent-reader-mcp-check-[0-9a-f]+[\\/]\.fluent-reader-mcp-check-[0-9a-f]+\.tmp$/.test(String(file))) during(String(file), realWrite)
+        })
+    }
+
+    test("Codex Major: a foreign file that appears in the probe's temporary directory survives, unchanged, and the check does not succeed", async (t) => {
+        const { w, volume } = away()
+        const FOREIGN = "not ours: appeared during the check"
+        const foreign: string[] = []
+        duringProbe(t, (ownFile, write) => {
+            const file = path.join(path.dirname(ownFile), "foreign.txt")
+            write(file, FOREIGN)
+            foreign.push(file)
+        })
+        // the probe alone
+        const parent = path.join(volume, "Sintetica")
+        fs.mkdirSync(parent)
+        assert.throws(() => createProbe(parent), /la cartella di prova .* non è stata rimossa \(ENOTEMPTY\): il suo contenuto non viene toccato/)
+        assert.equal(fs.readFileSync(foreign[0] as string, "utf8"), FOREIGN)
+        assert.deepEqual(fs.readdirSync(path.dirname(foreign[0] as string)), ["foreign.txt"], "the probe's own file is gone, only the foreign one is left")
+        // through the wizard's command: a refusal the user can read, no success
+        const r = await call(w, "check-install-dir", installRequest(w, { installDir: path.join(volume, "Nuova", "Reader") }))
+        assert.equal(r.code, 1)
+        assert.equal(r.fields.has("canonical"), false)
+        assert.match(r.one("message"), /non è possibile scrivere in .*non è stata rimossa \(ENOTEMPTY\).*scegli un'altra cartella\. Il setup non modifica i permessi/)
+        assert.equal(fs.readFileSync(foreign[1] as string, "utf8"), FOREIGN)
+    })
+
+    test("the probe undisturbed succeeds and leaves nothing; a write it cannot do is reported as such and its empty directory goes", async (t) => {
+        const { volume } = away()
+        const parent = path.join(volume, "Sintetica")
+        fs.mkdirSync(parent)
+        fs.writeFileSync(path.join(parent, "esistente.txt"), "mine")
+        createProbe(parent)
+        assert.deepEqual(fs.readdirSync(parent), ["esistente.txt"])
+        assert.equal(fs.readFileSync(path.join(parent, "esistente.txt"), "utf8"), "mine")
+        const realWrite = fs.writeFileSync
+        t.mock.method(fs, "writeFileSync", (file: fs.PathOrFileDescriptor, data: string | NodeJS.ArrayBufferView, options?: fs.WriteFileOptions) => {
+            if (/\.fluent-reader-mcp-check-[0-9a-f]+\.tmp$/.test(String(file))) throw Object.assign(new Error("denied"), { code: "EACCES" })
+            realWrite(file, data, options)
+        })
+        assert.throws(() => createProbe(parent), { code: "EACCES" })
+        assert.deepEqual(fs.readdirSync(parent), ["esistente.txt"])
     })
 
     test("malformed paths are refused", async () => {
@@ -1367,14 +1659,15 @@ describe("setup helper: destination on any drive (FR-MCP-04-BETA-03A-SIMPLE-01)"
         assert.deepEqual(probes, [dir])
     })
 
-    test("commands after the wizard never redirect: a drive root or a directory with other files is refused by tx-begin, plan and register; nothing written", async () => {
+    test("commands after the wizard never redirect: a drive root or a directory with other files is refused by tx-begin, desktop-plan and desktop-register; nothing written", async () => {
         const { w, volume } = away(personalConfig())
         const apps = path.join(volume, "Applicazioni")
         fs.mkdirSync(apps)
         fs.writeFileSync(path.join(apps, "altro.txt"), "not ours")
         const before = snapshotDir(volume)
-        const extra = { bundleSha256: "a".repeat(64), profileDir: w.profile, expectMode: "new", claudeExe: w.claudeExe, planHash: "0".repeat(64), consent: "yes" }
-        for (const command of ["tx-begin", "plan", "register"]) {
+        const config = fs.readFileSync(w.configPath)
+        const extra = { bundleSha256: "a".repeat(64), profileDir: w.profile, expectMode: "new", configPath: w.configPath, planHash: "0".repeat(64), consent: "yes" }
+        for (const command of ["tx-begin", "desktop-plan", "desktop-register"]) {
             const r = await call(w, command, installRequest(w, { installDir: apps, ...extra }))
             assert.equal(r.code, 1, command)
             assert.match(r.one("message"), /contiene già altri file/, command)
@@ -1382,7 +1675,7 @@ describe("setup helper: destination on any drive (FR-MCP-04-BETA-03A-SIMPLE-01)"
             assert.match(atRoot.one("message"), /non può essere la radice di un'unità/, command)
         }
         assert.deepEqual(snapshotDir(volume), before)
-        assert.deepEqual(mutating(w), [], "Claude Code untouched")
+        assert.ok(fs.readFileSync(w.configPath).equals(config), "Claude Desktop untouched")
     })
 
     test("the destination changes after the confirmation: tx-begin re-checks it before writing anything", async () => {
@@ -1436,7 +1729,7 @@ describe("setup helper: destination on any drive (FR-MCP-04-BETA-03A-SIMPLE-01)"
         assert.ok((plan.fields.get("preview") ?? []).includes(`Eseguibile: ${node}`), "the preview shows the effective destination")
         assert.equal(register.code, 0, register.one("message"))
         assert.equal(record(w).installDir, effective)
-        assert.equal(record(w).claude?.entry.command, node)
+        assert.equal(record(w).desktop?.entry.command, node)
         assert.equal((servers(w)[SERVER_NAME] as { command: string }).command, node)
         assert.equal(fs.readFileSync(path.join(apps, "altro.txt"), "utf8"), "not ours")
     })
@@ -1588,7 +1881,7 @@ describe("review Major 2: conventional profile locations on every drive (lexical
 
     test("through the helper (read-only on the real drives): C:\\Users\\Alice and D:\\Users\\Alice refused, D:\\UsersBackup and D:\\Applicazioni allowed", { skip: AWAY_SKIP }, async () => {
         const { w } = away()
-        const noWrite = probing(w, () => assert.fail("no write check on a destination that does not exist")).d
+        const noWrite = probing(w, () => undefined).d // real drive roots are only inspected
         for (const dir of ["C:\\Users\\Alice\\FluentReaderMCP", "D:\\Users\\Alice\\FluentReaderMCP", "D:\\users\\BRUNO\\FluentReaderMCP"]) {
             if (!fs.existsSync(dir.slice(0, 3))) continue
             const r = await call(w, "check-install-dir", installRequest(w, { installDir: dir }), noWrite)
@@ -1645,11 +1938,11 @@ describe("review Minor 2: \"$\" alone does not make a system folder", { skip: AW
     test("$Recycle.Bin and the Windows setup folders are refused at the top of a drive; $Projects and look-alikes are not", async () => {
         const { w } = away()
         const drive = awayBase().slice(0, 3)
-        const noWrite = probing(w, () => assert.fail("no write check on a destination that does not exist")).d
-        for (const top of ["$Recycle.Bin", "$RECYCLE.BIN", "$recycle.bin", "$WinREAgent", "$Windows.~BT", "$Windows.~WS", "$SysReset", "System Volume Information", "Program Files"]) {
+        const noWrite = probing(w, () => undefined).d // real drive roots are only inspected
+        for (const top of ["$Recycle.Bin", "$RECYCLE.BIN", "$recycle.bin", "$WinREAgent", "$Windows.~BT", "$Windows.~WS", "$SysReset", "System Volume Information"]) {
             const r = await call(w, "check-install-dir", installRequest(w, { installDir: `${drive}${top}\\FluentReaderMCP` }), noWrite)
             assert.equal(r.code, 1, top)
-            assert.match(r.one("message"), /cartella di Windows o dei programmi installati per tutti gli utenti/, top)
+            assert.match(r.one("message"), /riservata a Windows o ai dati comuni a tutti gli utenti/, top)
         }
         for (const relative of ["$Projects\\FluentReaderMCP", "$Recycle.Bin.old\\FluentReaderMCP", "$RecycleBin\\FluentReaderMCP", "Progetti\\$Recycle.Bin\\FluentReaderMCP"]) {
             const dir = `${drive}${relative}`
@@ -1721,11 +2014,21 @@ function sha256(bytes: Buffer): string {
     return crypto.createHash("sha256").update(bytes).digest("hex")
 }
 
-/** A record as an earlier setup wrote it: registered, its copy named by file only (state\claude-config-backups). */
+/** ~/.claude.json of the synthetic user, and the entry an earlier setup wrote in it. */
+function codeConfigPath(w: World): string {
+    return path.join(w.home, ".claude.json")
+}
+
+function codeEntry(w: World): { type: "stdio"; command: string; args: string[]; env: Record<string, string> } {
+    const app = path.join(w.installDir, "current", "app")
+    return { type: "stdio", command: path.join(app, "runtime", "node.exe"), args: [path.join(app, "server", "dist", "main.js"), "--profile-dir", w.profile], env: {} }
+}
+
+/** A record as an earlier setup wrote it: registered in Claude Code, its copy named by file only (state\claude-config-backups). */
 function legacyRegistration(w: World, backup: string | null): void {
     const file = path.join(w.installDir, RECORD_NAME)
-    const entry = desiredEntry(w.installDir, w.profile)
-    writeRecord(file, { ...(readRecord(file) as InstallRecord), claude: { state: "registered", name: SERVER_NAME, scope: "user", configPath: w.configPath, claudeExe: w.claudeExe, entry, fingerprint: entryFingerprint(entry), backup, updatedAt: "2026-10-01T09:00:00.000Z" } })
+    const entry = codeEntry(w)
+    writeRecord(file, { ...(readRecord(file) as InstallRecord), claude: { state: "registered", name: SERVER_NAME, scope: "user", configPath: codeConfigPath(w), claudeExe: path.join(w.home, "claude.exe"), entry, fingerprint: entryFingerprint(entry), backup, updatedAt: "2026-10-01T09:00:00.000Z" } })
 }
 
 function legacyDir(w: World): string {
@@ -1740,30 +2043,30 @@ function legacyCopy(w: World, name: string, content: string | Buffer = JSON.stri
     return path.join(legacyDir(w), name)
 }
 
-describe("FR-MCP-04-BETA-03A-SIMPLE-02: copies of the Claude Code configuration in the user's private directory", () => {
+describe("FR-MCP-04-BETA-03A-SIMPLE-02: copies of the configurations in the user's private directory", () => {
     test("a registration keeps its copy only in %LOCALAPPDATA%\\FluentReaderMCP-Data, bound to the installation; nothing sensitive under the installation directory", async () => {
         const w = world(personalConfig())
         await installed(w)
         const original = fs.readFileSync(w.configPath)
-        const dir = privateBackupDir(w.env, w.installDir)
-        assert.ok(dir.startsWith(path.join(localAppData(w), "FluentReaderMCP-Data", "claude-config-backups") + path.sep), dir)
+        const dir = privateDesktopBackupDir(w.env, w.installDir)
+        assert.ok(dir.startsWith(path.join(localAppData(w), "FluentReaderMCP-Data", "desktop-config-backups") + path.sep), dir)
         assert.match(path.basename(dir), /^[0-9a-f]{32}$/)
         const { plan, register } = await planAndRegister(w)
         assert.ok(plan.one("preview").includes(`nella tua cartella personale, fuori dalla cartella di installazione: ${dir}`), plan.one("preview"))
         assert.equal(register.code, 0, register.one("message"))
         const [name] = backups(w)
-        assert.ok(name !== undefined && BACKUP_NAME.test(name))
+        assert.ok(name !== undefined && DESKTOP_BACKUP_NAME.test(name))
         assert.deepEqual(fs.readdirSync(dir), [name], "no temporary copy left")
         assert.equal(register.one("backup"), path.join(dir, name))
         assert.ok(fs.readFileSync(path.join(dir, name)).equals(original))
         const rec = record(w)
-        assert.equal(rec.claude?.backup, name)
-        assert.equal(rec.claude?.backupDir, dir)
-        assert.equal(rec.claude?.backupSha256, sha256(original))
+        assert.equal(rec.desktop?.backup, name)
+        assert.equal(rec.desktop?.backupDir, dir)
+        assert.equal(rec.desktop?.backupSha256, sha256(original))
         assert.equal(JSON.stringify(rec).includes(SECRET), false, "only name, directory and SHA-256 are recorded")
         assert.deepEqual(secretFilesUnder(w.installDir), [])
         assert.equal(`${plan.text}${register.text}`.includes(SECRET), false)
-        assert.deepEqual(recordedBackup(w.installDir, rec, w.env), { status: "ok", path: path.join(dir, name) })
+        assert.deepEqual(recordedDesktopBackup(w.installDir, rec, w.env), { status: "ok", path: path.join(dir, name) })
     })
 
     test("the default installation directory %LOCALAPPDATA%\\FluentReaderMCP: the copy is next to it, never inside", async () => {
@@ -1772,7 +2075,7 @@ describe("FR-MCP-04-BETA-03A-SIMPLE-02: copies of the Claude Code configuration 
         await installed(w)
         const { register } = await planAndRegister(w)
         assert.equal(register.code, 0, register.one("message"))
-        const dir = privateBackupDir(w.env, w.installDir)
+        const dir = privateDesktopBackupDir(w.env, w.installDir)
         assert.equal(dir.toLowerCase().startsWith(`${w.installDir.toLowerCase()}\\`), false)
         assert.equal(backups(w).length, 1)
         assert.deepEqual(secretFilesUnder(w.installDir), [])
@@ -1781,7 +2084,7 @@ describe("FR-MCP-04-BETA-03A-SIMPLE-02: copies of the Claude Code configuration 
     test("%LOCALAPPDATA% missing, relative, on the network, outside the profile, the profile itself or a file: refused before consent and at registration; nothing copied anywhere", async () => {
         const w = world(personalConfig())
         await installed(w)
-        const plan = await call(w, "plan", installRequest(w, { claudeExe: w.claudeExe, profileDir: w.profile }))
+        const plan = await call(w, "desktop-plan", planRequest(w))
         const outside = path.join(root, `shared ${counter}`)
         fs.mkdirSync(outside)
         const aFile = path.join(w.home, "a file")
@@ -1795,16 +2098,15 @@ describe("FR-MCP-04-BETA-03A-SIMPLE-02: copies of the Claude Code configuration 
         ]
         for (const [label, env] of envs) {
             const d = { ...deps(w), env }
-            const p = await call(w, "plan", installRequest(w, { claudeExe: w.claudeExe, profileDir: w.profile }), d)
+            const p = await call(w, "desktop-plan", planRequest(w), d)
             assert.equal(p.code, 1, label)
             assert.match(p.one("message"), /cartella personale \(%LOCALAPPDATA%\), che non è utilizzabile.*Nessuna copia viene salvata altrove/, label)
-            const r = await call(w, "register", installRequest(w, { claudeExe: w.claudeExe, profileDir: w.profile, planHash: plan.one("planHash"), consent: "yes" }), d)
+            const r = await call(w, "desktop-register", planRequest(w, { planHash: plan.one("planHash"), consent: "yes" }), d)
             assert.equal(r.code, 1, label)
-            assert.match(r.one("message"), /Nessuna copia viene salvata altrove e la configurazione di Claude Code non viene modificata/, label)
+            assert.match(r.one("message"), /Nessuna copia viene salvata altrove e la configurazione non viene modificata/, label)
         }
         assert.ok(fs.readFileSync(w.configPath).equals(config), "configuration unchanged")
         assert.ok(fs.readFileSync(path.join(w.installDir, RECORD_NAME)).equals(recordBefore), "record unchanged")
-        assert.deepEqual(mutating(w), [])
         assert.deepEqual(fs.readdirSync(outside), [], "no fallback to another directory")
         assert.equal(fs.existsSync(path.join(w.installDir, "state")), false, "no fallback to the installation directory")
         assert.equal(fs.existsSync(path.join(localAppData(w), "FluentReaderMCP-Data")), false)
@@ -1813,6 +2115,7 @@ describe("FR-MCP-04-BETA-03A-SIMPLE-02: copies of the Claude Code configuration 
     test("a junction or a file in place of a managed directory: nothing is written through it", async () => {
         const w = world(personalConfig())
         await installed(w)
+        const config = fs.readFileSync(w.configPath)
         const elsewhere = path.join(w.home, "elsewhere")
         fs.mkdirSync(elsewhere)
         fs.symlinkSync(elsewhere, path.join(localAppData(w), "FluentReaderMCP-Data"), "junction")
@@ -1820,14 +2123,20 @@ describe("FR-MCP-04-BETA-03A-SIMPLE-02: copies of the Claude Code configuration 
         assert.equal(register.code, 1)
         assert.match(register.one("message"), /FluentReaderMCP-Data non è una cartella normale \(collegamento, junction o file\)/)
         assert.deepEqual(fs.readdirSync(elsewhere), [])
-        assert.deepEqual(mutating(w), [], "Claude Code untouched")
+        assert.ok(fs.readFileSync(w.configPath).equals(config), "Claude Desktop untouched")
         const v = world(personalConfig())
         await installed(v)
         fs.mkdirSync(path.join(localAppData(v), "FluentReaderMCP-Data"))
-        fs.writeFileSync(path.join(localAppData(v), "FluentReaderMCP-Data", "claude-config-backups"), "a file")
+        fs.writeFileSync(path.join(localAppData(v), "FluentReaderMCP-Data", "desktop-config-backups"), "a file")
         const second = await planAndRegister(v)
-        assert.match(second.register.one("message"), /claude-config-backups non è una cartella normale/)
-        assert.equal(fs.readFileSync(path.join(localAppData(v), "FluentReaderMCP-Data", "claude-config-backups"), "utf8"), "a file")
+        assert.match(second.register.one("message"), /desktop-config-backups non è una cartella normale/)
+        assert.equal(fs.readFileSync(path.join(localAppData(v), "FluentReaderMCP-Data", "desktop-config-backups"), "utf8"), "a file")
+    })
+
+    test("a file that changes while its copy is taken: no copy passed off as the content the change starts from, no temporary file left", () => {
+        const w = world(personalConfig())
+        assert.throws(() => createDesktopBackup(w.configPath, "0".repeat(64), w.installDir, w.env, new Date("2026-10-28T10:00:00Z")), /è cambiato mentre ne veniva salvata la copia: nessuna modifica eseguita/)
+        assert.deepEqual(backups(w), [])
     })
 
     test("two installations of one user: separate private directories, no collision; repair and upgrade keep the same directory with a new copy per change", async () => {
@@ -1836,8 +2145,8 @@ describe("FR-MCP-04-BETA-03A-SIMPLE-02: copies of the Claude Code configuration 
         assert.equal((await planAndRegister(a)).register.code, 0)
         const b: World = { ...a, installDir: path.join(localAppData(a), "Seconda installazione") }
         await installed(b)
-        const dirA = privateBackupDir(a.env, a.installDir)
-        const dirB = privateBackupDir(b.env, b.installDir)
+        const dirA = privateDesktopBackupDir(a.env, a.installDir)
+        const dirB = privateDesktopBackupDir(b.env, b.installDir)
         assert.notEqual(dirA.toLowerCase(), dirB.toLowerCase())
         const snapA = snapshotDir(dirA)
         assert.equal((await planAndRegister(b, { replaceForeign: "yes" })).register.code, 0)
@@ -1846,16 +2155,16 @@ describe("FR-MCP-04-BETA-03A-SIMPLE-02: copies of the Claude Code configuration 
         // upgrade simulation of b: another generation, an older own entry; the same private directory, a second copy
         const rec = record(b)
         const oldProfile = buildSmokeProfile(path.join(b.home, "Profili Fluent", `vecchio ${counter}`)).dir
-        const oldEntry = desiredEntry(b.installDir, oldProfile)
-        fs.writeFileSync(path.join(b.installDir, RECORD_NAME), JSON.stringify({ ...rec, generation: "cd".repeat(16), version: "0.0.9", claude: { ...rec.claude, entry: oldEntry, fingerprint: entryFingerprint(oldEntry) } }))
+        const oldEntry = desiredDesktopEntry(b.installDir, oldProfile)
+        fs.writeFileSync(path.join(b.installDir, RECORD_NAME), JSON.stringify({ ...rec, generation: "cd".repeat(16), version: "0.0.9", desktop: { ...rec.desktop, entry: oldEntry, fingerprint: entryFingerprint(oldEntry) } }))
         const doc = readConfig(b)
         fs.writeFileSync(b.configPath, JSON.stringify({ ...doc, mcpServers: { ...(doc.mcpServers as object), [SERVER_NAME]: oldEntry } }))
         const again = await planAndRegister(b)
         assert.equal(again.plan.one("action"), "replace-own")
         assert.equal(again.register.code, 0, again.register.one("message"))
         assert.equal(backups(b).length, 2, "same directory across generations, never overwritten")
-        assert.equal(record(b).claude?.backupDir, dirB)
-        assert.deepEqual(Object.fromEntries(Object.entries(servers(b)).filter(([n]) => n !== SERVER_NAME)), otherServers(), "other servers preserved")
+        assert.equal(record(b).desktop?.backupDir, dirB)
+        assert.deepEqual(others(b), otherServers(), "other servers preserved")
         assert.deepEqual(snapshotDir(dirA), snapA)
         const noteA = (await call(a, "un-status", { installDir: a.installDir })).one("backups")
         assert.ok(noteA.includes(dirA) && !noteA.includes(dirB), noteA)
@@ -1863,9 +2172,11 @@ describe("FR-MCP-04-BETA-03A-SIMPLE-02: copies of the Claude Code configuration 
 
     test("errors before and after the change: the private copy is the configuration before it, and the message names it", async () => {
         const failures: [string, (w: World) => void][] = [
-            ["before", (w) => (w.claude = { addFails: "before-write" })],
+            ["before", (w) => (w.replace = () => {
+                throw Object.assign(new Error("denied"), { code: "EPERM" })
+            })],
             ["after", (w) => (w.checkpoint = (s) => {
-                if (s === "after-readback") throw new Error("injected failure")
+                if (s === "after-replace") throw new Error("injected failure")
             })],
         ]
         for (const [label, setup] of failures) {
@@ -1876,10 +2187,10 @@ describe("FR-MCP-04-BETA-03A-SIMPLE-02: copies of the Claude Code configuration 
             const { register } = await planAndRegister(w)
             assert.equal(register.code, 1, label)
             const [name] = backups(w)
-            const file = path.join(privateBackupDir(w.env, w.installDir), name as string)
+            const file = path.join(privateDesktopBackupDir(w.env, w.installDir), name as string)
             assert.ok(register.one("message").includes(`La copia presa prima della modifica è in ${file}.`), label)
             assert.ok(fs.readFileSync(file).equals(original), label)
-            assert.deepEqual(servers(w), otherServers(), label)
+            assert.ok(fs.readFileSync(w.configPath).equals(original), `${label}: the file is byte for byte what it was`)
             assert.equal(register.text.includes(SECRET), false)
         }
     })
@@ -1927,14 +2238,6 @@ describe("FR-MCP-04-BETA-03A-SIMPLE-02: copies of the Claude Code configuration 
         assert.ok(fs.readFileSync(path.join(w.installDir, RECORD_NAME)).equals(rec))
     })
 
-    test("register moves the copy its record names before taking its own, all in the private directory", async () => {
-        const { w } = await legacyInstallation()
-        const { register } = await planAndRegister(w)
-        assert.equal(register.code, 0, register.one("message"))
-        assert.equal(backups(w).length, 2)
-        assert.ok(backups(w).includes(LEGACY_A))
-    })
-
     test("Codex Major: anything next to the named copy (another valid copy, even identical; another name; a directory; a link) stops the whole move before any change", async () => {
         const cases: [string, (w: World, a: Buffer) => void, RegExp][] = [
             ["an unreferenced copy with valid JSON", (w) => legacyCopy(w, LEGACY_B), /claude\.json\.20261002T090000Z-1\.bak \(copia non indicata dal registro di installazione\)/],
@@ -1954,11 +2257,9 @@ describe("FR-MCP-04-BETA-03A-SIMPLE-02: copies of the Claude Code configuration 
             assert.ok(fs.readFileSync(path.join(legacyDir(w), LEGACY_A)).equals(a), label)
             assert.ok(fs.readFileSync(path.join(w.installDir, RECORD_NAME)).equals(rec), `${label}: record unchanged`)
             assert.equal(fs.existsSync(privateRoot(w)), false, `${label}: no private copy created`)
-            const config = fs.readFileSync(w.configPath)
-            const { register } = await planAndRegister(w)
-            assert.equal(register.code, 1, label)
-            assert.ok(fs.readFileSync(w.configPath).equals(config), label)
-            assert.deepEqual(mutating(w), [], label)
+            // and so does the transaction that would run it: an upgrade or a repair does not start
+            const begin = await call(w, "tx-begin", installRequest(w, { bundleSha256: "a".repeat(64), profileDir: w.profile, expectMode: "repair" }))
+            assert.equal(begin.code, 1, label)
             assert.deepEqual(snapshotDir(legacyDir(w)), before, label)
         }
     })
@@ -2182,21 +2483,26 @@ describe("FR-MCP-04-BETA-03A-SIMPLE-02: copies of the Claude Code configuration 
         fs.mkdirSync(dir, { recursive: true })
         const foreign = [".claude.json.0123456789abcdef.partial", `.${LEGACY_A}.fedcba9876543210.partial`, "notes.partial"]
         for (const name of foreign) fs.writeFileSync(path.join(dir, name), `not ours ${name}`)
+        const desktopDir = privateDesktopBackupDir(w.env, w.installDir)
+        const desktopForeign = ".claude_desktop_config.json.0123456789abcdef.partial"
+        fs.mkdirSync(desktopDir, { recursive: true })
+        fs.writeFileSync(path.join(desktopDir, desktopForeign), "not ours")
         assert.deepEqual(migrateLegacyBackups(w.installDir, w.env), [LEGACY_A])
         const { register } = await planAndRegister(w)
         assert.equal(register.code, 0, register.one("message"))
         for (const name of foreign) assert.equal(fs.readFileSync(path.join(dir, name), "utf8"), `not ours ${name}`, name)
         assert.ok(fs.readFileSync(path.join(dir, LEGACY_A)).equals(a))
-        assert.equal(fs.readdirSync(dir).filter((n) => BACKUP_NAME.test(n)).length, 2)
-        assert.equal(fs.readdirSync(dir).length, foreign.length + 2, "no temporary copy of this run left")
+        assert.equal(fs.readdirSync(dir).length, foreign.length + 1, "no temporary copy of this run left")
+        assert.equal(fs.readFileSync(path.join(desktopDir, desktopForeign), "utf8"), "not ours")
+        assert.equal(fs.readdirSync(desktopDir).filter((n) => DESKTOP_BACKUP_NAME.test(n)).length, 1)
+        assert.equal(fs.readdirSync(desktopDir).length, 2, "no temporary copy of this run left")
     })
 
     test("Codex Minor 2: only the two complete forms of a backup reference are accepted; every other combination is never ok and moves nothing; the record stays readable", async () => {
-        const w = world(personalConfig())
-        await installed(w)
-        assert.equal((await planAndRegister(w)).register.code, 0)
+        const { w } = await legacyInstallation()
+        migrateLegacyBackups(w.installDir, w.env)
         const dir = privateBackupDir(w.env, w.installDir)
-        const [name] = backups(w)
+        const name = LEGACY_A
         const genuine = record(w).claude as NonNullable<InstallRecord["claude"]>
         const sha = genuine.backupSha256 as string
         const cases: [string, Record<string, unknown>, string][] = [
@@ -2233,7 +2539,7 @@ describe("FR-MCP-04-BETA-03A-SIMPLE-02: copies of the Claude Code configuration 
         assert.throws(() => migrateLegacyBackups(w.installDir, w.env), /copia non indicata dal registro di installazione/)
         assert.deepEqual(snapshotDir(legacyDir(w)), snap)
         assert.deepEqual(snapshotDir(dir), privateSnap)
-        const plan = await call(w, "plan", installRequest(w, { claudeExe: w.claudeExe, profileDir: w.profile }))
+        const plan = await call(w, "desktop-plan", planRequest(w))
         assert.equal(plan.code, 0, "the record stays readable")
     })
 
@@ -2241,13 +2547,13 @@ describe("FR-MCP-04-BETA-03A-SIMPLE-02: copies of the Claude Code configuration 
         const w = world(personalConfig())
         await installed(w)
         assert.equal((await planAndRegister(w)).register.code, 0)
-        const dir = privateBackupDir(w.env, w.installDir)
+        const dir = privateDesktopBackupDir(w.env, w.installDir)
         const snap = snapshotDir(dir)
         const first = await call(w, "un-status", { installDir: w.installDir })
         assert.equal(first.code, 0, first.one("message"))
         assert.ok(first.one("backups").includes(`restano nella tua cartella personale ${dir}`), first.one("backups"))
         assert.equal((await call(w, "un-status", { installDir: w.installDir })).one("backups"), first.one("backups"))
-        assert.equal((await call(w, "unregister", { installDir: w.installDir })).one("outcome"), "removed")
+        assert.equal((await call(w, "desktop-unregister", { installDir: w.installDir })).one("outcome"), "removed")
         fs.rmSync(path.join(w.installDir, RECORD_NAME))
         assert.ok((await call(w, "un-status", { installDir: w.installDir })).one("backups").includes(dir), "found again without the record (derived, not stored)")
         assert.deepEqual(snapshotDir(dir), snap, "nothing deleted")
@@ -2256,19 +2562,19 @@ describe("FR-MCP-04-BETA-03A-SIMPLE-02: copies of the Claude Code configuration 
         assert.equal((await call(n, "un-status", { installDir: n.installDir })).one("backups"), "", "no copy, nothing to say")
     })
 
-    test("an interrupted registration: the next preview finds its copy again; missing, altered, recorded elsewhere or invalid references are reported, nothing searched or touched", async () => {
+    test("an interrupted registration: the next page finds its copy again; missing, altered, recorded elsewhere or invalid references are reported, nothing searched or touched", async () => {
         const w = world(personalConfig())
         await installed(w)
         assert.equal((await planAndRegister(w)).register.code, 0)
-        const dir = privateBackupDir(w.env, w.installDir)
+        const dir = privateDesktopBackupDir(w.env, w.installDir)
         const [name] = backups(w)
         const file = path.join(dir, name as string)
         const crashed = (patch: Record<string, unknown> = {}): void => {
             const rec = record(w)
-            writeRecord(path.join(w.installDir, RECORD_NAME), { ...rec, claude: { ...(rec.claude as NonNullable<InstallRecord["claude"]>), state: "pending", fingerprint: null, ...patch } })
+            writeRecord(path.join(w.installDir, RECORD_NAME), { ...rec, desktop: { ...(rec.desktop as DesktopRegistration), state: "pending", ...patch } })
         }
         const preview = async (): Promise<string> => {
-            const r = await call(w, "plan", installRequest(w, { claudeExe: w.claudeExe, profileDir: w.profile }))
+            const r = await call(w, "desktop-plan", planRequest(w))
             assert.equal(r.code, 0, r.one("message"))
             assert.equal(r.text.includes(SECRET), false)
             return r.one("preview")
@@ -2277,16 +2583,16 @@ describe("FR-MCP-04-BETA-03A-SIMPLE-02: copies of the Claude Code configuration 
         assert.ok((await preview()).includes(`Una registrazione precedente non si è conclusa. La copia della configurazione presa prima della modifica è in ${file}.`))
         fs.appendFileSync(file, " ")
         assert.match(await preview(), /non è più quella salvata: non è affidabile per un ripristino/)
-        assert.equal(recordedBackup(w.installDir, record(w), w.env).status, "altered")
+        assert.equal(recordedDesktopBackup(w.installDir, record(w), w.env).status, "altered")
         fs.renameSync(file, `${file}.moved`)
         assert.match(await preview(), /non è stata trovata/)
         const otherRoot = path.join(root, `other account ${counter}`)
-        const other = path.join(otherRoot, "AppData", "Local", "FluentReaderMCP-Data", "claude-config-backups", path.basename(dir))
+        const other = path.join(otherRoot, "AppData", "Local", "FluentReaderMCP-Data", "desktop-config-backups", path.basename(dir))
         crashed({ backupDir: other })
         assert.ok((await preview()).includes(`è stata salvata in ${path.join(other, name as string)}, che non è la cartella personale dell'utente Windows attuale`))
         assert.equal(fs.existsSync(otherRoot), false, "never searched or created")
         crashed({ backup: "..\\..\\x.bak", backupDir: dir })
-        assert.equal(recordedBackup(w.installDir, record(w), w.env).status, "invalid")
+        assert.equal(recordedDesktopBackup(w.installDir, record(w), w.env).status, "invalid")
         assert.match(await preview(), /riferimento alla copia .* non è utilizzabile/)
     })
 })
@@ -2311,8 +2617,9 @@ describe("FR-MCP-04-BETA-03A-SIMPLE-02: installation on another drive and anothe
         assert.ok(fs.readFileSync(path.join(dir, LEGACY_A)).equals(old))
         const { register } = await planAndRegister(v)
         assert.equal(register.code, 0, register.one("message"))
-        assert.equal(backups(v).filter((n) => BACKUP_NAME.test(n)).length, 2)
-        assert.ok(backups(v).some((n) => n.endsWith(".partial")), "the temporary copy left by the crash is not deleted")
+        assert.equal(backups(v).filter((n) => DESKTOP_BACKUP_NAME.test(n)).length, 1)
+        assert.ok(privateBackupDir(v.env, v.installDir).toLowerCase().startsWith(`${v.home.toLowerCase()}\\`))
+        assert.ok(fs.readdirSync(dir).some((n) => n.endsWith(".partial")), "the temporary copy left by the crash is not deleted")
         assert.deepEqual(secretFilesUnder(volume), [], "nothing sensitive on the other drive")
     })
 
@@ -2334,7 +2641,7 @@ describe("FR-MCP-04-BETA-03A-SIMPLE-02: installation on another drive and anothe
         const v: World = { ...w, installDir: path.join(volume, "Condivisa") }
         await installed(v)
         assert.equal((await planAndRegister(v)).register.code, 0)
-        const dir = privateBackupDir(v.env, v.installDir)
+        const dir = privateDesktopBackupDir(v.env, v.installDir)
         const snap = snapshotDir(dir)
         const otherHome = path.join(machine, "Users", "altro")
         fs.mkdirSync(path.join(otherHome, "AppData", "Local"), { recursive: true })

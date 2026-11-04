@@ -159,27 +159,31 @@ Il codice sorgente attuale implementa **nove strumenti**, tutti in sola lettura:
 
 ## Collegamento ai client Claude
 
-### Claude Code
-
-L'installer Windows può registrare il server **`fluent-reader`** in Claude Code (CLI o binario dell'estensione VS Code), nello scope **`user`**, tramite la CLI ufficiale `claude mcp add-json` e **solo dopo un'anteprima e un consenso esplicito**. È possibile installare il server senza registrarlo. Prima della modifica il setup salva una copia della configurazione di Claude Code in una cartella personale (vedi sotto). Dettagli: [installer/INSTALLER.md](installer/INSTALLER.md).
-
 ### Claude Desktop
 
-Il server è compatibile con **Claude Desktop**: la registrazione **manuale** è stata verificata con i sette strumenti FR-MCP-02A su un profilo reale. **La beta già costruita non configura automaticamente Claude Desktop.** Per usarlo occorre aggiungere manualmente una voce `fluent-reader` nella sezione `mcpServers` del file di configurazione **effettivamente utilizzato** dal client, indicando l'eseguibile Node incluso o quello di sviluppo, `dist/main.js` e `--profile-dir`.
+Il wizard Windows configura **Claude Desktop** come unico client, in modo facoltativo: si può sempre scegliere **«Installa solo il server»**.
 
-**Attenzione ai percorsi Windows:** la configurazione attiva di Claude Desktop può trovarsi in posizioni diverse secondo la distribuzione e la versione (per esempio sotto `%LOCALAPPDATA%\Claude-Data\...`), non necessariamente in `%APPDATA%\Claude`. Verifica sempre il percorso tramite **Claude Desktop → Impostazioni → Server MCP locali → Modifica configurazione**. Crea un backup e preserva tutte le altre entry MCP e preferenze.
+**Quale file.** Nessun metodo documentato dice quale `claude_desktop_config.json` legga davvero una data installazione di Claude Desktop: la posizione documentata è `%APPDATA%\Claude`, ma un'app installata come pacchetto (MSIX, Store, WinGet) può leggere una copia privata sotto `%LOCALAPPDATA%\Packages`, e il suo **Impostazioni → Modifica configurazione** può aprire un file diverso; altre posizioni sono state osservate. Per questo il setup **non decide da solo**: elenca i file trovati nelle cartelle di Claude dell'utente senza aprirli, propone un percorso solo quando non c'è dubbio da nascondere e chiede di indicare il file. Selezionare un file **non dimostra** che Claude Desktop lo legga.
 
-Non presumere che `%APPDATA%\Claude` sia sempre la directory effettiva. L'installer **non** cerca, non legge e non modifica la configurazione di Claude Desktop: l'individuazione automatica del file attivo e una scelta esplicita tra **Claude Code**, **Claude Desktop**, **entrambi** oppure **nessuna registrazione** **non sono implementate**.
+**Che cosa cambia.** Soltanto `mcpServers.fluent-reader`, dopo aver mostrato file e voce e con un consenso specifico. Ogni altro byte del file resta com'è (altri server come `foundry-mcp`, preferenze, campi sconosciuti, `env`, credenziali). Il file viene copiato prima in una cartella personale; un JSON non valido, una struttura diversa o una voce `fluent-reader` non attribuibile non vengono sovrascritti in silenzio.
+
+**Verifica obbligatoria nel client.** Dopo l'installazione chiudi del tutto Claude Desktop (anche dall'area di notifica), riaprilo e controlla che compaia `fluent-reader` con nove strumenti. Se non compare, probabilmente il file selezionato non è quello attivo: esegui di nuovo il setup e seleziona l'altro. Il setup non dichiara mai riuscito il collegamento.
+
+### Claude Code
+
+Il wizard **non** cerca `claude.exe` e non registra il server in Claude Code; una registrazione in Claude Desktop non configura Claude Code. Per usarlo, registra il server a mano (vedi [installer/INSTALLER.md](installer/INSTALLER.md)).
+
+**Se hai usato le beta 0.1.0 o 0.1.1**, che registravano il server in Claude Code: quella voce non viene modificata né rimossa da aggiornamenti, riparazioni e disinstallazione, e non implica una registrazione in Claude Desktop. Continua a funzionare finché il server resta nella stessa cartella; dopo la disinstallazione puoi toglierla con `claude mcp remove fluent-reader --scope user`.
 
 ## Installazione e disinstallazione Windows
 
 La descrizione completa è in [installer/INSTALLER.md](installer/INSTALLER.md); in sintesi:
 
-- L'installer NSIS è per l'**utente corrente** (nessun UAC, nessun servizio, nessuna scrittura in `Program Files` o `HKLM`), con posizione proposta `%LOCALAPPDATA%\FluentReaderMCP`.
-- **Cartella personalizzata:** si può scegliere una cartella su qualsiasi unità **locale** con lettera (`C:`, `D:`, `H:`...), anche fuori dal profilo Windows. Il wizard mostra sempre la destinazione effettiva e chiede conferma. Se si sceglie la radice di un'unità, o una cartella che contiene già altri file, viene proposta la sottocartella `FluentReaderMCP` (i file presenti non vengono toccati).
-- **Rifiutate:** unità di rete, unità mappate e SUBST, percorsi UNC, collegamenti simbolici, junction e nomi brevi 8.3, cartelle di Windows e dei programmi, profili di altri utenti e la cartella pubblica, `Roaming`, OneDrive e `.claude`, cartelle con elementi del prodotto non attribuibili a un'installazione registrata. Le unità **rimovibili** sono accettate con un avviso (devono essere collegate con la stessa lettera ogni volta che il server viene usato). Fuori dalla cartella utente il setup avverte che i permessi della posizione non vengono verificati né modificati.
-- **Riparazione e aggiornamento:** rieseguendo il setup sulla stessa cartella; il downgrade non è supportato. Chiudere Claude Code prima di aggiornare.
-- **Backup della configurazione Claude Code:** in `%LOCALAPPDATA%\FluentReaderMCP-Data\claude-config-backups\<chiave>\`, separati per installazione e **mai** nella cartella di installazione. Possono contenere informazioni riservate (anche token di altri server MCP): non condividerli. Le copie delle beta precedenti vengono spostate lì quando sono attribuibili; elementi legacy ambigui bloccano aggiornamento e riparazione finché non vengono controllati. Non vengono cancellati automaticamente, neppure dalla disinstallazione.
+- L'installer NSIS è per l'**utente corrente** (nessun UAC, nessun servizio, nessuna scrittura in `HKLM`), con posizione proposta `%LOCALAPPDATA%\FluentReaderMCP`.
+- **Cartella personalizzata:** si può scegliere una cartella su qualsiasi unità **locale** con lettera (`C:`, `D:`, `H:`...), anche fuori dal profilo Windows. Una cartella valida passa direttamente alla pagina successiva, senza finestre di conferma. Se si sceglie la radice di un'unità, la cartella dei programmi stessa o una cartella che contiene già altri file, il campo della pagina mostra la sottocartella `FluentReaderMCP` e serve un secondo Avanti (i file presenti non vengono toccati). `Program Files` e `Program Files (x86)` sono ammesse se il tuo utente può davvero scrivervi: su `D:` di solito sì, in `C:\Program Files` di solito no, e allora il setup lo dice, senza chiedere privilegi di amministratore né modificare permessi.
+- **Rifiutate:** unità di rete, unità mappate e SUBST, percorsi UNC, collegamenti simbolici, junction e nomi brevi 8.3, cartelle di Windows e `ProgramData` su qualsiasi unità, cartelle non scrivibili, profili di altri utenti e la cartella pubblica, `Roaming`, OneDrive e `.claude`, cartelle con elementi del prodotto non attribuibili a un'installazione registrata. Le unità **rimovibili** sono accettate con un avviso (devono essere collegate con la stessa lettera ogni volta che il server viene usato). Fuori dalla cartella utente il setup avverte che i permessi della posizione non vengono verificati né modificati.
+- **Riparazione e aggiornamento:** rieseguendo il setup sulla stessa cartella; il downgrade non è supportato. Chiudere Claude Desktop prima di aggiornare, riparare o disinstallare.
+- **Backup della configurazione:** in `%LOCALAPPDATA%\FluentReaderMCP-Data\desktop-config-backups\<chiave>\`, separati per installazione e **mai** nella cartella di installazione. Possono contenere informazioni riservate (anche token di altri server MCP): non condividerli. Le copie di `.claude.json` delle beta precedenti vengono spostate in `claude-config-backups\<chiave>\` quando sono attribuibili; elementi legacy ambigui bloccano aggiornamento e riparazione finché non vengono controllati. Non vengono cancellati automaticamente, neppure dalla disinstallazione.
 - **Recupero:** dopo alcuni errori o crash (in particolare quelli successivi alla scrittura del nuovo disinstallatore) il recupero automatico **può fermarsi e chiedere un intervento manuale** sui soli file elencati nel messaggio; vedi "Limite noto del recupero" in [installer/INSTALLER.md](installer/INSTALLER.md).
 - Il profilo Fluent Reader è selezionato separatamente e **non viene copiato, modificato o cancellato** durante installazione/disinstallazione.
 - Per la rimozione usa il disinstallatore fornito (`uninstall.exe`), non la cancellazione manuale della cartella; le modifiche alle configurazioni MCP eventualmente fatte **manualmente** vanno rimosse separatamente dal client interessato.
@@ -203,11 +207,8 @@ La descrizione completa è in [installer/INSTALLER.md](installer/INSTALLER.md); 
   - `search_articles` (FR-MCP-02B-02) — completato.
 
   Entrambi validati con test automatici, smoke MCP e benchmark su database sintetici; inclusi nei pacchetti costruiti dal codice attuale, non ancora collaudati con un profilo reale.
-- **FR-MCP-04-BETA-03:** miglioramento dell'installer Windows.
-  - **03A (implementato, in collaudo):** installazione in cartelle personalizzate su unità locali (SIMPLE-01) e backup della configurazione Claude Code in un'area personale separata (SIMPLE-02);
-  - **03B (non implementato):** scelta esplicita tra Claude Code, Claude Desktop, entrambi o nessuno;
-  - **03C (non implementato):** individuazione affidabile del file di configurazione realmente attivo di Claude Desktop;
-  - **03D (non implementato):** rollback, repair, upgrade e disinstallazione sicuri con più client.
+- **FR-MCP-04-BETA-03A (implementato, in collaudo):** installazione in cartelle personalizzate su unità locali (SIMPLE-01) e backup della configurazione in un'area personale separata (SIMPLE-02).
+- **FR-MCP-04-BETA-UX-01 (implementato nel codice, in review; non ancora collaudato con Claude Desktop reale):** wizard Desktop-first con selezione assistita del file di configurazione, `Program Files` non rifiutata per il solo nome, nessuna finestra di conferma della cartella. La proposta storica di scelta fra Code, Desktop, entrambi o nessuno è superata. Questi comportamenti non sono nella build 0.1.1 già costruita.
 - **FR-MCP-04-BETA-RELEASE-01 (completato):** documentazione e checklist di collaudo Windows ([WINDOWS-SMOKE-TEST.md](installer/WINDOWS-SMOKE-TEST.md)).
 - **FR-MCP-04-BETA-RELEASE-02 (in corso):** versione 0.1.1, licenza MIT del progetto e notice di Koffi nei pacchetti; poi build pulita e collaudo su Windows reale. La distribuzione resta subordinata alla review e all'approvazione del proprietario.
 - **Successivamente:** hardening di sicurezza, benchmark su archivi grandi, miglioramento della distribuzione Windows, CI e release pubblica quando autorizzata.

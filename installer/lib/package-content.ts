@@ -324,7 +324,7 @@ export function packagingInfo(version: string, lock: RuntimeLock): string {
         "```",
         "",
         "The process speaks MCP over stdin/stdout and ends when its client closes stdin; it is meant to be",
-        "started by an MCP client such as Claude Code, not used interactively.",
+        "started by an MCP client such as Claude Desktop, not used interactively.",
         "",
         "## Privacy",
         "",

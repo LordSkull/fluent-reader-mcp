@@ -570,7 +570,7 @@ export function txMetadata(installDir: string, transactionId: string, deps: TxDe
     // the destinations of the renames below, checked before the record is written (rename() checks again)
     if (prev.uninstallerExisted && exists(path.win32.join(stateDir(installDir), UNINSTALLER_PREVIOUS))) throw new SetupRefusal("state\\uninstall.exe.previous esiste già: non viene sostituito, nulla viene cambiato")
     const previousRecord = readRecord(recordPath)
-    writeRecord(recordPath, { schemaVersion: 1, product: PRODUCT, installDir, generation: journal.transactionId, version: journal.target.version, bundleSha256: journal.target.bundleSha256, installedAt: deps.now().toISOString(), profileDir: journal.target.profileDir, claude: previousRecord?.claude ?? null })
+    writeRecord(recordPath, { schemaVersion: 1, product: PRODUCT, installDir, generation: journal.transactionId, version: journal.target.version, bundleSha256: journal.target.bundleSha256, installedAt: deps.now().toISOString(), profileDir: journal.target.profileDir, claude: previousRecord?.claude ?? null, ...(previousRecord?.desktop != null && { desktop: previousRecord.desktop }) })
     deps.checkpoint?.("after-record")
     if (prev.uninstallerExisted) rename(uninstaller, path.win32.join(stateDir(installDir), UNINSTALLER_PREVIOUS), "conservazione del disinstallatore precedente", deps.rename)
     rename(uninstallerNew, uninstaller, "attivazione del nuovo disinstallatore", deps.rename)

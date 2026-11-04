@@ -7,7 +7,7 @@
 ; by the setup helper (current\setup\installer\setup\fr-setup.js) run by the BUNDLED
 ; node.exe. Values chosen by the user travel in a UTF-16LE request file, never on a command
 ; line; the helper answers in a result file. No service, no port, no resident process,
-; no HKLM, no Program Files, no elevation.
+; no HKLM, no elevation: a folder under Program Files works only if Windows lets this user write there.
 
 Unicode true
 ManifestDPIAware true
@@ -34,7 +34,7 @@ SetDatablockOptimize on
 Name "${PRODUCT_NAME} ${PRODUCT_VERSION} beta"
 OutFile "${OUTFILE}"
 ; The trailing backslash stops NSIS from appending "FluentReaderMCP" to a folder chosen with Browse: the
-; helper alone turns the choice into the effective destination (check-install-dir), shown for confirmation.
+; helper alone turns the choice into the effective destination (check-install-dir), shown on the page itself.
 InstallDir "$LOCALAPPDATA\FluentReaderMCP\"
 InstallDirRegKey HKCU "${SETTINGS_KEY}" "InstallDir"
 ; A drive root may be chosen: the helper never installs there, it proposes <root>\FluentReaderMCP.
@@ -49,9 +49,10 @@ Var HelperExit
 Var Mode
 Var InstalledVersion
 Var ProfileDir
-Var ConfigureClaude
-Var ClaudeExe
-Var ClaudeVersion
+Var ModeText
+Var VolumeNote
+Var ConfigureDesktop
+Var DesktopConfig
 Var PlanHash
 Var PlanAction
 Var ReplaceForeign
@@ -59,26 +60,25 @@ Var FinishText
 Var Dialog
 Var ProfileText
 Var ConfirmProfile
-Var RadioClaude
+Var RadioDesktop
 Var RadioServerOnly
-Var ClaudeText
-Var ConsentClaude
+Var DesktopText
+Var ConsentDesktop
 Var PreviewText
-Var ReplaceCheck
 
 ; ---------------------------------------------------------------- pages
 
 !define MUI_ABORTWARNING
 !define MUI_WELCOMEPAGE_TITLE "${PRODUCT_NAME} ${PRODUCT_VERSION} (beta privata)"
-!define MUI_WELCOMEPAGE_TEXT "Questo programma installa Fluent Reader MCP, un server MCP in SOLA LETTURA che permette a Claude Code di consultare un tuo profilo locale di Fluent Reader.$\r$\n$\r$\nLa beta offre nove strumenti di sola lettura (fonti, gruppi, regole, elenco, ricerca testuale e lettura degli articoli salvati). Include il proprio runtime Node.js: non serve installare altro.$\r$\n$\r$\nNon vengono installati servizi, porte di rete o processi residenti. Puoi scegliere se registrare il server in Claude Code: prima vedrai un'anteprima esatta della modifica."
+!define MUI_WELCOMEPAGE_TEXT "Questo programma installa Fluent Reader MCP, un server MCP in SOLA LETTURA che permette a Claude Desktop di consultare un tuo profilo locale di Fluent Reader.$\r$\n$\r$\nLa beta offre nove strumenti di sola lettura (fonti, gruppi, regole, elenco, ricerca testuale e lettura degli articoli salvati). Include il proprio runtime Node.js: non serve installare altro.$\r$\n$\r$\nNon vengono installati servizi, porte di rete o processi residenti. Puoi scegliere se registrare il server in Claude Desktop: prima vedrai il file e la voce esatti da modificare."
 !insertmacro MUI_PAGE_WELCOME
-!define MUI_DIRECTORYPAGE_TEXT_TOP "Cartella proposta: %LOCALAPPDATA%\FluentReaderMCP. Puoi sceglierne un'altra su qualsiasi unità locale (C:, D:, H:...), nuova, vuota oppure una precedente installazione di Fluent Reader MCP. Se scegli la radice di un'unità o una cartella che contiene già altri file, ti verrà proposta una sottocartella FluentReaderMCP: la destinazione effettiva ti viene sempre mostrata prima di continuare."
+!define MUI_DIRECTORYPAGE_TEXT_TOP "Cartella proposta: %LOCALAPPDATA%\FluentReaderMCP. Puoi sceglierne un'altra su qualsiasi unità locale dove il tuo utente può scrivere: il setup non chiede privilegi di amministratore. Se la cartella scelta non può essere usata così com'è (radice di un'unità, altri file già presenti), il campo qui sotto mostrerà la sottocartella FluentReaderMCP prima di continuare."
 !define MUI_PAGE_CUSTOMFUNCTION_LEAVE DirectoryLeave
 !insertmacro MUI_PAGE_DIRECTORY
 Page custom ProfilePageShow ProfilePageLeave
 Page custom PrivacyPageShow PrivacyPageLeave
-Page custom ClaudePageShow ClaudePageLeave
-Page custom PreviewPageShow PreviewPageLeave
+Page custom DesktopPageShow DesktopPageLeave
+Page custom DesktopConfirmPageShow DesktopConfirmPageLeave
 !insertmacro MUI_PAGE_INSTFILES
 !define MUI_FINISHPAGE_TITLE "Fluent Reader MCP"
 !define MUI_FINISHPAGE_TEXT "$FinishText"
@@ -192,7 +192,7 @@ Function un.ShowHelperMessage
   !undef UN
 FunctionEnd
 
-; The helper used before the installation (directory, profile, Claude checks):
+; The helper used before the installation (directory, profile, Claude Desktop checks):
 ; the payload's own node.exe and setup helper, extracted to $PLUGINSDIR (deleted at exit).
 Function EnsureHelper
   ${If} $HelperNode == ""
@@ -230,7 +230,6 @@ Function .onInit
   ${EndIf}
   SetRegView 64
   InitPluginsDir
-  StrCpy $ConfigureClaude "1"
   StrCpy $ReplaceForeign "no"
 FunctionEnd
 
@@ -286,38 +285,44 @@ Function DirectoryLeave
   Push "installedVersion"
   Call ResultGet
   Pop $5
-  ; the volume: a network drive is not supported; a removable one must be connected whenever the server is used
+  ; the volume: a network drive is not supported
   StrCpy $6 $1 3
   System::Call 'kernel32::GetDriveTypeW(w r6) i .r7'
   ${If} $7 == 4
     MessageBox MB_ICONSTOP|MB_OK "La cartella $1 è su un'unità di rete: non è supportata. Scegli una cartella su un'unità locale."
     Abort
   ${EndIf}
-  StrCpy $8 ""
+  ; a destination other than the one chosen never hides behind Next: it replaces the field on this very page,
+  ; the page says why and stays, and the next Next goes on with what the field shows (adjusted is then empty)
+  ${If} $2 != ""
+    FindWindow $R7 "#32770" "" $HWNDPARENT
+    GetDlgItem $R8 $R7 1019
+    SendMessage $R8 ${WM_SETTEXT} 0 "STR:$1"
+    GetDlgItem $R8 $R7 1006
+    ${If} $2 == "root"
+      SendMessage $R8 ${WM_SETTEXT} 0 "STR:Hai scelto la radice di un'unità: i file non vengono installati direttamente lì. Il campo qui sotto ora mostra la destinazione effettiva: premi Avanti per usarla, oppure scegline un'altra."
+    ${ElseIf} $2 == "programs"
+      SendMessage $R8 ${WM_SETTEXT} 0 "STR:Hai scelto la cartella dei programmi: i file non vengono installati direttamente lì. Il campo qui sotto ora mostra la destinazione effettiva: premi Avanti per usarla, oppure scegline un'altra."
+    ${Else}
+      SendMessage $R8 ${WM_SETTEXT} 0 "STR:La cartella scelta contiene già altri file, che non vengono toccati. Il campo qui sotto ora mostra la destinazione effettiva: premi Avanti per usarla, oppure scegline un'altra."
+    ${EndIf}
+    Abort
+  ${EndIf}
+  ; what the summary page tells about this destination: no extra window here
+  StrCpy $VolumeNote ""
   ${If} $7 == 2
-    StrCpy $8 "$8$\r$\n$\r$\nL'unità $6 è rimovibile: deve essere collegata, con la stessa lettera, ogni volta che Claude Code avvia il server e per aggiornarlo o disinstallarlo."
+    StrCpy $VolumeNote "L'unità $6 è rimovibile: deve essere collegata, con la stessa lettera, ogni volta che Claude Desktop avvia il server e per aggiornarlo o disinstallarlo."
   ${EndIf}
   ${If} $3 == "yes"
-    StrCpy $8 "$8$\r$\n$\r$\nLa cartella è fuori dalla tua cartella utente: a seconda dei permessi di quella posizione, altri account di questo computer potrebbero leggere o modificare i file installati. Il setup non modifica i permessi."
-  ${EndIf}
-  ${If} $2 == "root"
-    StrCpy $9 "Hai scelto la radice dell'unità ($INSTDIR): i file non vengono installati direttamente lì, ma nella cartella:"
-  ${ElseIf} $2 == "not-empty"
-    StrCpy $9 "La cartella scelta ($INSTDIR) contiene già altri file, che non vengono toccati. Fluent Reader MCP verrà installato nella sottocartella:"
-  ${Else}
-    StrCpy $9 "Fluent Reader MCP verrà installato nella cartella:"
+    StrCpy $VolumeNote "$VolumeNote$\r$\nLa cartella è fuori dalla tua cartella utente: a seconda dei permessi di quella posizione, altri account di questo computer potrebbero leggere o modificare i file installati. Il setup non modifica i permessi."
   ${EndIf}
   ${If} $4 == "upgrade"
-    StrCpy $9 "$9$\r$\n$\r$\n$1$\r$\n$\r$\nVi è installata la versione $5: verrà aggiornata alla ${PRODUCT_VERSION}. Se l'aggiornamento non riesce, la versione attuale resta com'è."
+    StrCpy $ModeText "Vi è installata la versione $5: verrà aggiornata alla ${PRODUCT_VERSION}. Se l'aggiornamento non riesce, la versione attuale resta com'è."
   ${ElseIf} $4 == "repair"
-    StrCpy $9 "$9$\r$\n$\r$\n$1$\r$\n$\r$\nLa versione ${PRODUCT_VERSION} vi è già installata: i suoi file verranno reinstallati (riparazione). I tuoi dati non vengono toccati."
+    StrCpy $ModeText "La versione ${PRODUCT_VERSION} vi è già installata: i suoi file verranno reinstallati (riparazione). I tuoi dati non vengono toccati."
   ${Else}
-    StrCpy $9 "$9$\r$\n$\r$\n$1"
+    StrCpy $ModeText "Nuova installazione."
   ${EndIf}
-  ; explicit confirmation of the effective destination; Cancel keeps the page and the choice as typed
-  MessageBox MB_ICONQUESTION|MB_OKCANCEL "$9$8$\r$\n$\r$\nContinuare con questa cartella?" IDOK directory_confirmed
-  Abort
-  directory_confirmed:
   StrCpy $INSTDIR $1
   StrCpy $Mode $4
   StrCpy $InstalledVersion $5
@@ -380,21 +385,35 @@ FunctionEnd
 
 ; ---------------------------------------------------------------- summary and privacy
 
+; One line of the page's read-only box.
+!macro BoxLine TEXT
+  SendMessage $PreviewText ${EM_SETSEL} -1 -1
+  SendMessage $PreviewText ${EM_REPLACESEL} 0 "STR:${TEXT}$\r$\n"
+!macroend
+
 Function PrivacyPageShow
-  !insertmacro MUI_HEADER_TEXT "Riepilogo e privacy" "Conferma il profilo e l'informativa della beta"
+  !insertmacro MUI_HEADER_TEXT "Riepilogo e privacy" "Controlla la destinazione e il profilo, poi conferma l'informativa della beta"
   nsDialogs::Create 1018
   Pop $Dialog
   ${If} $Dialog == error
     Abort
   ${EndIf}
-  ${NSD_CreateLabel} 0 0 100% 10u "Profilo scelto:"
-  Pop $0
-  ${NSD_CreateText} 0 11u 100% 12u "$ProfileDir"
-  Pop $0
-  SendMessage $0 ${EM_SETREADONLY} 1 0
-  ${NSD_CreateLabel} 0 28u 100% 84u "- Fluent Reader MCP legge questo profilo in sola lettura: non modifica il database né la configurazione di Fluent Reader.$\r$\n- Il server non effettua richieste di rete proprie e non resta in esecuzione: lo avvia Claude Code quando serve.$\r$\n- I risultati degli strumenti (per esempio titoli e testi degli articoli richiesti) possono essere inviati da Claude Code al servizio Anthropic come parte della conversazione.$\r$\n- La beta espone soltanto nove strumenti in sola lettura; la ricerca degli articoli lavora solo sui dati già salvati da Fluent Reader.$\r$\n- Nessun servizio Windows viene installato."
-  Pop $0
-  ${NSD_CreateCheckbox} 0 116u 100% 12u "Confermo il profilo scelto e ho letto l'informativa"
+  nsDialogs::CreateControl EDIT ${DEFAULT_STYLES}|${WS_TABSTOP}|${WS_VSCROLL}|${ES_MULTILINE}|${ES_READONLY}|${ES_AUTOVSCROLL} ${WS_EX_CLIENTEDGE} 0 0 100% 112u ""
+  Pop $PreviewText
+  !insertmacro BoxLine "Destinazione: $INSTDIR"
+  !insertmacro BoxLine "$ModeText"
+  ${If} $VolumeNote != ""
+    !insertmacro BoxLine "$VolumeNote"
+  ${EndIf}
+  !insertmacro BoxLine "Profilo scelto: $ProfileDir"
+  !insertmacro BoxLine ""
+  !insertmacro BoxLine "- Fluent Reader MCP legge questo profilo in sola lettura: non modifica il database né la configurazione di Fluent Reader."
+  !insertmacro BoxLine "- Il server non effettua richieste di rete proprie e non resta in esecuzione: lo avvia Claude Desktop quando serve."
+  !insertmacro BoxLine "- I risultati degli strumenti (per esempio titoli e testi degli articoli richiesti) possono essere inviati da Claude Desktop al servizio Anthropic come parte della conversazione."
+  !insertmacro BoxLine "- La beta espone soltanto nove strumenti in sola lettura; la ricerca degli articoli lavora solo sui dati già salvati da Fluent Reader."
+  !insertmacro BoxLine "- Nessun servizio Windows viene installato."
+  SendMessage $PreviewText ${EM_SETSEL} 0 0
+  ${NSD_CreateCheckbox} 0 116u 100% 12u "Confermo destinazione e profilo e ho letto l'informativa"
   Pop $ConfirmProfile
   nsDialogs::Show
 FunctionEnd
@@ -402,108 +421,120 @@ FunctionEnd
 Function PrivacyPageLeave
   ${NSD_GetState} $ConfirmProfile $0
   ${If} $0 != ${BST_CHECKED}
-    MessageBox MB_ICONINFORMATION|MB_OK "Per continuare conferma il profilo e l'informativa."
+    MessageBox MB_ICONINFORMATION|MB_OK "Per continuare conferma destinazione, profilo e informativa."
     Abort
   ${EndIf}
 FunctionEnd
 
-; ---------------------------------------------------------------- Claude Code
+; ---------------------------------------------------------------- Claude Desktop
 
-Function ClaudePageShow
-  !insertmacro MUI_HEADER_TEXT "Claude Code" "Registrazione del server MCP (facoltativa, con anteprima)"
+; The helper lists the candidate files (names and dates only) and proposes one only when there is no doubt to hide;
+; the file to change is always the one in the field when the user goes on, and it is shown again before consent.
+Function DesktopPageShow
+  !insertmacro MUI_HEADER_TEXT "Claude Desktop" "Collegamento del server a Claude Desktop (facoltativo)"
+  !insertmacro RequestBegin
+  !insertmacro RequestPut "installDir" "$INSTDIR"
+  !insertmacro RequestEnd
+  !insertmacro RunHelper "desktop-candidates"
+  StrCpy $1 "none"
+  StrCpy $2 ""
+  StrCpy $3 "allowed"
+  ${If} $HelperExit == "0"
+    Push "proposal"
+    Call ResultGet
+    Pop $1
+    Push "selected"
+    Call ResultGet
+    Pop $2
+    Push "policy"
+    Call ResultGet
+    Pop $3
+  ${EndIf}
+  ${If} $DesktopConfig == ""
+    StrCpy $DesktopConfig $2
+  ${EndIf}
+  ${If} $ConfigureDesktop == ""
+    StrCpy $ConfigureDesktop "1"
+    ${If} $1 == "none"
+      StrCpy $ConfigureDesktop "0"
+    ${EndIf}
+  ${EndIf}
+  ${If} $3 == "blocked"
+    StrCpy $ConfigureDesktop "0"
+  ${EndIf}
   nsDialogs::Create 1018
   Pop $Dialog
   ${If} $Dialog == error
     Abort
   ${EndIf}
-  ${NSD_CreateRadioButton} 0 0 100% 12u "Registra Fluent Reader MCP in Claude Code (scope user)"
-  Pop $RadioClaude
-  ${NSD_CreateRadioButton} 0 13u 100% 12u "Installa solo il server: lo registrerò più tardi"
+  ${NSD_CreateRadioButton} 0 0 100% 12u "Registra Fluent Reader MCP in Claude Desktop"
+  Pop $RadioDesktop
+  ${NSD_CreateRadioButton} 0 13u 100% 12u "Installa solo il server: Claude Desktop non viene modificato"
   Pop $RadioServerOnly
-  ${If} $ConfigureClaude == "1"
-    ${NSD_Check} $RadioClaude
+  ${If} $ConfigureDesktop == "1"
+    ${NSD_Check} $RadioDesktop
   ${Else}
     ${NSD_Check} $RadioServerOnly
   ${EndIf}
-  ${NSD_CreateLabel} 0 31u 100% 20u "Percorso di claude.exe (CLI di Claude Code o binario dell'estensione VS Code). Claude Desktop va configurato a mano: questo installer non lo registra."
+  ${If} $3 == "blocked"
+    EnableWindow $RadioDesktop 0
+    ${NSD_CreateLabel} 0 28u 100% 24u "Una policy di questo computer disattiva i server MCP locali in Claude Desktop (isLocalDevMcpEnabled): la registrazione automatica non è disponibile, il server può essere installato comunque."
+  ${Else}
+    ${NSD_CreateLabel} 0 28u 100% 24u "Indica il file di configurazione che Claude Desktop usa davvero: in Claude Desktop apri Impostazioni, poi Modifica configurazione. File trovati nelle tue cartelle (nessuno è stato aperto):"
+  ${EndIf}
   Pop $0
-  ${NSD_CreateText} 0 53u 58% 12u "$ClaudeExe"
-  Pop $ClaudeText
-  ${NSD_CreateButton} 60% 52u 19% 14u "Sfoglia..."
+  nsDialogs::CreateControl EDIT ${DEFAULT_STYLES}|${WS_TABSTOP}|${WS_VSCROLL}|${ES_MULTILINE}|${ES_READONLY}|${ES_AUTOVSCROLL} ${WS_EX_CLIENTEDGE} 0 53u 100% 40u ""
+  Pop $PreviewText
+  Call AppendPreview
+  SendMessage $PreviewText ${EM_SETSEL} 0 0
+  ${NSD_CreateText} 0 96u 78% 12u "$DesktopConfig"
+  Pop $DesktopText
+  ${NSD_CreateButton} 80% 95u 20% 14u "Sfoglia..."
   Pop $0
-  ${NSD_OnClick} $0 ClaudeBrowse
-  ${NSD_CreateButton} 81% 52u 19% 14u "Cerca"
-  Pop $0
-  ${NSD_OnClick} $0 ClaudeDetect
-  ${NSD_CreateCheckbox} 0 74u 100% 24u "Autorizzo il setup a registrare il server $\"fluent-reader$\" nella mia configurazione utente di Claude Code, dopo aver visto l'anteprima nella pagina successiva."
-  Pop $ConsentClaude
-  ${NSD_CreateLabel} 0 102u 100% 30u "Se scegli di installare solo il server, Claude Code non viene modificato: potrai registrarlo eseguendo di nuovo questo setup."
+  ${NSD_OnClick} $0 DesktopBrowse
+  ${NSD_CreateLabel} 0 112u 100% 20u "Nessuna modifica in questa pagina: nella prossima vedrai file e voce e potrai autorizzare la modifica. Se non sei sicuro di quale sia il file giusto, installa solo il server."
   Pop $0
   nsDialogs::Show
 FunctionEnd
 
-Function ClaudeBrowse
+Function DesktopBrowse
   Pop $0
-  ${NSD_GetText} $ClaudeText $0
-  nsDialogs::SelectFileDialog open "$0" "claude.exe|claude.exe|Programmi (*.exe)|*.exe"
+  ${NSD_GetText} $DesktopText $0
+  nsDialogs::SelectFileDialog open "$0" "claude_desktop_config.json|claude_desktop_config.json"
   Pop $0
   ${If} $0 != ""
   ${AndIf} $0 != "error"
-    ${NSD_SetText} $ClaudeText "$0"
+    ${NSD_SetText} $DesktopText "$0"
   ${EndIf}
 FunctionEnd
 
-; Searches only when the user presses "Cerca": PATH, the native installer, the VS Code extension.
-Function ClaudeDetect
-  Pop $0
-  !insertmacro RequestBegin
-  !insertmacro RequestEnd
-  !insertmacro RunHelper "detect-claude"
-  ${If} $HelperExit != "0"
-    Call ShowHelperMessage
+Function DesktopPageLeave
+  ${NSD_GetState} $RadioDesktop $0
+  ${If} $0 != ${BST_CHECKED}
+    StrCpy $ConfigureDesktop "0"
     Return
   ${EndIf}
-  Push "claudeExe"
-  Call ResultGet
-  Pop $0
-  Push "candidates"
-  Call ResultGet
-  Pop $1
-  ${NSD_SetText} $ClaudeText "$0"
-  MessageBox MB_ICONINFORMATION|MB_OK "Trovato: $0$\r$\n($1 candidati in tutto). Verifica che sia la Claude Code che usi; puoi sceglierne un'altra con Sfoglia."
-FunctionEnd
-
-Function ClaudePageLeave
-  ${NSD_GetState} $RadioClaude $0
-  ${If} $0 != ${BST_CHECKED}
-    StrCpy $ConfigureClaude "0"
-    Return
-  ${EndIf}
-  StrCpy $ConfigureClaude "1"
-  ${NSD_GetText} $ClaudeText $ClaudeExe
-  ${NSD_GetState} $ConsentClaude $0
-  ${If} $0 != ${BST_CHECKED}
-    MessageBox MB_ICONINFORMATION|MB_OK "Per registrare il server serve il tuo consenso (casella sotto). Altrimenti scegli $\"Installa solo il server$\"."
-    Abort
-  ${EndIf}
-  ${If} $ClaudeExe == ""
-    MessageBox MB_ICONINFORMATION|MB_OK "Indica claude.exe con Sfoglia o Cerca, oppure scegli $\"Installa solo il server$\"."
+  StrCpy $ConfigureDesktop "1"
+  ${NSD_GetText} $DesktopText $DesktopConfig
+  ${If} $DesktopConfig == ""
+    MessageBox MB_ICONINFORMATION|MB_OK "Indica il file claude_desktop_config.json con Sfoglia, oppure scegli $\"Installa solo il server$\"."
     Abort
   ${EndIf}
   !insertmacro RequestBegin
-  !insertmacro RequestPut "claudeExe" "$ClaudeExe"
+  !insertmacro RequestPut "configPath" "$DesktopConfig"
+  !insertmacro RequestPut "installDir" "$INSTDIR"
   !insertmacro RequestEnd
-  !insertmacro RunHelper "check-claude"
+  !insertmacro RunHelper "desktop-check"
   ${If} $HelperExit != "0"
     Call ShowHelperMessage
     Abort
   ${EndIf}
-  Push "version"
+  Push "canonical"
   Call ResultGet
-  Pop $ClaudeVersion
+  Pop $DesktopConfig
 FunctionEnd
 
-; ---------------------------------------------------------------- preview
+; ---------------------------------------------------------------- the change to Claude Desktop's configuration
 
 ; Appends every "preview" line of the result file to the preview box (one line at a time:
 ; NSIS strings are limited to 1024 characters).
@@ -532,19 +563,19 @@ Function AppendPreview
   preview_done:
 FunctionEnd
 
-Function PreviewPageShow
-  ${If} $ConfigureClaude != "1"
+Function DesktopConfirmPageShow
+  ${If} $ConfigureDesktop != "1"
     Abort
   ${EndIf}
-  !insertmacro MUI_HEADER_TEXT "Anteprima delle modifiche a Claude Code" "Controlla esattamente che cosa verrà registrato"
+  !insertmacro MUI_HEADER_TEXT "Modifica di Claude Desktop" "Controlla il file e la voce, poi autorizza la modifica"
   !insertmacro RequestBegin
   !insertmacro RequestPut "installDir" "$INSTDIR"
   !insertmacro RequestPut "version" "${PRODUCT_VERSION}"
   !insertmacro RequestPut "maxRelative" "${MAX_RELATIVE}"
-  !insertmacro RequestPut "claudeExe" "$ClaudeExe"
+  !insertmacro RequestPut "configPath" "$DesktopConfig"
   !insertmacro RequestPut "profileDir" "$ProfileDir"
   !insertmacro RequestEnd
-  !insertmacro RunHelper "plan"
+  !insertmacro RunHelper "desktop-plan"
   nsDialogs::Create 1018
   Pop $Dialog
   ${If} $Dialog == error
@@ -570,28 +601,34 @@ Function PreviewPageShow
   Pop $PreviewText
   Call AppendPreview
   SendMessage $PreviewText ${EM_SETSEL} 0 0
-  ${If} $PlanAction == "replace-foreign"
-    ${NSD_CreateCheckbox} 0 112u 100% 20u "Sostituisci la voce $\"fluent-reader$\" esistente, che non è stata creata da questo installer"
-    Pop $ReplaceCheck
-  ${Else}
-    ${NSD_CreateLabel} 0 114u 100% 20u "Premendo Installa autorizzi soltanto questa modifica. Se nel frattempo la configurazione cambia, la registrazione viene annullata."
+  ${If} $PlanAction == "none"
+    ${NSD_CreateLabel} 0 114u 100% 20u "Il file non viene modificato: la voce è già presente così."
     Pop $0
+  ${ElseIf} $PlanAction == "replace-foreign"
+    ${NSD_CreateCheckbox} 0 112u 100% 20u "Autorizzo la modifica di questo file e la sostituzione della voce $\"fluent-reader$\" esistente, che non risulta scritta da questo installer"
+    Pop $ConsentDesktop
+  ${Else}
+    ${NSD_CreateCheckbox} 0 112u 100% 20u "Autorizzo il setup a modificare questo file, soltanto per la voce $\"fluent-reader$\""
+    Pop $ConsentDesktop
   ${EndIf}
   nsDialogs::Show
 FunctionEnd
 
-Function PreviewPageLeave
+Function DesktopConfirmPageLeave
   ${If} $PlanAction == "error"
     MessageBox MB_ICONINFORMATION|MB_OK "Torna indietro e scegli $\"Installa solo il server$\", oppure risolvi il problema indicato."
     Abort
   ${EndIf}
   StrCpy $ReplaceForeign "no"
+  ${If} $PlanAction == "none"
+    Return
+  ${EndIf}
+  ${NSD_GetState} $ConsentDesktop $0
+  ${If} $0 != ${BST_CHECKED}
+    MessageBox MB_ICONINFORMATION|MB_OK "Il file non viene toccato senza la tua autorizzazione: spunta la casella, oppure torna indietro e scegli $\"Installa solo il server$\"."
+    Abort
+  ${EndIf}
   ${If} $PlanAction == "replace-foreign"
-    ${NSD_GetState} $ReplaceCheck $0
-    ${If} $0 != ${BST_CHECKED}
-      MessageBox MB_ICONINFORMATION|MB_OK "La voce esistente non viene toccata senza la tua conferma: confermala, oppure torna indietro e scegli $\"Installa solo il server$\"."
-      Abort
-    ${EndIf}
     StrCpy $ReplaceForeign "yes"
   ${EndIf}
 FunctionEnd
@@ -954,7 +991,7 @@ Section "Fluent Reader MCP" SectionMain
   !insertmacro RunHelper "tx-swap"
   ${If} $HelperExit != "0"
     Call ShowHelperMessage
-    StrCpy $FailStep "attivazione della nuova versione (chiudi Claude Code se è aperto)"
+    StrCpy $FailStep "attivazione della nuova versione (chiudi Claude Desktop se è aperto)"
     Goto install_rollback
   ${EndIf}
 
@@ -997,29 +1034,29 @@ Section "Fluent Reader MCP" SectionMain
     DetailPrint "Attenzione: la versione precedente e le copie di recupero non sono state ancora rimosse (lo saranno alla prossima esecuzione del setup)."
   ${EndIf}
 
-  ; 11. Claude Code, only with consent and bound to the approved preview
+  ; 11. Claude Desktop, only with consent and bound to the page the user approved
   StrCpy $FinishText "Fluent Reader MCP ${PRODUCT_VERSION} è installato e verificato."
-  ${If} $ConfigureClaude == "1"
-    DetailPrint "Registrazione in Claude Code (scope user)..."
+  ${If} $ConfigureDesktop == "1"
+    DetailPrint "Registrazione in Claude Desktop..."
     !insertmacro RequestBegin
     !insertmacro RequestPut "installDir" "$INSTDIR"
     !insertmacro RequestPut "version" "${PRODUCT_VERSION}"
     !insertmacro RequestPut "maxRelative" "${MAX_RELATIVE}"
-    !insertmacro RequestPut "claudeExe" "$ClaudeExe"
+    !insertmacro RequestPut "configPath" "$DesktopConfig"
     !insertmacro RequestPut "profileDir" "$ProfileDir"
     !insertmacro RequestPut "planHash" "$PlanHash"
     !insertmacro RequestPut "replaceForeign" "$ReplaceForeign"
     !insertmacro RequestPut "consent" "yes"
     !insertmacro RequestEnd
-    !insertmacro RunHelper "register"
+    !insertmacro RunHelper "desktop-register"
     ${If} $HelperExit == "0"
-      StrCpy $FinishText "$FinishText$\r$\n$\r$\nIl server $\"fluent-reader$\" è registrato in Claude Code. Apri Visual Studio Code, avvia Claude Code e digita /mcp: deve comparire fluent-reader con nove strumenti in sola lettura. La prima prova con i tuoi dati la fai tu, per esempio chiedendo di elencare le fonti."
+      StrCpy $FinishText "$FinishText$\r$\n$\r$\nLa voce $\"fluent-reader$\" è nel file che hai selezionato:$\r$\n$DesktopConfig$\r$\n$\r$\nIl setup non può dimostrare che Claude Desktop legga proprio questo file. Chiudi del tutto Claude Desktop (anche dall'area di notifica), riaprilo e controlla che compaia fluent-reader con nove strumenti in sola lettura. Se non compare, esegui di nuovo il setup e seleziona l'altro file."
     ${Else}
       Call ShowHelperMessage
-      StrCpy $FinishText "$FinishText$\r$\n$\r$\nIl server è installato ma NON è registrato in Claude Code (vedi il messaggio mostrato). Puoi registrarlo eseguendo di nuovo questo setup."
+      StrCpy $FinishText "$FinishText$\r$\n$\r$\nIl server è installato ma NON è registrato in Claude Desktop (vedi il messaggio mostrato). Puoi registrarlo eseguendo di nuovo questo setup."
     ${EndIf}
   ${Else}
-    StrCpy $FinishText "$FinishText$\r$\n$\r$\nClaude Code non è stato modificato. Per registrare il server esegui di nuovo questo setup e scegli la registrazione."
+    StrCpy $FinishText "$FinishText$\r$\n$\r$\nClaude Desktop non è stato modificato. Per registrare il server esegui di nuovo questo setup e scegli la registrazione."
   ${EndIf}
   Goto install_done
 
@@ -1173,7 +1210,8 @@ Section "Uninstall"
   Push "phase"
   Call un.ResultGet
   Pop $UnPhase
-  ; where the copies of the Claude configuration stay (the user's private directory, never deleted here): told at the end
+  ; where the copies of the Claude configurations stay (the user's private directory, never deleted here), and an
+  ; entry an earlier setup left in Claude Code (never touched here): told at the end
   Push "backups"
   Call un.ResultGet
   Pop $BackupNote
@@ -1181,7 +1219,7 @@ Section "Uninstall"
     Goto uninstall_metadata
   ${EndIf}
 
-  ; 1. preflight, without changes: record, inventories, foreign files, helper, Claude Code entry
+  ; 1. preflight, without changes: record, inventories, foreign files, helper, Claude Desktop entry
   !insertmacro RequestBegin
   !insertmacro RequestPut "installDir" "$INSTDIR"
   !insertmacro RequestEnd
@@ -1191,52 +1229,31 @@ Section "Uninstall"
     Abort "Disinstallazione interrotta prima di qualsiasi modifica."
   ${EndIf}
 
-  ; 2. the Claude Code entry, only if it is still exactly the one this installer saved
+  ; 2. the Claude Desktop entry, only if it is still exactly the one this installer wrote
   !insertmacro RequestBegin
   !insertmacro RequestPut "installDir" "$INSTDIR"
   !insertmacro RequestEnd
-  !insertmacro RunHelper "unregister"
+  !insertmacro RunHelper "desktop-unregister"
   Push "outcome"
   Call un.ResultGet
   Pop $1
-  ${If} $1 == "claude-missing"
-    MessageBox MB_ICONQUESTION|MB_YESNO "Claude Code non si trova più nel percorso usato durante l'installazione (l'estensione VS Code cambia cartella quando si aggiorna). Cercarlo ora per rimuovere la voce $\"fluent-reader$\"?" IDNO claude_search_done
-    !insertmacro RequestBegin
-    !insertmacro RequestEnd
-    !insertmacro RunHelper "detect-claude"
-    ${If} $HelperExit == "0"
-      Push "claudeExe"
-      Call un.ResultGet
-      Pop $2
-      !insertmacro RequestBegin
-      !insertmacro RequestPut "installDir" "$INSTDIR"
-      !insertmacro RequestPut "claudeExe" "$2"
-      !insertmacro RequestEnd
-      !insertmacro RunHelper "unregister"
-      Push "outcome"
-      Call un.ResultGet
-      Pop $1
-    ${EndIf}
-    claude_search_done:
-  ${EndIf}
   Push "message"
   Call un.ResultGet
   Pop $2
   ${If} $1 == "removed"
   ${OrIf} $1 == "absent"
+  ${OrIf} $1 == "config-missing"
   ${OrIf} $1 == "not-configured"
     DetailPrint "$2"
   ${ElseIf} $1 == "modified"
-  ${OrIf} $1 == "not-attributable"
   ${OrIf} $1 == "config-error"
-  ${OrIf} $1 == "claude-missing"
-    MessageBox MB_ICONQUESTION|MB_YESNO|MB_DEFBUTTON2 "$2$\r$\n$\r$\nLa voce $\"fluent-reader$\" NON viene rimossa da Claude Code. Se prosegui, il server installato viene rimosso: la voce rimasta punterà a file che non esistono più e non funzionerà, e Claude Code non sarà stato ripulito completamente (potrai rimuoverla a mano).$\r$\n$\r$\nDisinstallare comunque il server lasciando la voce? Scegli No (consigliato) per non rimuovere nulla e ripetere dopo averla sistemata." IDYES claude_left
+    MessageBox MB_ICONQUESTION|MB_YESNO|MB_DEFBUTTON2 "$2$\r$\n$\r$\nLa voce $\"fluent-reader$\" NON viene rimossa da Claude Desktop. Se prosegui, il server installato viene rimosso: una voce rimasta che punta a questa cartella non funzionerà più, e Claude Desktop non sarà stato ripulito completamente (potrai rimuoverla a mano).$\r$\n$\r$\nDisinstallare comunque il server lasciando la voce? Scegli No (consigliato) per non rimuovere nulla e ripetere dopo averla sistemata." IDYES desktop_left
     Abort "Disinstallazione interrotta: nulla è stato rimosso."
-    claude_left:
-    DetailPrint "La voce $\"fluent-reader$\" è stata lasciata in Claude Code su tua scelta: punterà a un server non più installato."
+    desktop_left:
+    DetailPrint "La voce $\"fluent-reader$\" è stata lasciata in Claude Desktop su tua scelta."
   ${Else}
     ${If} $2 == ""
-      StrCpy $2 "La voce $\"fluent-reader$\" di Claude Code non è stata rimossa (codice $HelperExit)."
+      StrCpy $2 "La voce $\"fluent-reader$\" di Claude Desktop non è stata rimossa (codice $HelperExit)."
     ${EndIf}
     MessageBox MB_ICONEXCLAMATION|MB_OK "$2$\r$\n$\r$\nLa disinstallazione si ferma: file, registro e disinstallatore restano per poterla ripetere."
     Abort "Disinstallazione interrotta: nulla è stato rimosso."

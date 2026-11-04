@@ -1,7 +1,7 @@
 /**
  * FR-MCP-04-BETA-02: how the NSIS wizard talks to the setup helper.
  *
- * Every value chosen by the user (directories, the claude.exe path, consent)
+ * Every value chosen by the user (directories, the configuration file, consent)
  * travels in a REQUEST file, never on a command line, so no quoting rule of
  * cmd.exe, the C runtime or NSIS applies to it. The helper answers in a
  * RESULT file. Both are UTF-16LE with a BOM (what NSIS reads and writes

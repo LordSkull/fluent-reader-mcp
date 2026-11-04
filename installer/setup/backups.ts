@@ -1,11 +1,12 @@
 /**
- * FR-MCP-04-BETA-03A-SIMPLE-02: where the copies of the Claude Code configuration live.
+ * FR-MCP-04-BETA-03A-SIMPLE-02: where the copies of the Claude configurations live.
  *
- * ~/.claude.json may hold secrets of other MCP servers (tokens, API keys) and the installation directory may be
+ * A configuration may hold secrets of other MCP servers (tokens, API keys) and the installation directory may be
  * on a volume or in a folder that other Windows users can read. The copy taken before a change is therefore kept
  * in the personal local storage of the Windows user who runs the setup, never in the installation directory:
  *
- *   %LOCALAPPDATA%\FluentReaderMCP-Data\claude-config-backups\<installation key>\claude.json.<UTC stamp>[-n].bak
+ *   %LOCALAPPDATA%\FluentReaderMCP-Data\desktop-config-backups\<installation key>\claude_desktop_config.json.<UTC stamp>[-n].bak
+ *   %LOCALAPPDATA%\FluentReaderMCP-Data\claude-config-backups\<installation key>\claude.json.<UTC stamp>[-n].bak   (0.1.x beta, ~/.claude.json)
  *
  * (not %LOCALAPPDATA%\FluentReaderMCP, the default installation directory). The installation key is derived from
  * the directory the installation record is bound to: the same across repairs and upgrades, different for two
@@ -31,11 +32,12 @@ import path from "node:path"
 import { canonicalPath, isInside, overlaps, samePath } from "../lib/common.js"
 import { LAYOUT } from "./checks.js"
 import { SetupRefusal } from "./protocol.js"
-import { BACKUP_NAME, backupReference, RECORD_NAME, readRecord, writeRecord, type InstallRecord } from "./record.js"
+import { BACKUP_NAME, backupReference, DESKTOP_BACKUP_NAME, RECORD_NAME, readRecord, writeRecord, type InstallRecord } from "./record.js"
 
 export { BACKUP_NAME }
 export const PRIVATE_ROOT = "FluentReaderMCP-Data"
 export const BACKUPS = "claude-config-backups"
+export const DESKTOP_BACKUPS = "desktop-config-backups"
 
 /** Test hook: where an interrupted migration is simulated. */
 export type MigrationCheckpoint = "after-copy" | "after-publish" | "after-record"
@@ -45,7 +47,7 @@ function envValue(env: NodeJS.ProcessEnv, name: string): string | undefined {
 }
 
 function unavailable(why: string): SetupRefusal {
-    return new SetupRefusal(`le copie della configurazione di Claude Code si salvano soltanto nella tua cartella personale (%LOCALAPPDATA%), che non è utilizzabile: ${why}. Nessuna copia viene salvata altrove e la configurazione di Claude Code non viene modificata; puoi installare solo il server`)
+    return new SetupRefusal(`le copie della configurazione si salvano soltanto nella tua cartella personale (%LOCALAPPDATA%), che non è utilizzabile: ${why}. Nessuna copia viene salvata altrove e la configurazione non viene modificata; puoi installare solo il server`)
 }
 
 /** %LOCALAPPDATA% as a canonical local directory inside the user's profile, or a refusal (never a fallback). */
@@ -73,11 +75,20 @@ export function installationKey(installDir: string): string {
     return crypto.createHash("sha256").update(`fluent-reader-mcp\n${path.win32.resolve(installDir).toLowerCase()}`).digest("hex").slice(0, 32)
 }
 
-/** The private directory of an installation's copies (nothing is created). Never inside the installation directory, nor containing it. */
-export function privateBackupDir(env: NodeJS.ProcessEnv, installDir: string): string {
-    const dir = path.win32.join(localAppData(env), PRIVATE_ROOT, BACKUPS, installationKey(installDir))
+function privateDir(env: NodeJS.ProcessEnv, installDir: string, kind: string): string {
+    const dir = path.win32.join(localAppData(env), PRIVATE_ROOT, kind, installationKey(installDir))
     if (overlaps(dir, installDir)) throw unavailable(`la cartella delle copie (${dir}) e la cartella di installazione si sovrappongono`)
     return dir
+}
+
+/** The private directory of an installation's copies of ~/.claude.json (nothing is created). Never inside the installation directory, nor containing it. */
+export function privateBackupDir(env: NodeJS.ProcessEnv, installDir: string): string {
+    return privateDir(env, installDir, BACKUPS)
+}
+
+/** The same for the copies of Claude Desktop's configuration. */
+export function privateDesktopBackupDir(env: NodeJS.ProcessEnv, installDir: string): string {
+    return privateDir(env, installDir, DESKTOP_BACKUPS)
 }
 
 /** A managed directory: absent, a real directory at its canonical place, or something else (link, junction, file). */
@@ -96,9 +107,8 @@ function managedDirs(dir: string): string[] {
     return [path.win32.dirname(sub), sub, dir]
 }
 
-/** The private directory, created one level at a time; every level must be a real directory (no link or junction). */
-function ensurePrivateDir(env: NodeJS.ProcessEnv, installDir: string): string {
-    const dir = privateBackupDir(env, installDir)
+/** A private directory, created one level at a time; every level must be a real directory (no link or junction). */
+function ensurePrivateDir(dir: string): string {
     for (const part of managedDirs(dir)) {
         if (dirState(part) === "absent") {
             try {
@@ -107,7 +117,7 @@ function ensurePrivateDir(env: NodeJS.ProcessEnv, installDir: string): string {
                 if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw unavailable(`${part} non può essere creata (${(error as NodeJS.ErrnoException).code ?? (error as Error).message})`)
             }
         }
-        if (dirState(part) !== "ok") throw new SetupRefusal(`${part} non è una cartella normale (collegamento, junction o file): nessuna copia della configurazione di Claude Code viene scritta attraverso di essa. Controllala, poi esegui di nuovo il setup`)
+        if (dirState(part) !== "ok") throw new SetupRefusal(`${part} non è una cartella normale (collegamento, junction o file): nessuna copia della configurazione viene scritta attraverso di essa. Controllala, poi esegui di nuovo il setup`)
     }
     return dir
 }
@@ -156,14 +166,22 @@ export interface Backup {
     readonly sha256: string
 }
 
-/** The copy taken before a change: written to a temporary name in the private directory, then published under a new name. */
-export function createBackup(configPath: string, installDir: string, env: NodeJS.ProcessEnv, now: Date): Backup {
-    const dir = ensurePrivateDir(env, installDir)
+/**
+ * The copy taken before a change of Claude Desktop's configuration: written to a temporary name in the private
+ * directory, compared with the content the change starts from (`sha256`), then published under a new name. A file that
+ * changed in the meantime is not copied as if it were that content.
+ */
+export function createDesktopBackup(configPath: string, sha256: string, installDir: string, env: NodeJS.ProcessEnv, now: Date): Backup {
+    const dir = ensurePrivateDir(privateDesktopBackupDir(env, installDir))
     // a temporary copy left by a crash is not touched: only this call's own goes, if publishing it fails
-    const temp = ownTemporaryCopy(configPath, dir, ".claude.json")
+    const temp = ownTemporaryCopy(configPath, dir, `.${path.win32.basename(configPath)}`)
+    if (sha256Of(temp) !== sha256) {
+        fs.rmSync(temp, { force: true })
+        throw new SetupRefusal(`${configPath} è cambiato mentre ne veniva salvata la copia: nessuna modifica eseguita. Chiudi Claude Desktop ed esegui di nuovo il setup`)
+    }
     const stamp = now.toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")
     for (let i = 0; ; i++) {
-        const name = `claude.json.${stamp}${i === 0 ? "" : `-${i}`}.bak`
+        const name = `claude_desktop_config.json.${stamp}${i === 0 ? "" : `-${i}`}.bak`
         const target = path.win32.join(dir, name)
         if (fs.lstatSync(target, { throwIfNoEntry: false }) !== undefined) continue
         publish(temp, target)
@@ -233,7 +251,7 @@ export function migrateLegacyBackups(installDir: string, env: NodeJS.ProcessEnv,
         throw new SetupRefusal(`nella cartella delle copie della configurazione di Claude Code lasciata da una versione precedente ci sono elementi non attribuibili con certezza a questa installazione: ${list}${foreign.length > 5 ? `; e altri ${foreign.length - 5}` : ""}. Nessun elemento è stato modificato, spostato o cancellato. Prima di aggiornare o riparare serve un tuo intervento: controlla gli elementi indicati, che possono contenere informazioni riservate (anche token o chiavi di altri server MCP). Non cancellarli senza averli controllati: se ti servono, conservali in una cartella personale sicura del tuo account Windows, non in una cartella condivisa con altri utenti. Dopo la verifica puoi ripetere l'aggiornamento o la riparazione eseguendo di nuovo il setup`)
     }
     const name = named as string
-    migrateOne({ installDir, env, legacy, recordFile }, path.win32.join(legacy, name), ensurePrivateDir(env, installDir), name, checkpoint)
+    migrateOne({ installDir, env, legacy, recordFile }, path.win32.join(legacy, name), ensurePrivateDir(privateBackupDir(env, installDir)), name, checkpoint)
     removeIfEmpty(legacy)
     return [name]
 }
@@ -347,12 +365,31 @@ export function recordedBackup(installDir: string, record: InstallRecord | null,
     } catch {
         dir = null
     }
-    if (dir === null || !samePath(ref.dir, dir)) return { status: "other-location", path: path.win32.join(ref.dir, ref.name) }
-    const file = path.win32.join(dir, ref.name)
+    return privateCopyStatus(ref.name, ref.dir, ref.sha256, dir)
+}
+
+function privateCopyStatus(name: string, recordedDir: string, sha256: string, dir: string | null): { status: BackupStatus; path: string | null; reason?: string } {
+    if (dir === null || !samePath(recordedDir, dir)) return { status: "other-location", path: path.win32.join(recordedDir, name) }
+    const file = path.win32.join(dir, name)
     if (!managedDirs(dir).every((d) => dirState(d) !== "invalid")) return { status: "invalid", path: file, reason: "cartella personale delle copie non utilizzabile" }
     if (fs.lstatSync(file, { throwIfNoEntry: false }) === undefined) return { status: "missing", path: file }
-    if (!regularFile(file) || sha256Of(file) !== ref.sha256) return { status: "altered", path: file }
+    if (!regularFile(file) || sha256Of(file) !== sha256) return { status: "altered", path: file }
     return { status: "ok", path: file }
+}
+
+/** Where the copy named in a Claude Desktop registration is, without changing anything (same statuses as recordedBackup). */
+export function recordedDesktopBackup(installDir: string, record: InstallRecord | null, env: NodeJS.ProcessEnv): { status: BackupStatus; path: string | null; reason?: string } {
+    const reg = record?.desktop ?? null
+    if (reg === null || reg.backup === null) return { status: "none", path: null }
+    if (!DESKTOP_BACKUP_NAME.test(reg.backup)) return { status: "invalid", path: null, reason: "nome della copia non previsto" }
+    if (reg.backupDir === undefined || !/^[A-Za-z]:\\/.test(reg.backupDir) || reg.backupSha256 === undefined || !/^[0-9a-f]{64}$/.test(reg.backupSha256)) return { status: "invalid", path: null, reason: "riferimento incompleto (cartella o impronta mancante o non valida)" }
+    let dir: string | null
+    try {
+        dir = privateDesktopBackupDir(env, installDir)
+    } catch {
+        dir = null
+    }
+    return privateCopyStatus(reg.backup, reg.backupDir, reg.backupSha256, dir)
 }
 
 /** One sentence on the recorded copy for the user (paths only, never content); null for none. */
@@ -387,15 +424,19 @@ export function backupNote(installDir: string, env: NodeJS.ProcessEnv): string {
     } catch {
         // an unreadable record names no copy
     }
-    const found = recordedBackup(installDir, record, env)
-    if (found.status === "other-location") notes.push(describeBackup(found) as string)
-    try {
-        const dir = privateBackupDir(env, installDir)
-        if (managedDirs(dir).every((d) => dirState(d) === "ok") && fs.readdirSync(dir).some((name) => BACKUP_NAME.test(name))) {
-            notes.push(`Le copie della configurazione di Claude Code prese durante l'installazione restano nella tua cartella personale ${dir}: contengono la tua configurazione, compresa quella di altri server MCP. Cancellale quando non ti servono più.`)
+    for (const found of [recordedBackup(installDir, record, env), recordedDesktopBackup(installDir, record, env)]) {
+        if (found.status === "other-location") notes.push(describeBackup(found) as string)
+    }
+    const copies: readonly [(e: NodeJS.ProcessEnv, i: string) => string, RegExp, string][] = [[privateBackupDir, BACKUP_NAME, "Claude Code"], [privateDesktopBackupDir, DESKTOP_BACKUP_NAME, "Claude Desktop"]]
+    for (const [where, names, client] of copies) {
+        try {
+            const dir = where(env, installDir)
+            if (managedDirs(dir).every((d) => dirState(d) === "ok") && fs.readdirSync(dir).some((name) => names.test(name))) {
+                notes.push(`Le copie della configurazione di ${client} prese durante l'installazione restano nella tua cartella personale ${dir}: contengono la tua configurazione, compresa quella di altri server MCP. Cancellale quando non ti servono più.`)
+            }
+        } catch {
+            // no usable private directory: nothing of it to report
         }
-    } catch {
-        // no usable private directory: nothing of it to report
     }
     return notes.join(" ")
 }

@@ -11,12 +11,14 @@ restituisca esattamente quei nove.
 
 Integrazioni con i client Claude:
 
-- **Claude Code:** registrazione automatica implementata (CLI o binario dell'estensione VS Code), solo con consenso
-  esplicito; vedi "Claude Code" più sotto.
-- **Claude Desktop:** **non** gestito dall'installer. Il setup non cerca, non legge e non modifica la configurazione di
-  Claude Desktop; il server può essere aggiunto a mano (vedi il README). I sette strumenti originari sono stati collaudati
-  con Claude Desktop tramite configurazione manuale; `list_articles` e `search_articles` sono verificati finora solo con
-  test automatici e smoke MCP su profili sintetici.
+- **Claude Desktop:** unico client configurato dal wizard, facoltativo, con selezione assistita del file di configurazione
+  e consenso specifico; vedi "Claude Desktop" più sotto. Il collegamento reale va verificato nel client: i test automatici
+  non lo provano.
+- **Claude Code:** non più gestito dal wizard (né ricerca di `claude.exe`, né registrazione). Le voci create dalle beta
+  0.1.0 e 0.1.1 restano al loro posto; vedi "Installazioni delle beta 0.1.x" e "Registrazione manuale".
+
+Questo documento descrive il codice attuale (FR-MCP-04-BETA-UX-01). La build 0.1.1 già costruita registra invece in Claude
+Code e chiede conferma della cartella con una finestra.
 
 ## Prerequisiti (solo per chi costruisce l'installer)
 
@@ -85,12 +87,13 @@ pacchetto (nome file, SHA-256, commit, data, runtime); **nessun percorso locale*
 
 ## Che cosa fa l'installer
 
-Nessun servizio, nessuna porta, nessun processo residente, nessuna scrittura in `Program Files` o `HKLM`,
-`RequestExecutionLevel user` (niente UAC). Il server viene avviato da Claude Code quando serve.
+Nessun servizio, nessuna porta, nessun processo residente, nessuna scrittura in `HKLM`, `RequestExecutionLevel user`
+(niente UAC). Il server viene avviato da Claude Desktop quando serve.
 
-Pagine: benvenuto (beta in sola lettura) → cartella di installazione → profilo Fluent Reader (Sfoglia) → riepilogo e
-informativa privacy (conferma obbligatoria) → Claude Code (registrare o installare solo il server; claude.exe con
-Sfoglia o "Cerca"; consenso) → anteprima esatta della modifica → installazione → risultato e istruzioni.
+Pagine: benvenuto (beta in sola lettura) → cartella di installazione → profilo Fluent Reader (Sfoglia) → riepilogo
+(destinazione, tipo di operazione, avvisi sulla posizione, profilo) e informativa privacy (conferma obbligatoria) →
+Claude Desktop (registrare o installare solo il server; file di configurazione) → file e voce esatti, con il consenso
+alla modifica → installazione → risultato e istruzioni.
 
 Tutta la logica sta nel programma di supporto (`setup\installer\setup\fr-setup.js`), eseguito dal `node.exe`
 incluso: i valori scelti dall'utente (percorsi, consenso) passano in un file di richiesta UTF-16LE, mai sulla riga di
@@ -101,15 +104,24 @@ dei plugin NSIS, cancellata alla chiusura).
 
 Proposta: `%LOCALAPPDATA%\FluentReaderMCP`. Con **Sfoglia** si può scegliere un'altra cartella su qualsiasi unità
 **locale** con lettera (`C:`, `D:`, `H:`...), anche fuori dalla cartella utente (FR-MCP-04-BETA-03A-SIMPLE-01). Il
-controllo è del programma di supporto (`installer\setup\checks.ts`, `check-install-dir`); il wizard mostra sempre la
-**destinazione effettiva** e la usa solo dopo un **OK esplicito** (Annulla resta sulla pagina con la scelta digitata).
+controllo è del programma di supporto (`installer\setup\checks.ts`, `check-install-dir`).
+
+Il flusso è **scelta → Avanti → controllo → pagina successiva**, senza finestre di conferma (DEC-B03). Una finestra
+compare solo per un errore. Se il programma di supporto propone una destinazione diversa da quella scelta (`adjusted`:
+radice, cartella dei programmi, cartella non vuota), il **campo della pagina** viene aggiornato con la destinazione
+effettiva, il testo spiega perché e la pagina **resta aperta**: si prosegue con un secondo Avanti, oppure si sceglie
+altro. Una destinazione diversa non viene mai usata dietro il pulsante Avanti. La pagina di riepilogo mostra poi
+destinazione, tipo di operazione (nuova, riparazione, aggiornamento) e avvisi.
+
 Lo stesso controllo viene ripetuto prima di ogni scrittura: se nel frattempo la cartella è cambiata (per esempio da
 "nuova" a "riparazione"), l'installazione non parte.
 
 | Scelta | Comportamento |
 |---|---|
-| Cartella nuova (non esiste) o vuota | Accettata; una cartella nuova viene creata solo all'inizio dell'installazione |
+| Cartella nuova (non esiste) o vuota | Accettata se scrivibile; una cartella nuova viene creata solo all'inizio dell'installazione |
 | Radice di un'unità (`D:\`) | Mai usata direttamente: viene proposta `D:\FluentReaderMCP`, controllata con tutte le regole |
+| Sotto `Program Files` o `Program Files (x86)`, su qualsiasi unità (`D:\Program Files\FluentReaderMCP`) | Stesse regole di ogni altra cartella: decide il controllo di scrittura. In `C:\Program Files` un utente normale di solito non può scrivere: il setup lo dice, non si eleva e non modifica permessi |
+| La cartella dei programmi stessa (`D:\Program Files`, o quella di `%ProgramFiles%`) | Mai usata direttamente: viene proposta la sottocartella `FluentReaderMCP` |
 | Cartella estranea non vuota | I file presenti non vengono toccati: viene proposta la sottocartella `<cartella>\FluentReaderMCP`. Se anche quella contiene altri file, o se la cartella scelta si chiama già `FluentReaderMCP`, il setup chiede di sceglierne un'altra |
 | La propria cartella utente (`%USERPROFILE%`) | Mai usata direttamente: viene proposta `%USERPROFILE%\FluentReaderMCP` |
 | Installazione esistente di questo prodotto | Riconosciuta **solo** dal registro `fluent-reader-mcp.install.json` legato a quella cartella (o dal journal valido di un'installazione interrotta): stessa versione → **riparazione**, versione precedente → **aggiornamento**, versione più recente → rifiuto (downgrade non supportato) |
@@ -127,22 +139,24 @@ Sono **sempre rifiutati**:
 - **collegamenti simbolici, junction e nomi brevi 8.3** lungo il percorso: il setup chiede di scegliere direttamente la
   cartella reale, che indica nel messaggio;
 - unità non disponibili (scollegate, inesistenti o non pronte);
-- le cartelle di Windows e dei programmi per tutti gli utenti in radice di **ogni** unità (`Windows`, `Program Files`,
-  `Program Files (x86)`, `ProgramData`, `System Volume Information`, `Recovery`, `$Recycle.Bin` e le cartelle di lavoro
-  di setup e ripristino di Windows), e le cartelle indicate dalle variabili `SystemRoot`, `ProgramFiles*`,
-  `ProgramData`, `PUBLIC`;
+- le cartelle riservate a Windows o ai dati comuni in radice di **ogni** unità (`Windows`, `ProgramData`,
+  `System Volume Information`, `Recovery`, `$Recycle.Bin` e le cartelle di lavoro di setup e ripristino di Windows), e
+  le cartelle indicate dalle variabili `SystemRoot`, `ProgramData`, `PUBLIC`;
 - **profili Windows**: la propria cartella utente direttamente, la cartella di un altro utente o quella pubblica,
   `X:\Users` e `X:\Users\<account>\...` su qualsiasi unità (controllo sulla **forma** del percorso, non sui permessi:
   un profilo reindirizzato altrove con un nome diverso non viene riconosciuto);
 - `Roaming` (`%APPDATA%`), OneDrive e `%USERPROFILE%\.claude`, sia dentro sia come contenitore;
 - percorsi troppo lunghi perché il file più profondo resti sotto `MAX_PATH`;
-- cartelle esistenti in cui non si riesce a creare un file di prova (creato e rimosso subito).
+- cartelle in cui non si può scrivere (DEC-C12): in una cartella esistente il setup crea e rimuove un file di prova;
+  per una cartella nuova crea e rimuove, nella cartella esistente più vicina, una sottocartella di prova con dentro un
+  file, perché Windows può permettere nuove cartelle ma non nuovi file (tipicamente nella radice di `C:`). Nessun
+  permesso viene letto o modificato e nessuna elevazione viene chiesta.
 
-**Unità rimovibili** (chiavette, dischi USB che Windows classifica come rimovibili): accettate, con un avviso nella
-conferma: l'unità deve essere collegata **con la stessa lettera** ogni volta che Claude Code avvia il server e per
+**Unità rimovibili** (chiavette, dischi USB che Windows classifica come rimovibili): accettate, con un avviso nel
+riepilogo: l'unità deve essere collegata **con la stessa lettera** ogni volta che Claude Desktop avvia il server e per
 aggiornare o disinstallare. Un disco esterno che Windows classifica come fisso non riceve questo avviso.
 
-**Fuori dalla cartella utente** la conferma avverte che, secondo i permessi di quella posizione, altri account del
+**Fuori dalla cartella utente** il riepilogo avverte che, secondo i permessi di quella posizione, altri account del
 computer potrebbero leggere o modificare i file installati. Il setup **non legge e non modifica permessi o ACL** e non
 garantisce che una cartella fuori dal profilo sia protetta: la scelta della posizione resta dell'utente.
 
@@ -154,28 +168,32 @@ programmi diversi da OneDrive, profili reindirizzati.
   current\app\...                 pacchetto portatile (runtime\node.exe, server\dist\main.js, manifest.json)
   current\setup\...               programma di supporto del setup
   current\installer-files.json    inventario: i file che l'installer possiede
-  fluent-reader-mcp.install.json  versione, profilo, registrazione Claude creata dall'installer
+  fluent-reader-mcp.install.json  versione, profilo, registrazione in Claude Desktop (e quella storica in Claude Code)
   state\install-journal.json      solo durante un'installazione (con le copie di recupero accanto)
   state\uninstall*.               solo durante una disinstallazione (marcatori, copia del programma di supporto)
   uninstall.exe
 ```
 
-#### Copie (backup) della configurazione di Claude Code
+#### Copie (backup) della configurazione
 
-Prima di modificare la registrazione in Claude Code il setup salva una copia di `%USERPROFILE%\.claude.json` in:
+Prima di modificare un file di configurazione di Claude Desktop il setup ne salva una copia in:
 
 ```text
-%LOCALAPPDATA%\FluentReaderMCP-Data\claude-config-backups\<chiave>\claude.json.<data UTC>[-n].bak
+%LOCALAPPDATA%\FluentReaderMCP-Data\desktop-config-backups\<chiave>\claude_desktop_config.json.<data UTC>[-n].bak
 ```
+
+Le copie di `%USERPROFILE%\.claude.json` prese dalle beta 0.1.x stanno, con le stesse regole, in
+`%LOCALAPPDATA%\FluentReaderMCP-Data\claude-config-backups\<chiave>\claude.json.<data UTC>[-n].bak`: il nuovo wizard non
+ne crea altre.
 
 - **Non** nella cartella di installazione (che può stare su un volume o in una cartella leggibile da altri utenti) e
   non in `%LOCALAPPDATA%\FluentReaderMCP` (la cartella di installazione predefinita), ma in `FluentReaderMCP-Data`.
-- **Possono contenere informazioni riservate**: l'intera configurazione di Claude Code, compresi token, chiavi API e
+- **Possono contenere informazioni riservate**: l'intera configurazione del client, compresi token, chiavi API e
   variabili di altri server MCP. Non vanno condivise né allegate a segnalazioni.
 - **Separate per installazione**: la `<chiave>` (32 caratteri esadecimali) deriva dalla cartella di installazione; è la
   stessa fra riparazioni e aggiornamenti della stessa cartella, diversa per due installazioni.
 - Se `%LOCALAPPDATA%` manca, non è locale o non sta dentro il profilo utente, oppure se una delle cartelle è un
-  collegamento o una junction, la modifica di Claude Code viene **rifiutata**: nessuna copia viene salvata altrove (si
+  collegamento o una junction, la modifica della configurazione viene **rifiutata**: nessuna copia viene salvata altrove (si
   può installare solo il server).
 - Il setup non legge né modifica permessi: è l'archivio locale standard dell'utente Windows, non una garanzia di
   riservatezza su un sistema alterato. Il contenuto delle copie non viene mai mostrato né annotato (il registro di
@@ -206,38 +224,86 @@ aperti in sola lettura per i primi byte; non vengono letti impostazioni, feed, a
 modificato. Il percorso viene poi mostrato e va confermato. Nessuno strumento MCP viene invocato sul profilo scelto:
 la prima prova con i propri dati la fa il proprietario.
 
-### Claude Code
+### Claude Desktop
 
-- **Client:** `claude.exe` indicato con Sfoglia o trovato con "Cerca" (solo su richiesta: `PATH`,
-  `%USERPROFILE%\.local\bin\claude.exe`, `%USERPROFILE%\.vscode[-insiders]\extensions\anthropic.claude-code-<versione>-win32-x64\resources\native-binary\claude.exe`,
-  la versione più recente per prima). Viene verificato con `claude --version` e con l'help di `claude mcp add-json` e
-  `claude mcp remove`, che devono offrire `--scope`. Il setup non installa Claude Code.
-- **Registrazione:** solo con la CLI ufficiale, mai riscrivendo `~/.claude.json`:
-  `claude mcp add-json fluent-reader '{"type":"stdio","command":"<inst>\current\app\runtime\node.exe","args":["<inst>\current\app\server\dist\main.js","--profile-dir","<profilo>"],"env":{}}' --scope user`
-  (forma documentata in https://code.claude.com/docs/en/mcp; il JSON passa come un unico argomento, senza shell).
-- **Anteprima** (prima del consenso): nome, scope, eseguibile, entrypoint, profilo, file interessato
-  (`%USERPROFILE%\.claude.json`), claude.exe e versione, azione (aggiunta, nessuna modifica, aggiornamento della voce
-  creata in precedenza, oppure **sostituzione di una voce estranea**, che richiede una seconda conferma specifica).
-  L'anteprima non mostra contenuti della configurazione (di una voce estranea solo comando e numero di argomenti e
-  variabili) e non modifica nulla.
-- **Al momento dell'installazione:** la configurazione deve essere ancora quella dell'anteprima (impronta), altrimenti
-  nulla viene cambiato; copia di backup nella cartella personale (vedi sopra); intento annotato nel registro; eventuale
-  `claude mcp remove` della voce sostituita; `claude mcp add-json`; **rilettura della voce effettivamente salvata dalla
-  CLI**: diventa "dell'installer" solo se corrisponde a quella approvata, e nel registro si annota l'impronta SHA-256
-  del suo JSON canonico **completo** (tutti i campi, anche annidati e sconosciuti; conta solo il contenuto, non l'ordine
-  delle chiavi; gli array restano ordinati). Poi la verifica che tutti gli altri server MCP siano invariati.
-- **Annullamento conservativo:** in caso di errore la voce viene rimossa solo se la sua impronta completa è ancora
-  quella riletta dopo un `add-json` riuscito di questa stessa esecuzione; un `add-json` tentato o fallito non prova
-  nulla. Una voce assente non richiede nulla; una voce cambiata, sostituita o non attribuibile resta com'è. La voce
-  sostituita viene rimessa (identica) solo se il nome è ancora libero. Se l'annullamento non può completarsi, il
-  messaggio lo dice ("serve un tuo intervento") e indica il backup; nulla viene sovrascritto con la forza.
-- **JSON corrotto:** tutto si ferma, il file non viene modificato né ricreato.
-- **`CLAUDE_CONFIG_DIR` impostata:** la posizione della configurazione non è documentata con precisione, quindi la
-  registrazione automatica viene rifiutata (si può installare solo il server).
-- Se si sceglie "Installa solo il server", Claude Code non viene toccato; per registrarlo più tardi basta eseguire di
-  nuovo il setup (riparazione) e scegliere la registrazione.
-- Chiudere le sessioni di Claude Code prima di installare: se un'altra modifica ai server MCP avviene durante la
-  registrazione, la registrazione viene annullata e segnalata.
+Scelta tecnica (DEC-DESKTOP): integrazione conservativa del file JSON, compatibile con l'installer NSIS esistente. Un
+pacchetto `.mcpb` resta un'alternativa futura. Modulo: `installer\setup\desktop.ts`.
+
+**Quale file: selezione assistita.** Nessun metodo documentato stabilisce quale `claude_desktop_config.json` legga una
+data installazione: la documentazione indica `%APPDATA%\Claude`, ma un'app in pacchetto (MSIX, Store, WinGet) può leggere
+una copia privata in `%LOCALAPPDATA%\Packages\<pacchetto>\LocalCache\Roaming\Claude`, e **Modifica configurazione** può
+aprire l'altro file (segnalazioni `anthropics/claude-code#26073` e `#25579`, senza risposta ufficiale al 2026-11-04); è
+stata osservata anche una cartella `%LOCALAPPDATA%\Claude-Data\<identificatore>`. Quindi:
+
+- `desktop-candidates` **elenca** in sola lettura i file con quel nome esatto: sotto `%APPDATA%`, `%LOCALAPPDATA%` e nelle
+  copie private di un pacchetto, nelle cartelle il cui nome comincia con `Claude` e un livello sotto. Nessun percorso,
+  famiglia di pacchetto o identificatore è scritto nel codice; i file non vengono aperti; collegamenti e junction non
+  vengono seguiti.
+- **Propone** un percorso solo se è quello della registrazione di questa installazione, oppure se è l'unico trovato e
+  nessuna app in pacchetto rende possibile un altro file. Altrimenti il campo resta vuoto e l'utente indica il file.
+- `desktop-check` accetta solo un file normale con quel nome, locale, raggiunto senza collegamenti, nelle cartelle
+  dell'utente, fuori dalla cartella di installazione, con JSON valido. **Un file che non esiste non viene creato**:
+  si apre una volta da Claude Desktop, oppure si installa solo il server.
+- Nessun file viene modificato "per tentativi": cambia solo quello selezionato. Se poi non è quello giusto, si esegue di
+  nuovo il setup e se ne seleziona un altro; la voce nel primo resta attribuibile e la disinstallazione la rimuove se è
+  ancora quella.
+- Selezionare non è verificare: né il wizard né la pagina finale dichiarano il collegamento riuscito. La prova è nel
+  client (riavvio completo, `fluent-reader` con nove strumenti).
+- Se una policy ha `isLocalDevMcpEnabled` a 0 (`HKLM` poi `HKCU`, `SOFTWARE\Policies\Claude`; lettura con `reg query`),
+  la registrazione non è disponibile e il server si installa comunque.
+
+**Voce scritta:** esclusivamente `mcpServers.fluent-reader`, nella forma documentata per Claude Desktop:
+`{"command":"<inst>\current\app\runtime\node.exe","args":["<inst>\current\app\server\dist\main.js","--profile-dir","<profilo>"]}`.
+
+**Pagina di conferma** (`desktop-plan`, prima del consenso, senza modifiche): file selezionato, voce, eseguibile,
+entrypoint, profilo, azione (aggiunta, nessuna modifica, aggiornamento della voce scritta in precedenza, oppure
+**sostituzione di una voce estranea**, con una casella di autorizzazione specifica), cartella delle copie e avviso che la
+selezione non è una verifica. Non mostra contenuti della configurazione (di una voce estranea solo comando e numero di
+argomenti e variabili).
+
+**Al momento dell'installazione** (dopo il commit della transazione: un errore qui non annulla il server):
+
+1. la voce e il file devono essere ancora quelli della pagina (impronta), altrimenti nulla cambia;
+2. copia nella cartella personale, confrontata con il contenuto letto;
+3. intento annotato nel registro, con l'impronta SHA-256 del JSON canonico **completo** della voce che sta per essere
+   scritta (così una voce trovata dopo un crash resta riconoscibile);
+4. la modifica è fatta **sul testo**: il membro viene inserito o sostituito sul posto e ogni altro byte resta
+   (formattazione, ordine delle chiavi, numeri che `JSON.parse` arrotonderebbe, BOM, chiavi ripetute altrove); il testo
+   risultante viene analizzato e confrontato con l'originale: se differisce per altro, tutto si ferma;
+5. file temporaneo accanto al target, scritto su disco e riletto; il target deve essere ancora identico a quanto letto,
+   poi la rinomina. Il controllo non è atomico con la rinomina: una modifica in quell'istante non si vede;
+6. rilettura della voce, poi stato `registered` nel registro.
+
+**Annullamento conservativo:** se nulla è stato scritto non c'è nulla da annullare; se il file è ancora esattamente quello
+scritto da questa esecuzione tornano i suoi byte precedenti; se altri l'hanno cambiato ma la voce è ancora nostra cambia
+**solo la voce** (il vecchio file intero non viene mai rimesso sopra le modifiche di terzi); se la voce è stata cambiata
+da altri resta com'è e il messaggio chiede un intervento, indicando la copia.
+
+**Rifiuti senza modifiche:** JSON non valido o UTF-8 non valido (anche file vuoto), struttura diversa da un oggetto,
+`mcpServers` che non è un oggetto, `mcpServers` o `fluent-reader` ripetute, file oltre 16 MiB. In tutti i casi si può
+installare solo il server.
+
+**Voce già presente:** è "dell'installer" solo se ha un'impronta annotata per quel file. Una voce estranea non viene
+sostituita senza la casella specifica. Una voce identica a quella voluta ma non scritta dall'installer non cambia, non
+viene considerata sua e la disinstallazione la lascia.
+
+Prima di installare va chiusa Claude Desktop: il setup non termina processi, e sia il server in uso sia una riscrittura
+del file da parte dell'app possono interferire. "Installa solo il server" non tocca Claude Desktop; per registrarlo più
+tardi basta eseguire di nuovo il setup (riparazione).
+
+### Installazioni delle beta 0.1.x
+
+Le beta 0.1.0 e 0.1.1 registravano il server in Claude Code. Politica attuale:
+
+- il campo `claude` del registro continua a essere letto e viene riportato da riparazioni e aggiornamenti (anche una
+  transazione annullata lo ripristina); il nuovo campo `desktop` è facoltativo, e un registro senza di esso significa
+  "nessuna registrazione in Claude Desktop";
+- `~/.claude.json` è **solo letto**, per dire se la voce esiste ancora; il setup non avvia `claude.exe` e non migra nulla;
+- la voce di Claude Code non viene modificata né rimossa, nemmeno dalla disinstallazione, e non implica una voce in
+  Claude Desktop. La pagina di conferma e la fine della disinstallazione lo segnalano, indicando
+  `claude mcp remove fluent-reader --scope user`;
+- finché il server resta nella stessa cartella la voce continua a funzionare (`current\app\...` non cambia); un cambio di
+  profilo fatto col nuovo wizard non la aggiorna.
 
 ### Installazione, riparazione, aggiornamento
 
@@ -283,10 +349,11 @@ scritto).
 propone di completarla da sé (vedi "Recupero da un nuovo setup"); negli altri casi quegli
 elementi vanno cancellati a mano. Così nessuna installazione nuova eredita lo stato di una precedente.
 
-Se la versione installata è in uso (Claude Code aperto) lo scambio non riesce (`attivazione della nuova versione (chiudi
-Claude Code se è aperto)`): la versione installata resta al suo posto, ma il recupero automatico può fermarsi per il
-limite descritto sotto. Chiudere Claude Code (CLI, estensione VS Code) **prima** di riparare o aggiornare. Il percorso
-registrato in Claude Code (`current\app\...`) non cambia fra le versioni. Nessun aggiornamento automatico online.
+Se la versione installata è in uso (Claude Desktop aperto, oppure una sessione di Claude Code che usa la voce storica)
+lo scambio non riesce (`attivazione della nuova versione (chiudi Claude Desktop se è aperto)`): la versione installata
+resta al suo posto, ma il recupero automatico può fermarsi per il limite descritto sotto. Chiudere i client **prima** di
+riparare o aggiornare. Il percorso registrato nel client (`current\app\...`) non cambia fra le versioni. Nessun
+aggiornamento automatico online.
 
 #### Limite noto del recupero
 
@@ -340,12 +407,13 @@ La disinstallazione è riprendibile (`installer\setup\uninstall.ts`):
 
 1. **preflight senza modifiche:** registro (che deve indicare proprio questa cartella), nessuna installazione
    interrotta, inventari, nessun file estraneo né collegamento nelle cartelle dell'installazione, programma di
-   supporto completo, stato della voce di Claude Code;
-2. **voce di Claude Code:** rimossa solo se la sua impronta completa è ancora quella annotata. Esiti: non
-   configurata, già assente, rimossa (si prosegue); modificata, non attribuibile, configurazione illeggibile,
-   claude.exe non trovato (dopo l'eventuale ricerca, il disinstallatore spiega che la voce resterebbe in Claude Code
-   puntando a file rimossi e chiede se proseguire, con "No" come scelta predefinita); errore della CLI o voce ancora
-   presente (ci si ferma);
+   supporto completo, stato della voce di Claude Desktop;
+2. **voce di Claude Desktop:** rimossa, sul testo del file così com'è in quel momento, solo se la sua impronta completa è
+   ancora quella annotata; nessuna copia viene ripristinata sopra il file. Esiti: non configurata, già assente, file non
+   più presente, rimossa (si prosegue); modificata da altri o file illeggibile/non più accettabile (il disinstallatore
+   spiega che la voce resterebbe in Claude Desktop e chiede se proseguire, con "No" come scelta predefinita); errore di
+   scrittura o file cambiato in quell'istante (ci si ferma, si può ripetere). La voce lasciata in un file selezionato in
+   precedenza viene rimossa alle stesse condizioni, oppure segnalata. La voce storica di Claude Code non viene toccata;
 3. **copia di recupero del programma di supporto** (`node.exe` e `setup\`, con il proprio inventario e gli SHA-256
    dell'installazione) in `state\uninstall-helper`, poi il marcatore `state\uninstall.json` (fase `files`), legato
    alla generazione del registro;
@@ -385,8 +453,8 @@ Il programma di supporto rimuove `current`, `.staging` o `previous` soltanto in 
 (percorsi canonici, nessun collegamento o junction, nessun `..`); senza registro rifiuta sempre: le cartelle di
 un'installazione non ancora registrata le rimuove solo la transazione che le ha create, tramite il suo journal.
 Non vengono toccati il profilo Fluent Reader (`fluent-reader.db`, `config.json`, articoli, feed), gli altri server
-MCP, le altre impostazioni di Claude Code, il fork, i valori del registro di altri programmi e le copie della
-configurazione in `%LOCALAPPDATA%\FluentReaderMCP-Data\claude-config-backups\<chiave>\`, che restano finché l'utente non
+MCP, le altre impostazioni di Claude Desktop, Claude Code, il fork, i valori del registro di altri programmi e le copie
+della configurazione in `%LOCALAPPDATA%\FluentReaderMCP-Data\`, che restano finché l'utente non
 decide che cosa farne (alla fine il disinstallatore mostra la cartella in cui sono). Un file estraneo nelle cartelle
 dell'installazione ferma la disinstallazione nel preflight, prima di qualsiasi rimozione.
 
@@ -397,20 +465,27 @@ sintetiche, comprese le interruzioni in ogni fase. Le parti dello script NSIS (W
 HKCU con advapi32 e le istruzioni `WriteReg*`/`DeleteReg*`, il controllo degli a capo, la verifica del marcatore
 finale, la cancellazione della copia di recupero dall'elenco compilato, CopyFiles) sono verificate solo staticamente
 e tramite un modello che le riproduce: vanno provate con l'installer compilato, compreso il caso di un processo
-terminato durante l'installazione o la disinstallazione. La checklist del collaudo manuale (con le prove distruttive
+terminato durante l'installazione o la disinstallazione. La modifica del file di Claude Desktop è provata con fixture
+sintetiche: **nessun test automatico dimostra che Claude Desktop reale legga il file selezionato o carichi i nove
+strumenti**. Vanno provati anche l'aspetto delle pagine (testo aggiornato in pagina, lunghezza delle righe) e il
+comportamento su `LocalCache` di un'app in pacchetto. La checklist del collaudo manuale (con le prove distruttive
 riservate a una VM o a un ambiente sacrificabile) è in [WINDOWS-SMOKE-TEST.md](WINDOWS-SMOKE-TEST.md).
 
 ### Privacy
 
 Il wizard dichiara che il profilo è letto in sola lettura, che il server non fa richieste di rete proprie, che i
-risultati degli strumenti possono essere inviati da Claude Code al servizio Anthropic, che la beta espone nove
+risultati degli strumenti possono essere inviati da Claude Desktop al servizio Anthropic, che la beta espone nove
 strumenti in sola lettura (la ricerca lavora solo sui dati già salvati) e che non viene installato alcun servizio. Il setup non scrive file di log; i
 messaggi e i file di risultato non contengono contenuti della configurazione Claude, del
 database, URL dei feed, titoli o token. Il registro di installazione e i backup restano sulla macchina dell'utente.
 
-## Registrazione manuale (alternativa)
+## Registrazione manuale
 
-Se la registrazione automatica non è possibile, da PowerShell 7.3 o successivo (Windows PowerShell 5.1 non passa
+**Claude Desktop**, se la registrazione del wizard non è possibile: dopo una copia di sicurezza, aggiungi nella sezione
+`mcpServers` del file che Claude Desktop usa davvero la voce `fluent-reader` indicata in "Claude Desktop" (nel JSON le
+barre rovesciate vanno raddoppiate), lasciando intatto il resto, poi riavvia del tutto l'app.
+
+**Claude Code**, che il wizard non configura: da PowerShell 7.3 o successivo (Windows PowerShell 5.1 non passa
 correttamente le virgolette ai programmi esterni):
 
 ```powershell
@@ -420,5 +495,5 @@ claude mcp add-json fluent-reader $json --scope user
 claude mcp get fluent-reader
 ```
 
-Una voce aggiunta a mano non è "dell'installer": il disinstallatore la lascia al suo posto
-(`claude mcp remove fluent-reader --scope user` per toglierla).
+Una voce aggiunta a mano non è "dell'installer": il disinstallatore la lascia al suo posto (in Claude Code,
+`claude mcp remove fluent-reader --scope user` per toglierla).

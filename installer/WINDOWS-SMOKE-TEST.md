@@ -1,12 +1,42 @@
-# Collaudo manuale dell'installer Windows (FR-MCP-04-BETA-RELEASE-01)
+# Collaudo manuale dell'installer Windows (FR-MCP-04-BETA-UX-01)
 
 Checklist per il proprietario della repository: collaudo del wizard NSIS **compilato** di Fluent Reader MCP prima di
-qualsiasi distribuzione. I test automatici (`npm.cmd test`) provano il programma di supporto su cartelle sintetiche e
-lo script NSIS solo staticamente; questa checklist copre ciò che resta: il wizard reale, Windows, Claude Code reale.
+qualsiasi distribuzione. I test automatici (`npm.cmd test`) provano il programma di supporto su cartelle e configurazioni
+sintetiche e lo script NSIS solo staticamente; questa checklist copre ciò che resta: il wizard reale, Windows, **Claude
+Desktop reale**.
+
+Vale per il wizard Desktop-first. **Non si applica alla build 0.1.1 già costruita**, che registra in Claude Code e conferma
+la cartella con una finestra: per quella resta la versione di questo documento al commit `bd3337d`.
 
 Riferimenti per il comportamento atteso: [INSTALLER.md](INSTALLER.md) (installer, recupero, disinstallazione) e
 [PACKAGING.md](PACKAGING.md) (pacchetto portatile). In caso di differenza fra questa checklist e il comportamento
 osservato, annota la differenza: non adattare l'esito atteso a quello osservato.
+
+## Percorso rapido (da qui si comincia)
+
+Non serve eseguire tutte le prove una alla volta. Queste otto, in quest'ordine, coprono i percorsi principali e danno una
+risposta utile. Le altre si eseguono se una di queste fallisce, o quando serve una verifica più ampia prima di una
+distribuzione.
+
+| # | Che cosa | Prove | Dove | Tempo |
+|---|---|---|---|---|
+| 1 | Si prepara una copia di sicurezza indipendente e si annota quale file apre **Modifica configurazione** | C.3, C.4, C.5 | Qualsiasi | 10 min |
+| 2 | Cartelle: valida senza finestre, `D:\` mostrata nel campo, `D:\Windows` rifiutata, `D:\Program Files (x86)\FRMCP` accettata, `C:\Program Files\FRMCP` rifiutata con messaggio chiaro; poi **Annulla** | N-03, N-04, N-08, N-19 | Anche la macchina personale: non installa nulla | 5 min |
+| 3 | Installazione con registrazione nel file giusto | N-13 | Account di prova o VM | 5 min |
+| 4 | **La prova che conta:** Claude Desktop reale mostra `fluent-reader` con nove strumenti e le altre voci, come `foundry-mcp`, funzionano ancora | N-14, N-15 | Come il passo 3 | 5 min |
+| 5 | Più file candidati: il setup non sceglie da solo e tocca solo quello selezionato | N-20 | Come il passo 3 | 5 min |
+| 6 | Riparazione ripetuta: nessuna modifica al file, nessun nuovo backup | U-02 | Come il passo 3 | 5 min |
+| 7 | Sopra un'installazione Code-first, se ne hai una di prova: Code intatto | U-08 | Come il passo 3 | 5 min |
+| 8 | Disinstallazione: via solo `fluent-reader`, gli altri server e i backup restano | D-01, D-05 | Solo VM, snapshot o account di prova | 5 min |
+
+**Automatiche: non vanno ripetute a mano.** JSON vuoto, non valido o con struttura diversa; voce estranea; modifica
+concorrente; errore di scrittura; annullamento conservativo; voce modificata da terzi alla disinstallazione; BOM, CRLF e
+byte invariati; policy; proposte con più candidati. Sono in `test/packaging/setup-helper.test.ts`, `setup-lifecycle.test.ts`
+e `nsis-script.test.ts`, su sole fixture sintetiche. **Non dimostrano che Claude Desktop reale legga il file selezionato**:
+per questo esiste il passo 4.
+
+**Manuali avanzate:** le altre prove delle categorie 1 e 2 (sezioni D ed E). **Solo in ambiente isolato:** categoria 3
+(interruzioni, file bloccati, recupero manuale, sezioni F e G).
 
 ## A. Scopo e prerequisiti
 
@@ -15,17 +45,17 @@ osservato, annota la differenza: non adattare l'esito atteso a quello osservato.
 | Installer | Nome del file (`FluentReaderMCP-Setup-v<versione>-beta-win-x64.exe`), versione dichiarata, commit e `scriptsDirty` dal `.build-report.json` accanto |
 | Identità dell'EXE | SHA-256 calcolato sul file (`Get-FileHash -Algorithm SHA256 <exe>`), confrontato con il `.sha256` e con il report accanto all'EXE |
 | Windows | Edizione, versione e build (`winver`), architettura x64 |
-| Claude Code | Presente o no; versione (`claude --version`); CLI o estensione VS Code |
+| Claude Desktop | Presente o no; versione (Guida o Informazioni); tipo di installazione (`Get-AppxPackage *Claude*` per sapere se è un pacchetto: annota solo se presente e il nome) |
+| Claude Code | Solo per U-08: presente o no; versione (`claude --version`) |
 | Profilo Fluent Reader | Presente o no; si usa **una copia** (vedi C) |
 | Unità secondarie | Lettere disponibili (`D:`, `H:`...), tipo (fisso, rimovibile), file system. **Facoltative**: le prove che ne hanno bisogno si segnano NON ESEGUITO se l'unità non c'è |
 | Ambiente | Macchina personale, account Windows di prova, VM o snapshot: indicarlo per ogni prova (sezione H) |
 
-**Quale EXE.** Gli artefatti 0.1.0 in `D:\FluentReaderMCP-build\beta-release-01\` sono una build **preliminare**, prodotta
-con `--allow-dirty` da un albero con modifiche non committate: servono a verificare il packaging, non sono la build
-finale, e lo script NSIS è cambiato dopo (messaggio del programma di supporto senza risultato, vedi F). Il collaudo
-che vale per il rilascio si fa sulla build finale pulita **0.1.1** (`FluentReaderMCP-Setup-v0.1.1-beta-win-x64.exe`,
-`gitDirty: false` e `scriptsDirty: false` nei report). Lo SHA-256 dell'EXE si **annota a ogni collaudo**
-dal file effettivamente provato: non esiste un valore fisso in questo documento, perché cambia a ogni ricompilazione.
+**Quale EXE.** Il collaudo che vale è quello su una build pulita **successiva a questa milestone** (`gitDirty: false` e
+`scriptsDirty: false` nei report). Se il numero di versione non cambia rispetto alla 0.1.1, un'installazione 0.1.1 esistente
+viene trattata come **riparazione**, non come aggiornamento: annota quale delle due vedi. Lo SHA-256 dell'EXE si **annota a
+ogni collaudo** dal file effettivamente provato: non esiste un valore fisso in questo documento, perché cambia a ogni
+ricompilazione.
 
 ## B. Classificazione delle prove
 
@@ -34,32 +64,30 @@ categoria.**
 
 **Categoria 1 — reversibili.** Non installano nulla: apertura del wizard, navigazione fra le pagine, scelta e rifiuto
 delle cartelle, lettura dei messaggi, annullamento prima dell'installazione, verifica dei nove strumenti su un ambiente
-di prova. L'unica scrittura è il file di prova che il controllo della cartella crea e rimuove subito in una cartella
-esistente. Ambiente: anche la macchina personale.
+di prova. L'unica scrittura è la prova che il controllo della cartella crea e rimuove subito (un file nella cartella
+esistente, oppure una sottocartella di prova nella cartella esistente più vicina). Ambiente: anche la macchina personale.
 
-**Categoria 2 — modificano configurazioni.** Registrazione in Claude Code, nuova installazione, riparazione,
-aggiornamento, creazione e migrazione dei backup di Claude Code. Scrivono file, valori HKCU e (con il consenso)
-`%USERPROFILE%\.claude.json` tramite la CLI. Ambiente: preferibilmente un **account Windows di prova** o una VM, con
-copie di sicurezza indipendenti (sezione C) fatte prima di iniziare.
+**Categoria 2 — modificano configurazioni.** Registrazione in Claude Desktop, nuova installazione, riparazione,
+aggiornamento, creazione e migrazione dei backup. Scrivono file, valori HKCU e (con il consenso) il
+`claude_desktop_config.json` selezionato. Ambiente: preferibilmente un **account Windows di prova** o una VM, con copie di
+sicurezza indipendenti (sezione C) fatte prima di iniziare. Sulla macchina personale, solo con la tua decisione esplicita e
+con la copia indipendente del punto C.4.
 
 **Categoria 3 — intenzionalmente distruttive.** Disinstallazione, simulazione di errori, interruzione dei processi,
 recupero manuale, file bloccati, artefatti residui. Ambiente: **solo** VM, snapshot o installazione sacrificabile.
-Nessuna di queste prove va eseguita sul profilo personale reale né sulla configurazione di Claude Code di uso
-quotidiano.
+Nessuna di queste prove va eseguita sul profilo personale reale né sulla configurazione di Claude di uso quotidiano.
 
 ## C. Preparazione dell'ambiente
 
 1. **Snapshot o account di prova.** Per le categorie 2 e 3: crea uno snapshot della VM (annota nome e data) oppure
-   usa un account Windows dedicato. La registrazione automatica rifiuta `CLAUDE_CONFIG_DIR`: una configurazione di
-   Claude Code separata si ottiene solo con un altro account Windows (o una VM), dove `%USERPROFILE%\.claude.json` è
-   quello dell'account di prova.
-2. **Configurazione Claude sintetica.** Nell'ambiente di prova, accedi a Claude Code e aggiungi una o due voci MCP
-   fittizie senza segreti, per verificare che restino invariate. Esempio da PowerShell 7.3 o successivo (Windows
-   PowerShell 5.1 non passa correttamente le virgolette); nessun token, nessuna chiave:
+   usa un account Windows dedicato, dove la configurazione di Claude Desktop è quella dell'account di prova.
+2. **Configurazione Claude Desktop sintetica.** Nell'ambiente di prova apri Claude Desktop una volta, chiudilo, e
+   annota **quale file apre Impostazioni → Modifica configurazione**. Aggiungi a mano una o due voci MCP fittizie senza
+   segreti, per verificare che restino invariate. Nessun token, nessuna chiave; `foundry-mcp` è il caso di regressione
+   da conservare, se presente:
 
-   ```powershell
-   claude mcp add-json smoke-other '{"type":"stdio","command":"C:\\Windows\\System32\\cmd.exe","args":["/c","exit"],"env":{}}' --scope user
-   claude mcp list
+   ```json
+   { "mcpServers": { "smoke-other": { "command": "C:\\Windows\\System32\\cmd.exe", "args": ["/c", "exit"] } } }
    ```
 
    Non usare negli esempi o nelle evidenze chiavi API, token, URL privati o voci della propria configurazione reale.
@@ -68,10 +96,11 @@ quotidiano.
    copia, non sul profilo originale.
 4. **Copie di sicurezza indipendenti.** Prima di ogni prova di categoria 2 o 3, copia in una **cartella personale
    sicura** dell'account (per esempio `%USERPROFILE%\FRMCP-smoke\backup-<data>`, non condivisa, non sincronizzata):
-   `%USERPROFILE%\.claude.json`, la cartella del profilo usata e, se esiste, `%LOCALAPPDATA%\FluentReaderMCP-Data`.
-   Queste copie contengono dati riservati: non vanno condivise né allegate a segnalazioni. **Il contenuto di
-   `.claude.json` non va mai inviato** a nessuno, nemmeno per la review.
-5. **Hash iniziali.** Con Claude Code e Fluent Reader chiusi, registra gli SHA-256 degli elementi verificati in una
+   **ogni** `claude_desktop_config.json` presente (`%APPDATA%\Claude`, le copie sotto `%LOCALAPPDATA%\Packages\Claude_*`,
+   eventuali altre cartelle `Claude*`), `%USERPROFILE%\.claude.json` se esiste, la cartella del profilo usata e, se esiste,
+   `%LOCALAPPDATA%\FluentReaderMCP-Data`. Queste copie contengono dati riservati: non vanno condivise né allegate a
+   segnalazioni. **Il contenuto di quei file non va mai inviato** a nessuno, nemmeno per la review.
+5. **Hash iniziali.** Con Claude Desktop e Fluent Reader chiusi, registra gli SHA-256 degli elementi verificati in una
    cartella di evidenze personale:
 
    ```powershell
@@ -79,22 +108,22 @@ quotidiano.
    New-Item -ItemType Directory -Force $ev | Out-Null
    Get-ChildItem -LiteralPath "D:\FRMCP-smoke\profilo" -Recurse -File | Get-FileHash -Algorithm SHA256 |
        Select-Object Hash, Path | Export-Csv "$ev\profilo-prima.csv" -NoTypeInformation
-   Get-FileHash -Algorithm SHA256 "$env:USERPROFILE\.claude.json" | Select-Object Hash, Path |
-       Export-Csv "$ev\claude-json-prima.csv" -NoTypeInformation
-   claude mcp list > "$ev\mcp-list-prima.txt"   # solo nell'ambiente sintetico
+   # sostituisci con il file annotato al punto 2
+   $cfg = "$env:APPDATA\Claude\claude_desktop_config.json"
+   Get-FileHash -Algorithm SHA256 $cfg | Select-Object Hash, Path | Export-Csv "$ev\desktop-config-prima.csv" -NoTypeInformation
    ```
 
    Il confronto si fa con
    `Compare-Object (Import-Csv "$ev\profilo-prima.csv") (Import-Csv "$ev\profilo-dopo.csv") -Property Hash, Path`.
-   Nota: Claude Code riscrive `.claude.json` a ogni avvio (statistiche e stato interno), quindi il suo hash serve solo
-   per confrontare il backup del setup con lo stato subito prima dell'installazione; l'invarianza delle altre voci
-   MCP si verifica con `claude mcp list` / `claude mcp get <nome>` nell'ambiente sintetico.
-6. **Chiusura delle applicazioni.** Prima di installare, riparare, aggiornare o disinstallare: chiudi Claude Code (CLI
-   e estensione VS Code) e Fluent Reader, salvo nelle prove che richiedono esplicitamente un'applicazione aperta.
+   Claude Desktop può riscrivere il proprio file (preferenze): l'hash serve a confrontare il backup del setup con lo stato
+   subito prima dell'installazione; l'invarianza delle altre voci si verifica confrontando il JSON nell'ambiente sintetico:
+   `(Get-Content -Raw $cfg | ConvertFrom-Json).mcpServers | ConvertTo-Json -Depth 10`.
+6. **Chiusura delle applicazioni.** Prima di installare, riparare, aggiornare o disinstallare: chiudi del tutto Claude
+   Desktop (anche dall'area di notifica) e Fluent Reader, salvo nelle prove che richiedono esplicitamente un'applicazione
+   aperta. Il setup non termina processi.
 7. **Installazioni principali e secondarie.** Usa cartelle di prova dedicate e annotale (per esempio installazione
    principale nella cartella predefinita, secondaria in `D:\FRMCP-smoke\inst2`). Non installare due prove nella stessa
-   cartella se la prova non lo chiede. Le copie della configurazione di Claude Code sono separate per cartella di
-   installazione.
+   cartella se la prova non lo chiede. Le copie della configurazione sono separate per cartella di installazione.
 8. **Ripristino dello snapshot.** Dopo le prove di categoria 3, e ogni volta che un esito è FAIL o incerto, ripristina
    lo snapshot (o elimina l'account di prova) invece di riparare a mano; annota quando lo hai fatto. Sulla macchina
    personale, dopo una prova di categoria 2, ripristina dalla copia del punto 4 solo i file che hai salvato tu.
@@ -116,50 +145,54 @@ categoria 1 si fermano con **Annulla** prima della pagina di installazione.
 - Preparazione: wizard aperto.
 - Azione: leggi benvenuto e pagina di riepilogo/informativa.
 - Atteso: nove strumenti in sola lettura; la ricerca degli articoli lavora solo sui dati già salvati; nessun servizio
-  Windows; il server non fa richieste di rete proprie; i risultati possono essere inviati da Claude Code al servizio
-  Anthropic; Claude Desktop va configurato a mano.
+  Windows; il server non fa richieste di rete proprie; i risultati possono essere inviati da Claude Desktop al servizio
+  Anthropic.
 - Fallimento: "sette" o "otto" strumenti, ricerca "non disponibile", affermazioni diverse da INSTALLER.md.
 - Evidenza: screenshot delle due pagine.
 
-**N-03 — Cartella predefinita** (cat. 1)
+**N-03 — Cartella predefinita, nessuna finestra** (cat. 1)
 - Preparazione: `%LOCALAPPDATA%\FluentReaderMCP` assente.
 - Azione: pagina della cartella, Avanti senza cambiare nulla.
-- Atteso: conferma con la destinazione effettiva `%LOCALAPPDATA%\FluentReaderMCP`, usata solo dopo OK; Annulla resta
-  sulla pagina.
-- Fallimento: destinazione diversa da quella mostrata; cartella creata prima dell'installazione.
-- Evidenza: testo della conferma; `Test-Path` della cartella dopo Annulla.
+- Atteso: **nessuna finestra** «Continuare con questa cartella?»; si passa direttamente alla pagina del profilo; il
+  riepilogo mostra destinazione `%LOCALAPPDATA%\FluentReaderMCP` e "Nuova installazione". Tornando indietro la cartella è
+  ancora assente.
+- Fallimento: finestra di conferma; destinazione diversa da quella mostrata; cartella creata prima dell'installazione.
+- Evidenza: screenshot del riepilogo; `Test-Path` della cartella dopo Annulla.
 
 **N-04 — Radice `D:\`** (cat. 1, se `D:` esiste)
-- Azione: Sfoglia → `D:\`.
-- Atteso: la radice non viene usata; viene proposta `D:\FluentReaderMCP`, controllata con tutte le regole.
-- Fallimento: proposta di installare direttamente in `D:\`.
-- Evidenza: testo della conferma.
+- Azione: Sfoglia → `D:\`, Avanti.
+- Atteso: la pagina **resta**; il campo ora mostra `D:\FluentReaderMCP` e il testo dice perché; nessuna finestra. Un secondo
+  Avanti prosegue con quella destinazione.
+- Fallimento: si passa alla pagina successiva senza che il campo sia cambiato; proposta di installare direttamente in
+  `D:\`; testo tagliato o illeggibile.
+- Evidenza: screenshot della pagina dopo il primo Avanti.
 
 **N-05 — Unità `H:\`** (cat. 1, solo se disponibile; altrimenti NON ESEGUITO)
 - Azione: Sfoglia → `H:\`, poi una sottocartella nuova.
-- Atteso: come N-04; se `H:` è rimovibile, avviso che l'unità deve avere sempre la stessa lettera.
+- Atteso: come N-04; se `H:` è rimovibile, il riepilogo avverte che l'unità deve avere sempre la stessa lettera.
 - Fallimento: accettazione della radice; avviso mancante su unità rimovibile.
-- Evidenza: tipo di unità (`Get-Volume -DriveLetter H`), testo della conferma.
+- Evidenza: tipo di unità (`Get-Volume -DriveLetter H`), screenshot del riepilogo.
 
 **N-06 — Cartella nuova e cartella vuota** (cat. 1)
 - Preparazione: `D:\FRMCP-smoke\vuota` creata vuota; `D:\FRMCP-smoke\nuova` inesistente.
 - Azione: scegli l'una e poi l'altra.
-- Atteso: entrambe accettate; quella inesistente non viene creata finché l'installazione non parte; fuori dalla
-  cartella utente, avviso sui permessi della posizione.
-- Fallimento: rifiuto; creazione anticipata; avviso mancante.
-- Evidenza: testo della conferma; `Test-Path` dopo Annulla.
+- Atteso: entrambe accettate senza finestre; quella inesistente non viene creata finché l'installazione non parte; nessun
+  residuo del controllo di scrittura; nel riepilogo, fuori dalla cartella utente, avviso sui permessi della posizione.
+- Fallimento: rifiuto; creazione anticipata; elementi `.fluent-reader-mcp-check-*` residui; avviso mancante.
+- Evidenza: screenshot del riepilogo; `Get-ChildItem -Force D:\FRMCP-smoke` dopo Annulla.
 
 **N-07 — Cartella estranea non vuota** (cat. 1)
 - Preparazione: `D:\FRMCP-smoke\estranea` con un file di testo qualsiasi.
-- Azione: scegli `estranea`; poi crea `estranea\FluentReaderMCP` con un file e riprova; poi scegli direttamente una
+- Azione: scegli `estranea`, Avanti; poi crea `estranea\FluentReaderMCP` con un file e riprova; poi scegli direttamente una
   cartella chiamata `FluentReaderMCP` non vuota.
-- Atteso: prima proposta `estranea\FluentReaderMCP`, file esistenti mai toccati; se anche la sottocartella contiene
-  file, o se la cartella scelta si chiama già `FluentReaderMCP`, richiesta di sceglierne un'altra.
-- Fallimento: uso della cartella non vuota; qualsiasi file estraneo modificato.
-- Evidenza: messaggi; hash dei file di prova prima e dopo.
+- Atteso: al primo Avanti la pagina resta e il campo mostra `estranea\FluentReaderMCP`, file esistenti mai toccati; se anche
+  la sottocartella contiene file, o se la cartella scelta si chiama già `FluentReaderMCP`, un errore chiede di sceglierne
+  un'altra.
+- Fallimento: uso della cartella non vuota; cambio di destinazione non visibile; qualsiasi file estraneo modificato.
+- Evidenza: screenshot, messaggi; hash dei file di prova prima e dopo.
 
-**N-08 — Cartelle di sistema e profili** (cat. 1)
-- Azione: prova `C:\Windows`, `C:\Program Files\FRMCP`, `C:\ProgramData\FRMCP`, `%USERPROFILE%` (atteso: proposta di
+**N-08 — Cartelle riservate e profili** (cat. 1)
+- Azione: prova `C:\Windows`, `D:\Windows`, `C:\ProgramData\FRMCP`, `D:\ProgramData`, `%USERPROFILE%` (atteso: il campo mostra
   `%USERPROFILE%\FluentReaderMCP`), `%APPDATA%\FRMCP`, `C:\Users\Public\FRMCP`, una cartella OneDrive se presente,
   `%USERPROFILE%\.claude\FRMCP`.
 - Atteso: rifiuto con motivo per ciascuna (salvo la proposta per `%USERPROFILE%`).
@@ -186,105 +219,133 @@ categoria 1 si fermano con **Annulla** prima della pagina di installazione.
 
 **N-11 — Unità rimovibile** (cat. 1, solo se disponibile)
 - Azione: scegli una cartella su chiavetta USB classificata da Windows come rimovibile.
-- Atteso: accettata con avviso sulla lettera di unità.
+- Atteso: accettata con avviso sulla lettera di unità nel riepilogo.
 - Fallimento: avviso assente; rifiuto senza motivo.
-- Evidenza: `Get-Volume` (DriveType), testo della conferma.
+- Evidenza: `Get-Volume` (DriveType), screenshot del riepilogo.
 
 **N-12 — Installazione del solo server** (cat. 2)
 - Preparazione: sezione C completa; cartella nuova di prova; copia del profilo.
 - Azione: profilo con Sfoglia → conferma informativa → "Installa solo il server" → installazione.
-- Atteso: installazione completata; struttura come in INSTALLER.md (`current\app`, `current\setup`,
-  `current\installer-files.json`, `fluent-reader-mcp.install.json`, `uninstall.exe`); nessun `state\install-journal.json`
-  residuo; voce in "App installate" per l'utente corrente; `.claude.json` non modificato dal setup (`claude mcp list`
-  invariato).
+- Atteso: la pagina di conferma della modifica non compare; installazione completata; struttura come in INSTALLER.md
+  (`current\app`, `current\setup`, `current\installer-files.json`, `fluent-reader-mcp.install.json`, `uninstall.exe`); nessun
+  `state\install-journal.json` residuo; voce in "App installate" per l'utente corrente; `claude_desktop_config.json` non
+  modificato (hash uguale); nessuna cartella `desktop-config-backups`.
 - Fallimento: errori; journal o `.staging`/`previous` residui; voce MCP aggiunta.
-- Evidenza: elenco della cartella (`Get-ChildItem -Force`), `claude mcp list` prima/dopo (ambiente sintetico).
+- Evidenza: elenco della cartella (`Get-ChildItem -Force`), hash del file prima/dopo.
 
-**N-13 — Registrazione in Claude Code** (cat. 2, solo ambiente di prova)
-- Preparazione: Claude Code chiuso; `mcp-list-prima.txt` e hash di `.claude.json` registrati subito prima.
-- Azione: pagina Claude Code → claude.exe con Sfoglia o Cerca → consenso → anteprima → installazione.
-- Atteso: anteprima con nome `fluent-reader`, scope `user`, eseguibile `<installazione>\current\app\runtime\node.exe`,
-  entrypoint, profilo, azione "aggiunta"; nessun contenuto della configurazione mostrato; dopo l'installazione
-  `claude mcp get fluent-reader` corrisponde all'anteprima; le voci fittizie di C.2 identiche.
-- Fallimento: voce diversa dall'anteprima; altre voci cambiate; contenuti della configurazione mostrati.
-- Evidenza: screenshot dell'anteprima (senza dati personali), `claude mcp list` prima/dopo.
+**N-13 — Registrazione in Claude Desktop** (cat. 2, solo ambiente di prova)
+- Preparazione: Claude Desktop chiuso; hash del file annotato in C.2 registrato subito prima; voci fittizie presenti.
+- Azione: pagina Claude Desktop: lascia il percorso proposto o indica il file annotato in C.2 con Sfoglia → Avanti →
+  leggi la pagina di conferma → spunta l'autorizzazione → Installa.
+- Atteso: nessuna ricerca di `claude.exe`, nessuna menzione di Claude Code come client; la pagina di conferma mostra il
+  file selezionato, `mcpServers.fluent-reader`, eseguibile `<installazione>\current\app\runtime\node.exe`, entrypoint, profilo,
+  la cartella delle copie e l'avviso che la selezione non è una verifica; nessun contenuto della configurazione. Senza
+  spunta non si prosegue. Alla fine il messaggio non dichiara il collegamento riuscito e chiede di verificarlo nell'app.
+  Nel file: la voce come da pagina, le voci fittizie e il resto identici (byte per byte fuori dalla voce).
+- Fallimento: voce diversa dalla pagina; altre voci, preferenze o formattazione cambiate; un altro file modificato; contenuti
+  mostrati; collegamento dichiarato riuscito.
+- Evidenza: screenshot della pagina (senza dati personali), confronto del file nell'ambiente sintetico.
 
-**N-14 — Nove strumenti** (cat. 1 sull'ambiente di prova già installato)
-- Preparazione: installazione di N-12 o N-13; copia del profilo.
-- Azione: con la voce registrata (N-13) apri Claude Code e usa `/mcp` → `fluent-reader` → elenco degli strumenti.
-  Senza registrazione, crea un file di configurazione temporaneo con lo stesso JSON della voce e avvia
-  `claude --strict-mcp-config --mcp-config "<file>"`, poi `/mcp`: la configurazione utente non viene modificata.
+**N-14 — Nove strumenti in Claude Desktop reale** (cat. 1 sull'ambiente di prova già installato)
+- Preparazione: installazione di N-13; copia del profilo.
+- Azione: chiudi del tutto Claude Desktop (anche dall'area di notifica), riaprilo, guarda i server MCP locali nelle
+  impostazioni e l'elenco degli strumenti di `fluent-reader`.
 - Atteso: server connesso; esattamente `get_article`, `get_group`, `get_rule_chain`, `get_source`, `list_articles`,
-  `list_groups`, `list_rules`, `list_sources`, `search_articles`.
-- Fallimento: server non connesso; uno strumento in meno o in più.
-- Evidenza: elenco dei nomi (non risultati con dati personali).
+  `list_groups`, `list_rules`, `list_sources`, `search_articles`; le voci fittizie ancora presenti.
+- Fallimento: uno strumento in meno o in più; altre voci sparite. **Server assente:** non è ancora un difetto
+  dell'installer: controlla se il file selezionato è quello attivo (C.2, N-20), ed è comunque un'osservazione da annotare,
+  con la versione e il tipo di installazione di Claude Desktop.
+- Evidenza: elenco dei nomi (non risultati con dati personali); file selezionato; tipo di installazione.
 
 **N-15 — Lettura dei dati Fluent Reader** (cat. 1 su copia del profilo)
-- Azione: in Claude Code chiedi l'elenco delle fonti (`list_sources`), un articolo (`get_article`), una ricerca
+- Azione: in Claude Desktop chiedi l'elenco delle fonti (`list_sources`), un articolo (`get_article`), una ricerca
   (`search_articles`).
 - Atteso: risposte coerenti con il profilo; nessun errore di database o di lock.
 - Fallimento: errori; dati di un altro profilo.
 - Evidenza: esito (sì/no) e codici di errore; **non** annotare titoli, URL o contenuti degli articoli.
 
 **N-16 — Profilo non modificato** (cat. 1)
-- Azione: chiudi Claude Code; ricalcola `profilo-dopo.csv` come in C.5 e confrontalo.
+- Azione: chiudi Claude Desktop; ricalcola `profilo-dopo.csv` come in C.5 e confrontalo.
 - Atteso: nessuna differenza di hash, nessun file nuovo o rimosso.
 - Fallimento: qualsiasi differenza non spiegata da un uso di Fluent Reader fra le due misure.
 - Evidenza: output di `Compare-Object` (vuoto se PASS).
 
-**N-17 — Backup di Claude Code nella cartella privata** (cat. 2)
-- Azione: dopo N-13, elenca `%LOCALAPPDATA%\FluentReaderMCP-Data\claude-config-backups\`.
-- Atteso (la copia si crea solo se `.claude.json` esisteva e la registrazione lo ha effettivamente modificato): una
-  sottocartella `<chiave>` (32 caratteri esadecimali) con `claude.json.<data UTC>.bak`; il suo SHA-256
-  coincide con l'hash di `.claude.json` preso subito prima dell'installazione (C.5).
+**N-17 — Backup nella cartella privata** (cat. 2)
+- Azione: dopo N-13, elenca `%LOCALAPPDATA%\FluentReaderMCP-Data\desktop-config-backups\`.
+- Atteso: una sottocartella `<chiave>` (32 caratteri esadecimali) con `claude_desktop_config.json.<data UTC>.bak`; il suo
+  SHA-256 coincide con l'hash del file preso subito prima dell'installazione (C.5).
 - Fallimento: backup assente, in un'altra cartella, o con hash diverso.
 - Evidenza: nome del file e confronto degli hash. Non aprire né allegare il backup.
 
 **N-18 — Nessun backup sotto la cartella di installazione** (cat. 1)
-- Azione: `Test-Path "<installazione>\state\claude-config-backups"`;
-  `Get-ChildItem -LiteralPath "<installazione>" -Recurse -Force -Filter *.bak`.
-- Atteso: `False` e nessun file.
+- Azione: `Get-ChildItem -LiteralPath "<installazione>" -Recurse -Force -Filter *.bak`.
+- Atteso: nessun file.
 - Fallimento: qualsiasi copia della configurazione nella cartella di installazione.
-- Evidenza: output dei due comandi.
+- Evidenza: output del comando.
+
+**N-19 — Program Files** (cat. 1)
+- Azione: prova `D:\Program Files\FRMCP` e `D:\Program Files (x86)\FRMCP` (se `D:` esiste e il tuo utente può scrivervi),
+  `C:\Program Files\FRMCP`, `D:\Program Files`; poi **Annulla**.
+- Atteso: quelle su `D:` accettate, senza finestre e senza residui; `C:\Program Files\FRMCP` rifiutata (per un utente non
+  amministratore) con un messaggio sui permessi di scrittura, **senza richiesta UAC**; `D:\Program Files` non usata
+  direttamente: il campo mostra `D:\Program Files\FluentReaderMCP`. Il rifiuto non deve mai essere "cartella di Windows".
+- Fallimento: rifiuto per il solo nome su `D:`; richiesta di elevazione; permessi modificati; accettazione in `C:\Program Files`
+  seguita da un errore tardivo non spiegato.
+- Evidenza: elenco percorso → messaggio; `Get-ChildItem -Force` delle cartelle dopo Annulla.
+
+**N-20 — Più file di configurazione** (cat. 2, solo ambiente di prova)
+- Preparazione: oltre al file attivo annotato in C.2, crea un secondo file sintetico con contenuto `{}` in una cartella di
+  prova, per esempio `%LOCALAPPDATA%\Claude-Smoke\claude_desktop_config.json`.
+- Azione: pagina Claude Desktop. Prima lascia il campo vuoto e premi Avanti; poi seleziona il file **non** attivo, installa e
+  verifica come in N-14; poi riesegui il setup (riparazione) selezionando quello attivo e verifica di nuovo.
+- Atteso: i due file sono elencati e il campo resta vuoto (se il secondo file è l'unico candidato con un'app non in
+  pacchetto, viene invece proposto: annotalo); campo vuoto rifiutato con invito a scegliere o a installare solo il server;
+  dopo la prima installazione Claude Desktop **non** mostra `fluent-reader` e il setup non aveva dichiarato il contrario;
+  ogni esecuzione modifica soltanto il file selezionato; dopo la seconda il server compare. Alla disinstallazione (D-01) la
+  voce viene rimossa da entrambi. Al termine rimuovi la cartella di prova che hai creato.
+- Fallimento: file scelto dal setup in presenza di più candidati; più file modificati in una sola esecuzione; collegamento
+  dichiarato riuscito.
+- Evidenza: elenco mostrato (solo percorsi), hash dei due file dopo ogni esecuzione. **Annota anche se Modifica
+  configurazione ha aperto il file che l'app legge davvero**: è il dato che i test automatici non possono dare.
 
 ## E. Aggiornamento e riparazione
 
-**Versioni.** La beta precedente (sette strumenti, installer del 2026-10-29) è la **0.1.0**; la build da collaudare
-(nove strumenti) è la **0.1.1**. Il setup riconosce l'installazione esistente dal registro: sopra la 0.1.0 la tratta
-come **aggiornamento** (la conferma dice "Vi è installata la versione 0.1.0: verrà aggiornata alla 0.1.1. Se
-l'aggiornamento non riesce, la versione attuale resta com'è."); sopra la stessa 0.1.1 come **riparazione** ("La
-versione 0.1.1 vi è già installata: i suoi file verranno reinstallati (riparazione)"). Annota il testo effettivamente
-mostrato.
+**Versioni.** Il setup riconosce l'installazione esistente dal registro e confronta le versioni: versione più vecchia →
+**aggiornamento**, stessa versione → **riparazione**. Lo dice il **riepilogo**, non più una finestra ("Vi è installata la
+versione X: verrà aggiornata alla Y. Se l'aggiornamento non riesce, la versione attuale resta com'è." oppure "La versione Y
+vi è già installata: i suoi file verranno reinstallati (riparazione)"). Annota il testo effettivamente mostrato.
 
-**U-01 — Installazione sopra la beta precedente** (cat. 2)
-- Preparazione: VM o account di prova con la beta precedente installata (di norma nella cartella predefinita) e
-  registrata in Claude Code; hash e `claude mcp list` registrati.
+**U-01 — Installazione sopra una beta precedente** (cat. 2)
+- Preparazione: VM o account di prova con una beta precedente installata (di norma nella cartella predefinita); hash del
+  file di Claude Desktop registrati.
 - Azione: avvia il nuovo setup, stessa cartella.
-- Atteso: conferma di **aggiornamento** dalla 0.1.0 alla 0.1.1 (vedi sopra); al termine `tools/list` con nove
-  strumenti (N-14); profilo e altre voci MCP invariati; registro di installazione e "App installate" con la versione
-  0.1.1.
+- Atteso: riepilogo di **aggiornamento** (o di riparazione se il numero di versione è lo stesso, vedi sezione A); al termine
+  nove strumenti (N-14, se registri); profilo e altre voci MCP invariati; registro di installazione e "App installate" con
+  la nuova versione.
 - Fallimento: rifiuto senza motivo; versione precedente persa senza nuova versione; altre voci cambiate.
-- Evidenza: testo della conferma, elenco strumenti prima (sette) e dopo (nove).
+- Evidenza: screenshot del riepilogo, elenco strumenti dopo.
 
 **U-02 — Riparazione della stessa build** (cat. 2)
 - Azione: riesegui lo stesso setup sulla stessa cartella; una volta mantenendo la registrazione, una volta scegliendo
   la registrazione dopo un'installazione "solo server".
-- Atteso: conferma di riparazione; nessun file estraneo toccato; registrazione aggiunta solo con consenso; se la
-  registrazione modifica `.claude.json`, nuovo backup nella stessa `<chiave>`; se l'anteprima indica "nessuna
-  modifica", nessun nuovo backup.
-- Fallimento: chiave diversa per la stessa cartella; voce duplicata; journal residuo.
-- Evidenza: elenco della cartella dei backup, `claude mcp get fluent-reader`.
+- Atteso: riepilogo di riparazione; il file già registrato viene riproposto; la pagina di conferma dice "Modifica: nessuna" e
+  il file resta identico (hash), senza nuovo backup; registrazione aggiunta solo con il consenso e, se modifica il file,
+  nuovo backup nella stessa `<chiave>`.
+- Fallimento: chiave diversa per la stessa cartella; voce duplicata; file riscritto senza motivo; journal residuo.
+- Evidenza: elenco della cartella dei backup, hash del file.
 
-**U-03 — Aggiornamento/riparazione con configurazione Claude non banale** (cat. 2)
-- Preparazione: configurazione sintetica con più voci MCP fittizie (C.2), anche con variabili `env` fittizie.
-- Azione: riparazione con registrazione.
-- Atteso: solo `fluent-reader` cambia (se cambia); tutte le altre voci identiche; se `fluent-reader` esiste ma non è
-  dell'installer, l'anteprima la indica come **voce estranea** e chiede una seconda conferma.
-- Fallimento: qualsiasi altra voce modificata, rimossa o riordinata in modo che `claude mcp get` dia valori diversi.
-- Evidenza: `claude mcp get <nome>` per ogni voce fittizia, prima/dopo.
+**U-03 — Riparazione con configurazione Claude non banale** (cat. 2)
+- Preparazione: configurazione sintetica con più voci MCP fittizie (C.2), anche con variabili `env` fittizie e chiavi non
+  standard; una voce `fluent-reader` scritta a mano e diversa.
+- Azione: riparazione con registrazione; prima senza spuntare l'autorizzazione, poi spuntandola.
+- Atteso: la pagina indica la voce come **non scritta da questo installer**, ne mostra solo comando e numero di argomenti e
+  variabili; senza autorizzazione nulla cambia; con l'autorizzazione solo `fluent-reader` cambia e la vecchia voce resta nel
+  backup; tutte le altre voci identiche.
+- Fallimento: voce estranea sostituita in silenzio; altra voce modificata o rimossa; valori mostrati.
+- Evidenza: confronto del JSON nell'ambiente sintetico, prima/dopo.
 
 **U-04 — Migrazione di un backup legacy esattamente referenziato** (cat. 2)
-- Preparazione: installazione della beta precedente con registrazione, quindi con la sua copia in
+- Preparazione: installazione della beta 0.1.0 con registrazione in Claude Code, quindi con la sua copia in
   `<installazione>\state\claude-config-backups\`; annota nome e SHA-256 di quella copia.
 - Azione: aggiornamento con il nuovo setup.
 - Atteso: **solo** la copia indicata dal registro di installazione viene spostata in
@@ -312,7 +373,7 @@ U-06 e R-02 hanno risultati separati nel modulo (sezione H).
 - Preparazione:
   - solo VM o installazione sacrificabile, con snapshot ripristinabile preso **dopo** la preparazione qui sotto;
   - un'installazione valida e funzionante: la beta precedente (sette strumenti, come in U-01) oppure questa build
-    (nove strumenti, come in U-02), registrata o no in Claude Code; Claude Code e Fluent Reader chiusi;
+    (nove strumenti, come in U-02), registrata o no in Claude Desktop; Claude Desktop e Fluent Reader chiusi;
   - annota la versione iniziale (0.1.0 con sette strumenti, oppure 0.1.1 con nove: annota anche il numero di
     strumenti visto con N-14), il percorso di installazione e lo stato dei file gestiti: nomi in `current`,
     `state\` e nella radice (`Get-ChildItem -Force -Name`) e SHA-256 di `current\installer-files.json`,
@@ -323,9 +384,9 @@ U-06 e R-02 hanno risultati separati nel modulo (sezione H).
     attività il processo dell'EXE del setup (come in R-02) oppure il `node.exe` del programma di supporto (come in
     R-01). Nessun altro mezzo di simulazione.
 - Azione:
-  1. avvia il nuovo setup sulla **stessa cartella** dell'installazione esistente e annota il testo della conferma
+  1. avvia il nuovo setup sulla **stessa cartella** dell'installazione esistente e annota il testo del riepilogo
      (riparazione o aggiornamento, vedi sopra);
-  2. durante l'installazione, dopo la conferma e mentre la barra avanza, termina il processo scelto; annota il momento
+  2. durante l'installazione, mentre la barra avanza, termina il processo scelto; annota il momento
      (inizio, metà, fine della barra) e l'ultima fase mostrata;
   3. annota il messaggio eventualmente mostrato e lo stato della cartella (tabella della sezione F);
   4. riavvia lo stesso setup sulla stessa cartella e osserva il percorso di recupero che si attiva (recupero
@@ -355,14 +416,27 @@ U-06 e R-02 hanno risultati separati nel modulo (sezione H).
   radice, con gli SHA-256 annotati nella preparazione; esito del nuovo avvio; se serve un intervento manuale, il motivo
   indicato dal messaggio.
 
-**U-07 — File bloccato con Claude Code attivo** (cat. 3, solo ambiente isolato)
-- Preparazione: installazione registrata; Claude Code aperto con il server `fluent-reader` connesso (`/mcp`).
-- Azione: riparazione senza chiudere Claude Code.
-- Atteso: errore nella fase `attivazione della nuova versione (chiudi Claude Code se è aperto)`; la versione installata
-  resta al suo posto; poi o un ripristino completo, o un **ripristino INCOMPLETO** che elenca gli elementi non
-  attribuibili (per esempio `state\uninstall.exe.new`), come descritto in "Limite noto del recupero" di INSTALLER.md.
+**U-07 — File bloccato con Claude Desktop attivo** (cat. 3, solo ambiente isolato)
+- Preparazione: installazione registrata; Claude Desktop aperto con il server `fluent-reader` connesso.
+- Azione: riparazione senza chiudere Claude Desktop.
+- Atteso: errore nella fase `attivazione della nuova versione (chiudi Claude Desktop se è aperto)`; il setup non termina
+  processi; la versione installata resta al suo posto; poi o un ripristino completo, o un **ripristino INCOMPLETO** che
+  elenca gli elementi non attribuibili (per esempio `state\uninstall.exe.new`), come descritto in "Limite noto del recupero"
+  di INSTALLER.md.
 - Fallimento: successo dichiarato; versione installata danneggiata; elementi non elencati modificati.
 - Evidenza: messaggi completi, fase, elenco degli elementi (vedi F).
+
+**U-08 — Installazione Code-first** (cat. 2, solo ambiente di prova; se non hai una beta 0.1.x registrata, NON ESEGUITO)
+- Preparazione: installazione 0.1.0 o 0.1.1 registrata in Claude Code; `claude mcp list` e hash di `.claude.json` annotati, con
+  Claude Code chiuso.
+- Azione: nuovo setup sulla stessa cartella, con registrazione in Claude Desktop; poi controlla Claude Code; infine
+  disinstalla (solo se l'ambiente lo consente, categoria 3).
+- Atteso: nessuna ricerca di `claude.exe`; la pagina di conferma segnala la voce di Claude Code, che non viene toccata e non
+  implica una voce in Claude Desktop; `claude mcp get fluent-reader` come prima e il server continua a funzionare in Claude
+  Code. Alla disinstallazione: la voce Desktop va via, quella di Code resta e un messaggio indica come rimuoverla.
+- Fallimento: `.claude.json` modificato dal setup (conta il confronto con `claude mcp get`, perché Claude Code riscrive il file
+  da solo); voce di Code rimossa; registrazione in Desktop data per implicita.
+- Evidenza: `claude mcp list` prima/dopo, screenshot dei messaggi, senza contenuti della configurazione.
 
 ## F. Recupero
 
@@ -419,12 +493,14 @@ messaggio)
 Tutte le prove di questa sezione sono di categoria 3: solo su installazioni di prova (VM, snapshot o account di prova).
 
 **D-01 — Disinstallazione normale**
-- Preparazione: installazione registrata (N-13), con backup privati (N-17); Claude Code chiuso.
+- Preparazione: installazione registrata (N-13), con backup privati (N-17); Claude Desktop chiuso.
 - Azione: "App installate" → Fluent Reader MCP → Disinstalla (oppure `uninstall.exe`).
-- Atteso: file dell'inventario rimossi; voce `fluent-reader` rimossa da Claude Code solo se è ancora quella annotata;
-  valori HKCU del prodotto rimossi; messaggio finale con la cartella in cui restano i backup privati.
-- Fallimento: file dell'inventario residui senza messaggio; altre voci MCP cambiate.
-- Evidenza: elenco della cartella dopo, `claude mcp list` prima/dopo, testo dei messaggi finali.
+- Atteso: file dell'inventario rimossi; soltanto la voce `fluent-reader` rimossa dal file di Claude Desktop, se è ancora quella
+  scritta; il resto del file identico; valori HKCU del prodotto rimossi; messaggio finale con la cartella in cui restano i
+  backup privati.
+- Fallimento: file dell'inventario residui senza messaggio; altre voci MCP o preferenze cambiate; il vecchio file rimesso al
+  posto di quello attuale.
+- Evidenza: elenco della cartella dopo, confronto del JSON prima/dopo, testo dei messaggi finali.
 
 **D-02 — File estraneo nella radice della cartella di installazione**
 - Preparazione: un file di testo creato da te **direttamente nella radice** della cartella di installazione (non in
@@ -448,18 +524,19 @@ Tutte le prove di questa sezione sono di categoria 3: solo su installazioni di p
 - Fallimento: rimozione parziale; file estraneo cancellato.
 - Evidenza: messaggio; elenco della cartella prima/dopo (identico). Ripristino: sposta `extra.txt` e ripeti D-01.
 
-**D-04 — Registrazione Claude Code modificata**
-- Preparazione: dopo l'installazione modifica a mano la voce `fluent-reader` nell'ambiente sintetico (per esempio
-  rimuovi e riaggiungi con un argomento diverso tramite `claude mcp`).
+**D-04 — Voce di Claude Desktop modificata**
+- Preparazione: dopo l'installazione modifica a mano la voce `fluent-reader` nell'ambiente sintetico (per esempio aggiungi un
+  argomento), con Claude Desktop chiuso.
 - Azione: disinstalla.
-- Atteso: la voce non è più attribuibile all'installer e non viene rimossa; il disinstallatore spiega che resterebbe
-  in Claude Code puntando a file rimossi e chiede se proseguire, con "No" come scelta predefinita. Con "No" la
-  disinstallazione si ferma; con "Sì" prosegue lasciando la voce com'è.
+- Atteso: la voce non è più attribuibile all'installer e non viene rimossa né ripristinata; il disinstallatore spiega che
+  resterebbe in Claude Desktop e chiede se proseguire, con "No" come scelta predefinita. Con "No" la disinstallazione si
+  ferma; con "Sì" prosegue lasciando la voce com'è.
 - Fallimento: voce modificata rimossa o sovrascritta; "Sì" come scelta predefinita.
-- Evidenza: `claude mcp get fluent-reader` prima/dopo.
+- Evidenza: il JSON della voce prima/dopo.
 
 **D-05 — Backup privati conservati**
-- Azione: dopo D-01, elenca `%LOCALAPPDATA%\FluentReaderMCP-Data\claude-config-backups\<chiave>\`.
+- Azione: dopo D-01, elenca `%LOCALAPPDATA%\FluentReaderMCP-Data\desktop-config-backups\<chiave>\` (e `claude-config-backups`, se
+  presente).
 - Atteso: tutti i backup ancora presenti con hash invariati; il messaggio finale indica la cartella. Se nella cartella
   di installazione restano copie di una versione precedente (`state\claude-config-backups`), un messaggio dedicato lo
   dice.
@@ -496,7 +573,8 @@ Compila una riga per ogni prova. **PASS** e **FAIL** solo per prove effettivamen
 significa "soltanto pianificata".
 
 Intestazione del collaudo: data · operatore · EXE (nome e SHA-256 calcolato) · commit e `scriptsDirty` dal report ·
-Windows (versione e build) · Claude Code (versione) · snapshot usati.
+Windows (versione e build) · Claude Desktop (versione e tipo di installazione) · file di configurazione realmente letto
+dall'app, se accertato · snapshot usati.
 
 | ID | Categoria | Ambiente | Risultato (PASS / FAIL / NON ESEGUITO) | Evidenza | Note | Issue |
 |---|---|---|---|---|---|---|
@@ -518,6 +596,8 @@ Windows (versione e build) · Claude Code (versione) · snapshot usati.
 | N-16 | 1 | | | | | |
 | N-17 | 2 | | | | | |
 | N-18 | 1 | | | | | |
+| N-19 | 1 | | | | | |
+| N-20 | 2 | | | | | |
 | U-01 | 2 | | | | | |
 | U-02 | 2 | | | | | |
 | U-03 | 2 | | | | | |
@@ -525,6 +605,7 @@ Windows (versione e build) · Claude Code (versione) · snapshot usati.
 | U-05 | 2 | | | | | |
 | U-06 | 3 | | | | | |
 | U-07 | 3 | | | | | |
+| U-08 | 2 | | | | | |
 | R-01 | 3 | | | | | |
 | R-02 | 3 | | | | | |
 | R-03 | 3 | | | | | |
@@ -538,4 +619,4 @@ Windows (versione e build) · Claude Code (versione) · snapshot usati.
 | D-08 | 3 | | | | | |
 
 Nelle evidenze annotare solo nomi di file, hash, testi dei messaggi e screenshot senza dati personali: mai contenuti di
-`.claude.json`, dei backup, del database o degli articoli.
+`claude_desktop_config.json`, `.claude.json`, dei backup, del database o degli articoli.

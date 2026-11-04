@@ -25,7 +25,7 @@ import { buildInventory, INVENTORY, readInventory } from "../../installer/setup/
 import { checkInstallDir } from "../../installer/setup/checks.js"
 import { main, type HelperDeps } from "../../installer/setup/fr-setup.js"
 import { decodeResult } from "../../installer/setup/protocol.js"
-import { privateBackupDir } from "../../installer/setup/backups.js"
+import { privateBackupDir, privateDesktopBackupDir } from "../../installer/setup/backups.js"
 import { canonicalJson, entryFingerprint, RECORD_NAME, readRecord, writeRecord, type InstallRecord } from "../../installer/setup/record.js"
 import { REGISTRY_SLOTS, rename, SETUP_SCRIPT, type TxCheckpoint } from "../../installer/setup/transaction.js"
 import { encodeFinalMarker, helperCopyEntries, type UninstallCheckpoint } from "../../installer/setup/uninstall.js"
@@ -44,9 +44,9 @@ before(() => {
 after(() => removeTempRoot(root))
 
 /** The helper commands the NSIS install section calls, in order (rollback: tx-recover, tx-recover-finish). */
-const INSTALL_COMMANDS = ["tx-recover", "tx-recover-finish", "tx-begin", "verify-tree", "tx-prepare", "tx-swap", "tx-metadata", "tx-commit", "tx-cleanup", "register"]
+const INSTALL_COMMANDS = ["tx-recover", "tx-recover-finish", "tx-begin", "verify-tree", "tx-prepare", "tx-swap", "tx-metadata", "tx-commit", "tx-cleanup", "desktop-register"]
 /** The helper commands the NSIS uninstall section calls, in order. */
-const UNINSTALL_COMMANDS = ["un-status", "uninstall-preflight", "unregister", "un-begin", "remove-tree", "un-metadata", "un-finish"]
+const UNINSTALL_COMMANDS = ["un-status", "uninstall-preflight", "desktop-unregister", "un-begin", "remove-tree", "un-metadata", "un-finish"]
 
 const UNINSTALL_KEY = "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\FluentReaderMCP"
 const SETTINGS_KEY = "Software\\FluentReaderMCP"
@@ -641,8 +641,8 @@ async function uninstall(w: World, faults: UninstallFaults = {}): Promise<Uninst
         backupNote = status.one("backups")
         if (status.one("phase") !== "metadata") {
             if ((await call(w, "uninstall-preflight", req)).code !== 0) return "stopped"
-            const unreg = await call(w, "unregister", req)
-            if (!["removed", "absent", "not-configured"].includes(unreg.one("outcome"))) return "stopped"
+            const unreg = await call(w, "desktop-unregister", req)
+            if (!["removed", "absent", "config-missing", "not-configured"].includes(unreg.one("outcome"))) return "stopped"
             if ((await call(w, "un-begin", req)).code !== 0) return "stopped"
             for (const tree of [".staging", "previous", "current"]) {
                 if (fs.existsSync(path.join(w.installDir, tree)) && (await call(w, "remove-tree", { ...req, tree })).code !== 0) return "stopped"
@@ -1235,7 +1235,7 @@ describe("the model follows the NSIS script", () => {
     })
 
     test("uninstall section: same helper commands, same order", () => {
-        assert.deepEqual(firstOccurrences(commands(section("Uninstall")).filter((c) => c !== "detect-claude")), UNINSTALL_COMMANDS)
+        assert.deepEqual(firstOccurrences(commands(section("Uninstall"))), UNINSTALL_COMMANDS)
     })
 
     test("the nine HKCU values are the same in the helper, the backup, the writes, the restore and the uninstall", () => {
@@ -1352,7 +1352,7 @@ describe("lifecycle on a destination outside the user's folder (FR-MCP-04-BETA-0
     test("a drive root is never an installation directory: every command refuses it before touching anything", async () => {
         const { base } = machine()
         const driveRoot = root.slice(0, 3)
-        for (const command of ["tx-recover", "tx-recover-finish", "tx-begin", "tx-prepare", "tx-swap", "tx-metadata", "tx-commit", "tx-cleanup", "un-status", "uninstall-preflight", "unregister", "un-begin", "remove-tree", "un-metadata", "un-finish", "finish-uninstall"]) {
+        for (const command of ["tx-recover", "tx-recover-finish", "tx-begin", "tx-prepare", "tx-swap", "tx-metadata", "tx-commit", "tx-cleanup", "un-status", "uninstall-preflight", "desktop-unregister", "un-begin", "remove-tree", "un-metadata", "un-finish", "finish-uninstall"]) {
             const r = await call(base, command, { installDir: driveRoot, version: "0.1.0", maxRelative: "150", bundleSha256: "a".repeat(64), profileDir: base.profile, expectMode: "new", transactionId: "ab".repeat(16), tree: "current", registryRestored: "yes", registryWritten: "yes" })
             assert.equal(r.code, 1, command)
             assert.match(r.one("message"), /non può essere la radice di un'unità/, command)
@@ -2335,5 +2335,114 @@ describe("FR-MCP-04-BETA-03A-SIMPLE-02: copies of the Claude configuration left 
         assert.equal(restored.claude?.backupDir, dir, "the restored record points to the private copy")
         assert.equal(await install(w, "0.1.0"), "installed")
         assertPrivate(w, copies)
+    })
+})
+
+describe("FR-MCP-04-BETA-UX-01: the Claude Desktop registration in the lifecycle", { timeout: 180_000 }, () => {
+    const SECRET = "SYNTHETIC_SECRET_4d2a"
+    const others = { "foundry-mcp": { command: "C:\\Tools\\foundry.exe", env: { KEY: SECRET } } }
+
+    function desktopConfig(w: World): string {
+        const file = path.join(w.home, "AppData", "Roaming", "Claude", "claude_desktop_config.json")
+        fs.mkdirSync(path.dirname(file), { recursive: true })
+        fs.writeFileSync(file, JSON.stringify({ preferences: { sidebarMode: "chat" }, mcpServers: others }, null, 2))
+        return file
+    }
+
+    const servers = (file: string): Record<string, unknown> => (JSON.parse(fs.readFileSync(file, "utf8")) as { mcpServers: Record<string, unknown> }).mcpServers
+
+    async function register(w: World, configPath: string, version: string): Promise<string> {
+        const request = { installDir: w.installDir, version, maxRelative: "150", configPath, profileDir: w.profile }
+        const plan = await call(w, "desktop-plan", request)
+        assert.equal(plan.code, 0, plan.one("message"))
+        const done = await call(w, "desktop-register", { ...request, planHash: plan.one("planHash"), consent: "yes" })
+        assert.equal(done.code, 0, done.one("message"))
+        return plan.one("action")
+    }
+
+    const record = (w: World): InstallRecord => readRecord(path.join(w.installDir, RECORD_NAME)) as InstallRecord
+
+    test("new installation, repair, upgrade, uninstall: one entry, kept by every step, removed at the end; the other server and the backup stay", async () => {
+        const w = world()
+        w.reg.write(UNINSTALL_KEY, "SomeoneElse", "REG_SZ", "foreign value")
+        const config = desktopConfig(w)
+        assert.equal(await install(w, "0.1.0"), "installed")
+        assert.equal(await register(w, config, "0.1.0"), "add")
+        const registered = fs.readFileSync(config)
+        const first = record(w)
+        assert.equal(first.desktop?.state, "registered")
+        const backups = privateDesktopBackupDir(w.env, w.installDir)
+        const copies = snapshotDir(backups)
+        assert.equal(copies.size, 1)
+        // repair: a new generation, the same registration, nothing to do in the file
+        assert.equal(await install(w, "0.1.0"), "installed")
+        assert.notEqual(record(w).generation, first.generation)
+        assert.deepEqual(record(w).desktop, first.desktop)
+        assert.equal(await register(w, config, "0.1.0"), "none")
+        // upgrade: the paths of the entry are those of current\, which stays where it is
+        assert.equal(await install(w, "0.2.0"), "installed")
+        assert.equal(record(w).version, "0.2.0")
+        assert.deepEqual(record(w).desktop, first.desktop)
+        assert.equal(await register(w, config, "0.2.0"), "none")
+        assert.ok(fs.readFileSync(config).equals(registered), "the file was not touched again")
+        assert.deepEqual(snapshotDir(backups), copies)
+        fs.writeFileSync(path.join(w.installDir, "my notes é.txt"), "mine")
+        assert.equal(await uninstall(w), "uninstalled")
+        assertUninstalled(w)
+        assert.deepEqual(servers(config), others)
+        assert.deepEqual(snapshotDir(backups), copies, "the private copies survive the uninstallation")
+        assert.ok(w.lastRun?.messages.some((m) => m.includes(`restano nella tua cartella personale ${backups}`)), JSON.stringify(w.lastRun?.messages))
+    })
+
+    test("a repair that fails is rolled back with its record: the registration is still the installation's, the file untouched", async () => {
+        const w = world()
+        const config = desktopConfig(w)
+        assert.equal(await install(w, "0.1.0"), "installed")
+        await register(w, config, "0.1.0")
+        const registered = fs.readFileSync(config)
+        const before = record(w)
+        assert.equal(await install(w, "0.1.0", { at: "after-second-rename", mode: "fail" }), "rolled-back", w.lastMessage)
+        assert.deepEqual(record(w), before)
+        assert.ok(fs.readFileSync(config).equals(registered))
+        assert.equal(await uninstall(w), "uninstalled")
+        assert.deepEqual(servers(config), others)
+    })
+
+    test("uninstall with an entry changed by someone else: the model stops (the wizard asks), nothing is removed; put back, it goes", async () => {
+        const w = world()
+        const config = desktopConfig(w)
+        assert.equal(await install(w, "0.1.0"), "installed")
+        await register(w, config, "0.1.0")
+        const doc = JSON.parse(fs.readFileSync(config, "utf8")) as { mcpServers: Record<string, Record<string, unknown>> }
+        const mine = doc.mcpServers["fluent-reader"] as Record<string, unknown>
+        fs.writeFileSync(config, JSON.stringify({ ...doc, mcpServers: { ...doc.mcpServers, "fluent-reader": { ...mine, timeout: 5 } } }))
+        const before = fs.readFileSync(config)
+        assert.equal(await uninstall(w), "stopped")
+        assert.ok(fs.readFileSync(config).equals(before))
+        assert.ok(fs.existsSync(path.join(w.installDir, RECORD_NAME)))
+        fs.writeFileSync(config, JSON.stringify(doc))
+        assert.equal(await uninstall(w), "uninstalled")
+        assert.deepEqual(servers(config), others)
+    })
+
+    test("an upgrade of a Code-first installation: the Claude Code registration is carried over untouched and no Desktop one is implied", async () => {
+        const w = world()
+        assert.equal(await install(w, "0.1.0"), "installed")
+        const app = path.join(w.installDir, "current", "app")
+        const entry = { type: "stdio" as const, command: path.join(app, "runtime", "node.exe"), args: [path.join(app, "server", "dist", "main.js"), "--profile-dir", w.profile], env: {} }
+        const codeConfig = path.join(w.home, ".claude.json")
+        fs.writeFileSync(codeConfig, JSON.stringify({ mcpServers: { "fluent-reader": entry, altro: { command: "a" } }, token: SECRET }))
+        const code = fs.readFileSync(codeConfig)
+        const file = path.join(w.installDir, RECORD_NAME)
+        const claude = { state: "registered" as const, name: "fluent-reader", scope: "user" as const, configPath: codeConfig, claudeExe: path.join(w.home, "claude.exe"), entry, fingerprint: entryFingerprint(entry), backup: null, updatedAt: "2026-10-02T09:00:00.000Z" }
+        writeRecord(file, { ...(readRecord(file) as InstallRecord), claude })
+        assert.equal(await install(w, "0.2.0"), "installed")
+        assert.deepEqual(record(w).claude, claude)
+        assert.equal(record(w).desktop, undefined)
+        assert.ok(fs.readFileSync(codeConfig).equals(code))
+        assert.equal(await uninstall(w), "uninstalled")
+        assert.ok(fs.readFileSync(codeConfig).equals(code), "the uninstaller does not touch it either")
+        assert.ok(w.lastRun?.messages.some((m) => m.includes("claude mcp remove fluent-reader --scope user")), JSON.stringify(w.lastRun?.messages))
+        assert.equal(execCalls.some((c) => /claude/i.test(c[0] as string)), false, "no Claude Code program started")
     })
 })

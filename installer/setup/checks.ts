@@ -34,11 +34,14 @@ const OWN_ENTRIES: readonly string[] = [LAYOUT.current, LAYOUT.staging, LAYOUT.p
 /** The subdirectory proposed when the chosen directory is a drive root or already holds other files. */
 export const DEFAULT_SUBDIR = "FluentReaderMCP"
 /**
- * Top-level directories of any drive that belong to Windows or to programs installed for every user: the
- * recycle bin and the working folders of Windows setup, reset and recovery among the "$" names, not every
- * name starting with "$" ($Projects is an ordinary folder).
+ * Top-level directories of any drive that belong to Windows or hold data shared by every user: the recycle bin
+ * and the working folders of Windows setup, reset and recovery among the "$" names, not every name starting with
+ * "$" ($Projects is an ordinary folder). DEC-C12: Program Files and Program Files (x86) are not among them, what
+ * decides there is whether this user can really write.
  */
-const SYSTEM_TOP = /^(windows|program files|program files \(x86\)|programdata|system volume information|recovery|config\.msi|\$recycle\.bin|\$windows\.~bt|\$windows\.~ws|\$winreagent|\$sysreset)$/i
+const SYSTEM_TOP = /^(windows|programdata|system volume information|recovery|config\.msi|\$recycle\.bin|\$windows\.~bt|\$windows\.~ws|\$winreagent|\$sysreset)$/i
+/** A directory shared by many programs, usable only through a subdirectory of its own (as a drive root). */
+const PROGRAMS_TOP = /^program files( \(x86\))?$/i
 /** The conventional root of Windows profiles, on any drive. */
 const PROFILES_ROOT = "users"
 
@@ -87,7 +90,7 @@ function present(p: string, what: string): boolean {
 }
 
 /** A local absolute drive path (X:\...), not UNC, device or relative; no ambiguous segment. */
-function assertLocalPath(input: string, what: string): string {
+export function assertLocalPath(input: string, what: string): string {
     if (input.includes("\0") || !/^[A-Za-z]:[\\/]/.test(input)) throw new SetupRefusal(`${what}: serve un percorso assoluto su un'unità locale (X:\\...); percorsi di rete, relativi o di dispositivo non sono ammessi`)
     if (input.slice(3).split(/[\\/]/).some((segment) => segment === "." || segment === "..")) throw new SetupRefusal(`${what}: il percorso contiene "." o "..": indica il percorso diretto`)
     const resolved = path.win32.resolve(input)
@@ -102,7 +105,7 @@ function assertLocalPath(input: string, what: string): string {
  * ambiguous: a link, junction or 8.3 name on the way (the canonical path
  * differs), a dangling link, or a target on another machine.
  */
-function canonicalLocal(resolved: string, what: string): string {
+export function canonicalLocal(resolved: string, what: string): string {
     const drive = resolved.slice(0, 3)
     if (!fs.existsSync(drive)) throw new SetupRefusal(`${what}: l'unità ${drive.slice(0, 2)} non è disponibile (scollegata, inesistente o non pronta)`)
     let canonical: string
@@ -134,7 +137,7 @@ export interface InstallDirInput {
     readonly env: NodeJS.ProcessEnv
 }
 
-function envDir(env: NodeJS.ProcessEnv, name: string): string | null {
+export function envDir(env: NodeJS.ProcessEnv, name: string): string | null {
     const value = Object.entries(env).find(([key]) => key.toUpperCase() === name.toUpperCase())?.[1]
     if (value === undefined || !/^[A-Za-z]:[\\/]/.test(value) || !fs.existsSync(value)) return null
     try {
@@ -142,6 +145,15 @@ function envDir(env: NodeJS.ProcessEnv, name: string): string | null {
     } catch {
         return null
     }
+}
+
+/** The programs directory itself (by its name at the top of a drive, or as the environment names it), not a subdirectory. */
+function isProgramsRoot(resolved: string, env: NodeJS.ProcessEnv): boolean {
+    if (PROGRAMS_TOP.test(resolved.slice(3))) return true
+    return ["ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"].some((name) => {
+        const dir = envDir(env, name)
+        return dir !== null && samePath(resolved, dir)
+    })
 }
 
 function compareVersions(a: string, b: string): number {
@@ -155,11 +167,12 @@ function compareVersions(a: string, b: string): number {
  * FR-MCP-04-BETA-03A-SIMPLE-01: a directory is acceptable for the
  * installation when it is a local drive path (any drive letter, not only
  * under the user's profile) reached without links, junctions or 8.3 names,
- * not a drive root, not a directory of Windows, of programs installed for
- * every user, of another user or the public one, outside roaming, OneDrive
- * and the Claude configuration, short enough for every file, and either
- * new, empty, or an installation of this product. Permissions are neither
- * evaluated nor changed: outside the user's profile the wizard says so.
+ * not a drive root, not a directory of Windows or of data shared by every
+ * user, of another user or the public one, outside roaming, OneDrive and the
+ * Claude configuration, short enough for every file, and either new, empty,
+ * or an installation of this product. DEC-C12: under Program Files the same
+ * rules apply, and the wizard's write check decides. Permissions are neither
+ * read nor changed: outside the user's profile the wizard says so.
  */
 /** The location rules of an installation directory (shared by the wizard checks and every destructive command). */
 function safeInstallRoot(installDir: string, env: NodeJS.ProcessEnv, what: string): { canonical: string; home: string } {
@@ -167,7 +180,8 @@ function safeInstallRoot(installDir: string, env: NodeJS.ProcessEnv, what: strin
     if (isDriveRoot(resolved)) throw new SetupRefusal(`${what}: non può essere la radice di un'unità (${resolved}); scegli una cartella, per esempio ${resolved}${DEFAULT_SUBDIR}`)
     // on the path as typed (an 8.3 or linked alias of these is refused by canonicalLocal anyway)
     const top = resolved.slice(3).split("\\")[0] ?? ""
-    if (SYSTEM_TOP.test(top)) throw new SetupRefusal(`${what}: ${resolved.slice(0, 3)}${top} è una cartella di Windows o dei programmi installati per tutti gli utenti`)
+    if (SYSTEM_TOP.test(top)) throw new SetupRefusal(`${what}: ${resolved.slice(0, 3)}${top} è una cartella riservata a Windows o ai dati comuni a tutti gli utenti`)
+    if (isProgramsRoot(resolved, env)) throw new SetupRefusal(`${what}: non può essere direttamente ${resolved}; scegli una sottocartella, per esempio ${resolved}\\${DEFAULT_SUBDIR}`)
     const canonical = canonicalLocal(resolved, what)
     const home = envDir(env, "USERPROFILE")
     if (home === null) throw new SetupRefusal(`${what}: la cartella del profilo utente (USERPROFILE) non è disponibile`)
@@ -177,9 +191,6 @@ function safeInstallRoot(installDir: string, env: NodeJS.ProcessEnv, what: strin
     const forbidden: [string | null, string][] = [
         [envDir(env, "SystemRoot"), "la cartella di Windows"],
         [envDir(env, "windir"), "la cartella di Windows"],
-        [envDir(env, "ProgramFiles"), "la cartella dei programmi"],
-        [envDir(env, "ProgramFiles(x86)"), "la cartella dei programmi"],
-        [envDir(env, "ProgramW6432"), "la cartella dei programmi"],
         [envDir(env, "ProgramData"), "la cartella dei dati comuni a tutti gli utenti (ProgramData)"],
         [envDir(env, "ALLUSERSPROFILE"), "la cartella dei dati comuni a tutti gli utenti (ProgramData)"],
         [envDir(env, "PUBLIC"), "la cartella pubblica degli utenti"],
@@ -313,8 +324,8 @@ export function checkInstallDir(input: InstallDirInput): InstallDirCheck {
 }
 
 export interface ResolvedInstallDir extends InstallDirCheck {
-    /** Why the destination is not the chosen directory: a drive root, or a directory that already holds other files. */
-    readonly adjusted: "root" | "not-empty" | null
+    /** Why the destination is not the chosen directory: a drive root, the programs directory itself, or a directory that already holds other files. */
+    readonly adjusted: "root" | "programs" | "not-empty" | null
     /** Outside the user's profile: the wizard tells the user that the permissions there are not changed. */
     readonly outsideProfile: boolean
 }
@@ -327,29 +338,57 @@ export function writeProbe(dir: string): void {
 }
 
 /**
- * The wizard's choice turned into the ONE effective destination, which the
- * wizard shows and the user confirms; every later command receives that
- * destination and checks it with checkInstallDir, which never proposes
- * anything. A drive root becomes <root>\FluentReaderMCP; a directory that
- * holds other files (or the user's own folder) becomes <dir>\FluentReaderMCP,
- * checked with every rule; if that one is occupied too, or the chosen
- * directory is already called FluentReaderMCP, the user picks another one.
- * An existing destination must accept a new file (probe created and removed).
+ * Whether a destination that does not exist yet can be created under `parent`, its nearest existing directory: a
+ * subdirectory is created, written and removed, because Windows may allow new folders but not new files in a place
+ * (a drive root, typically). No permission is read or changed. Only the probe's own file is deleted: the directory
+ * goes only if it is empty, so what someone else put there meanwhile stays, and the check does not succeed.
  */
-export function resolveInstallDir(input: InstallDirInput, probe: (dir: string) => void = writeProbe): ResolvedInstallDir {
+export function createProbe(parent: string): void {
+    const dir = path.win32.join(parent, `.fluent-reader-mcp-check-${crypto.randomBytes(6).toString("hex")}`)
+    fs.mkdirSync(dir)
+    try {
+        writeProbe(dir)
+    } finally {
+        try {
+            fs.rmdirSync(dir)
+        } catch (error) {
+            // a directory left behind makes the check unreliable, whatever the write did
+            throw new Error(`la cartella di prova ${dir} non è stata rimossa (${(error as NodeJS.ErrnoException).code ?? (error as Error).message}): il suo contenuto non viene toccato, controllala e rimuovila a mano`)
+        }
+    }
+}
+
+/** The write checks of the wizard; replaceable in tests. `exists`: the directory is the destination itself, else its nearest existing parent. */
+export type DirectoryProbe = (dir: string, exists: boolean) => void
+const realProbe: DirectoryProbe = (dir, exists) => (exists ? writeProbe(dir) : createProbe(dir))
+
+/**
+ * The wizard's choice turned into the ONE effective destination, which the
+ * wizard shows on its page before going on; every later command receives that
+ * destination and checks it with checkInstallDir, which never proposes
+ * anything. A drive root or the programs directory itself becomes
+ * <dir>\FluentReaderMCP; a directory that holds other files (or the user's own
+ * folder) becomes <dir>\FluentReaderMCP, checked with every rule; if that one
+ * is occupied too, or the chosen directory is already called FluentReaderMCP,
+ * the user picks another one. The destination must really be usable: an
+ * existing one must accept a new file, a new one must be creatable under its
+ * nearest existing parent (probes created and removed).
+ */
+export function resolveInstallDir(input: InstallDirInput, probe: DirectoryProbe = realProbe): ResolvedInstallDir {
     const what = "Cartella di installazione"
     const at = (dir: string, adjusted: ResolvedInstallDir["adjusted"]): ResolvedInstallDir => {
         const check = checkInstallDir({ ...input, installDir: dir })
-        if (present(check.canonical, what)) {
-            try {
-                probe(check.canonical)
-            } catch (error) {
-                throw new SetupRefusal(`${what}: non è possibile scrivere in ${check.canonical} (${(error as NodeJS.ErrnoException).code ?? (error as Error).message}); scegli un'altra cartella. Il setup non modifica i permessi delle cartelle`)
-            }
+        const exists = present(check.canonical, what)
+        let target = check.canonical
+        while (!exists && !present(target, what)) target = path.win32.dirname(target)
+        try {
+            probe(target, exists)
+        } catch (error) {
+            throw new SetupRefusal(`${what}: non è possibile scrivere in ${target} (${(error as NodeJS.ErrnoException).code ?? (error as Error).message}); scegli un'altra cartella. Il setup non modifica i permessi delle cartelle e non chiede privilegi di amministratore`)
         }
         return { ...check, adjusted, outsideProfile: !isInside(check.canonical, envDir(input.env, "USERPROFILE") as string) }
     }
-    const proposed = (parent: string, adjusted: "root" | "not-empty"): ResolvedInstallDir => {
+    const proposed = (parent: string, adjusted: "root" | "programs" | "not-empty"): ResolvedInstallDir => {
         const dir = path.win32.join(parent, DEFAULT_SUBDIR)
         try {
             return at(dir, adjusted)
@@ -360,6 +399,7 @@ export function resolveInstallDir(input: InstallDirInput, probe: (dir: string) =
     }
     const chosen = assertLocalPath(input.installDir, what)
     if (isDriveRoot(chosen)) return proposed(chosen, "root")
+    if (isProgramsRoot(chosen, input.env)) return proposed(chosen, "programs")
     const home = envDir(input.env, "USERPROFILE")
     if (home !== null && samePath(chosen, home)) return proposed(home, "not-empty")
     try {

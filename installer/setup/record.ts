@@ -3,10 +3,12 @@
  *
  * It marks a directory as an installation of this product (the only kind of
  * non-empty directory the wizard accepts), and remembers what the installer
- * registered in Claude Code, so that the uninstaller removes the MCP entry
- * only while it is still exactly the one the installer created. It stays on
- * the user's machine and holds no configuration content: no copy of other
- * MCP entries, no environment values, no token.
+ * registered in Claude Desktop, so that the uninstaller removes the MCP entry
+ * only while it is still exactly the one the installer wrote. `claude` is what
+ * the 0.1.x beta registered in Claude Code: read and carried over, never used
+ * to change anything. The record stays on the user's machine and holds no
+ * configuration content: no copy of other MCP entries, no environment values,
+ * no token.
  */
 
 import crypto from "node:crypto"
@@ -87,6 +89,39 @@ export function backupReference(reg: Registration | null): BackupReference {
     return { kind: "private", name, dir, sha256 }
 }
 
+/** The only names a copy of a Claude Desktop configuration taken by this product has. */
+export const DESKTOP_BACKUP_NAME = /^claude_desktop_config\.json\.\d{8}T\d{6}Z(-\d+)?\.bak$/
+
+/** The entry written in Claude Desktop's configuration: its documented form, a command with its arguments. */
+export interface DesktopEntry {
+    readonly command: string
+    readonly args: readonly string[]
+}
+
+export type DesktopState = "pending" | "registered" | "removed" | "rollback-failed"
+
+/** A file where an earlier run of the setup left this installation's entry, before the user pointed it to another file. */
+export interface DesktopTarget {
+    readonly configPath: string
+    readonly fingerprint: string
+}
+
+export interface DesktopRegistration {
+    readonly state: DesktopState
+    readonly name: string
+    /** The file the user selected: the selection, not a proof that Claude Desktop reads it. */
+    readonly configPath: string
+    readonly entry: DesktopEntry
+    /** SHA-256 of the entry's complete canonical JSON, known before the write: an entry found with it is this installer's, also after a crash. */
+    readonly fingerprint: string
+    readonly formerTargets?: readonly DesktopTarget[]
+    /** The copy taken before the last change: file name, private directory and SHA-256 (all three, or none). */
+    readonly backup: string | null
+    readonly backupDir?: string
+    readonly backupSha256?: string
+    readonly updatedAt: string
+}
+
 export interface InstallRecord {
     readonly schemaVersion: 1
     readonly product: typeof PRODUCT
@@ -99,6 +134,8 @@ export interface InstallRecord {
     readonly installedAt: string
     readonly profileDir: string | null
     readonly claude: Registration | null
+    /** Absent in records of the 0.1.x beta: nothing was registered in Claude Desktop. */
+    readonly desktop?: DesktopRegistration | null
 }
 
 /** Canonical JSON: object keys sorted (ordinal) at every level, arrays in their order, every field kept. */
@@ -122,6 +159,16 @@ function isEntry(value: unknown): value is StdioEntry {
         typeof e.env === "object" && e.env !== null && Object.values(e.env).every((v) => typeof v === "string")
 }
 
+function isDesktopRegistration(value: unknown): value is DesktopRegistration {
+    const d = value as Partial<DesktopRegistration> | null
+    const sha = (f: unknown): boolean => typeof f === "string" && /^[0-9a-f]{64}$/.test(f)
+    const former = d?.formerTargets
+    return typeof d === "object" && d !== null && typeof d.configPath === "string" && typeof d.state === "string" && sha(d.fingerprint) &&
+        typeof d.entry === "object" && d.entry !== null && typeof d.entry.command === "string" && Array.isArray(d.entry.args) && d.entry.args.every((a) => typeof a === "string") &&
+        (d.backup === null || typeof d.backup === "string") && (d.backupDir === undefined || typeof d.backupDir === "string") && (d.backupSha256 === undefined || typeof d.backupSha256 === "string") &&
+        (former === undefined || (Array.isArray(former) && former.every((t) => typeof t?.configPath === "string" && sha(t.fingerprint))))
+}
+
 export function readRecord(file: string): InstallRecord | null {
     if (!fs.existsSync(file)) return null
     let raw: unknown
@@ -135,7 +182,8 @@ export function readRecord(file: string): InstallRecord | null {
     // types only: the coherence of the backup fields is judged by backupReference, without making the record unreadable
     const backupOk = (c: Partial<Registration>): boolean => (c.backupDir === undefined || typeof c.backupDir === "string") && (c.backupSha256 === undefined || typeof c.backupSha256 === "string")
     const claudeOk = r?.claude === null || (typeof r?.claude === "object" && isEntry(r.claude.entry) && typeof r.claude.claudeExe === "string" && typeof r.claude.configPath === "string" && fingerprintOk(r.claude.fingerprint) && backupOk(r.claude))
-    if (r?.schemaVersion !== 1 || r.product !== PRODUCT || typeof r.installDir !== "string" || typeof r.generation !== "string" || !/^[0-9a-f]{32}$/.test(r.generation) || typeof r.version !== "string" || !/^\d+\.\d+\.\d+$/.test(r.version) || !claudeOk || (r.profileDir !== null && typeof r.profileDir !== "string")) {
+    const desktopOk = r?.desktop === undefined || r.desktop === null || isDesktopRegistration(r.desktop)
+    if (r?.schemaVersion !== 1 || r.product !== PRODUCT || typeof r.installDir !== "string" || typeof r.generation !== "string" || !/^[0-9a-f]{32}$/.test(r.generation) || typeof r.version !== "string" || !/^\d+\.\d+\.\d+$/.test(r.version) || !claudeOk || !desktopOk || (r.profileDir !== null && typeof r.profileDir !== "string")) {
         throw new SetupRefusal("il registro di installazione non è riconosciuto: non viene sovrascritto")
     }
     return r as InstallRecord

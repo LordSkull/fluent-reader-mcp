@@ -4,10 +4,10 @@
  *
  *   node.exe fr-setup.js <command> <request file> <result file>
  *
- * Commands: check-install-dir, check-profile, detect-claude, check-claude,
- * plan, register, verify-tree; tx-recover, tx-recover-finish, tx-begin,
- * tx-prepare, tx-swap, tx-metadata, tx-commit, tx-cleanup (installation
- * transaction); un-status, uninstall-preflight, unregister, un-begin,
+ * Commands: check-install-dir, check-profile, desktop-candidates, desktop-check,
+ * desktop-plan, desktop-register, verify-tree; tx-recover, tx-recover-finish,
+ * tx-begin, tx-prepare, tx-swap, tx-metadata, tx-commit, tx-cleanup (installation
+ * transaction); un-status, uninstall-preflight, desktop-unregister, un-begin,
  * remove-tree, un-metadata, un-finish (uninstallation).
  * See installer/INSTALLER.md. Exit code 0 = ok, 1 = refused (the result
  * carries the message for the user), 2 = internal error. It prints nothing.
@@ -20,9 +20,10 @@ import { fileURLToPath } from "node:url"
 import { execFile, type ExecFn } from "../lib/common.js"
 import { runSelfTest, type SelfTestFn } from "../lib/selftest.js"
 import { HELPER_FILES, readInventory, removalPlan, removeTree, verifyTree } from "./app.js"
-import { backupNote, describeBackup, privateBackupDir, recordedBackup } from "./backups.js"
-import { authorizedTree, checkInstallDir, checkProfile, installRoot, LAYOUT, INSTALL_MODES, recordedInstallDir, resolveInstallDir, type InstallDirCheck } from "./checks.js"
-import { checkClaude, claudeConfigPath, detectClaude, plan, previewLines, register, registrationStatus, unregister, type ClaudeDeps } from "./claude.js"
+import { backupNote } from "./backups.js"
+import { authorizedTree, checkInstallDir, checkProfile, installRoot, LAYOUT, INSTALL_MODES, recordedInstallDir, resolveInstallDir, type DirectoryProbe, type InstallDirCheck } from "./checks.js"
+import { legacyCodeNote, registrationStatus } from "./claude.js"
+import { candidateLines, checkDesktopTarget, desktopPolicyBlocks, desktopPreview, desktopStatus, discoverDesktopConfigs, planDesktop, POLICY_REFUSAL, proposeDesktopConfig, readDoc, registerDesktop, unregisterDesktop, type DesktopDeps } from "./desktop.js"
 import { flag, readRequest, required, SetupRefusal, writeResult, type Request, type Result } from "./protocol.js"
 import { RECORD_NAME, readRecord } from "./record.js"
 import { JOURNAL, parseRegistryBackup, registryInstructions, txBegin, txCleanup, txCommit, txMetadata, txPrepare, txRecover, txRecoverFinish, txStage, txSwap, type TxCheckpoint, type TxDeps } from "./transaction.js"
@@ -34,7 +35,9 @@ export interface HelperDeps {
     readonly selfTest: SelfTestFn
     readonly now: () => Date
     /** Test hooks: concurrent changes and injected failures or crashes at named steps. */
-    readonly checkpoint?: ClaudeDeps["checkpoint"]
+    readonly checkpoint?: DesktopDeps["checkpoint"]
+    /** Test hook: the rename that replaces a Claude Desktop configuration. */
+    readonly desktopReplace?: DesktopDeps["replace"]
     readonly txCheckpoint?: ((step: TxCheckpoint) => void) | undefined
     readonly uninstallCheckpoint?: ((step: UninstallCheckpoint) => void) | undefined
     /** Test hook: the file removal used by remove-tree and the cleanups. */
@@ -43,7 +46,7 @@ export interface HelperDeps {
     /** Test hook: the rename primitive of the installation transaction (called once per rename). */
     readonly rename?: ((from: string, to: string) => void) | undefined
     /** Test hook: the write check of an existing destination (check-install-dir). */
-    readonly writeProbe?: ((dir: string) => void) | undefined
+    readonly writeProbe?: DirectoryProbe | undefined
     /** Where this helper runs with its payload's inventory (installer-files.json next to setup\): the only payload reference. */
     readonly payloadRoot?: string | null | undefined
 }
@@ -58,8 +61,8 @@ function recordPath(installDir: string): string {
     return path.win32.join(installDir, RECORD_NAME)
 }
 
-function claudeDeps(deps: HelperDeps): ClaudeDeps {
-    return { env: deps.env, exec: deps.exec, cwd: os.tmpdir(), now: deps.now, ...(deps.checkpoint !== undefined && { checkpoint: deps.checkpoint }) }
+function desktopDeps(deps: HelperDeps): DesktopDeps {
+    return { env: deps.env, exec: deps.exec, cwd: os.tmpdir(), now: deps.now, checkpoint: deps.checkpoint, replace: deps.desktopReplace }
 }
 
 /** The install directory of a request, re-validated by every command that writes into it (never redirected: no proposal here). */
@@ -75,33 +78,53 @@ const COMMANDS: Record<string, (request: Request, deps: HelperDeps) => Promise<F
     "check-install-dir": (request, deps) => {
         const maxRelative = Number(required(request, "maxRelative"))
         if (!Number.isSafeInteger(maxRelative) || maxRelative <= 0) throw new SetupRefusal("richiesta non valida: maxRelative")
-        // the wizard's choice -> the effective destination it shows for confirmation (the only command that may propose one)
+        // the wizard's choice -> the effective destination it shows on its page (the only command that may propose one)
         const check = resolveInstallDir({ installDir: required(request, "installDir"), version: required(request, "version"), maxRelative, env: deps.env }, deps.writeProbe)
         return [["canonical", check.canonical], ["mode", check.mode], ["installedVersion", check.installedVersion ?? ""], ["previousProfile", check.previousProfile ?? ""], ["adjusted", check.adjusted ?? ""], ["outsideProfile", check.outsideProfile ? "yes" : "no"]]
     },
     "check-profile": (request) => [["canonical", checkProfile(required(request, "profileDir"), request.get("installDir") ?? null).canonical]],
-    "detect-claude": (_request, deps) => {
-        const found = detectClaude(deps.env)
-        if (found.length === 0) throw new SetupRefusal("Claude Code (claude.exe) non è stato trovato: indicalo con Sfoglia, oppure installa solo il server")
-        return [["claudeExe", found[0] as string], ["candidates", String(found.length)]]
+    // ---------------------------------------------------------------- Claude Desktop (see desktop.ts)
+    "desktop-candidates": (request, deps) => {
+        // read-only: names and dates of the candidate files, none opened
+        const discovery = discoverDesktopConfigs(deps.env)
+        const installDir = request.get("installDir")
+        const record = installDir === undefined || installDir === "" ? null : readRecord(recordPath(installDir))
+        const { status, selected } = proposeDesktopConfig(discovery, record)
+        return [["proposal", status], ["selected", selected], ["packaged", discovery.packaged ? "yes" : "no"], ["policy", desktopPolicyBlocks(desktopDeps(deps)) ? "blocked" : "allowed"], ...candidateLines(discovery).map((line): [string, string] => ["preview", line])]
     },
-    "check-claude": (request, deps) => [["version", checkClaude(required(request, "claudeExe"), claudeDeps(deps)).version]],
-    plan: (request, deps) => {
+    "desktop-check": (request, deps) => {
+        const configPath = checkDesktopTarget(required(request, "configPath"), deps.env, request.get("installDir") ?? null)
+        readDoc(configPath)
+        return [["canonical", configPath]]
+    },
+    "desktop-plan": (request, deps) => {
         const installDir = installDirOf(request, deps)
-        const claudeExe = required(request, "claudeExe")
-        const { version } = checkClaude(claudeExe, claudeDeps(deps))
+        if (desktopPolicyBlocks(desktopDeps(deps))) throw new SetupRefusal(POLICY_REFUSAL)
+        const configPath = checkDesktopTarget(required(request, "configPath"), deps.env, installDir)
         const profileDir = checkProfile(required(request, "profileDir"), installDir).canonical
         const record = readRecord(recordPath(installDir))
-        const p = plan({ configPath: claudeConfigPath(deps.env), installDir, profileDir, record })
+        const p = planDesktop({ configPath, installDir, profileDir, record })
         // the copy can only go to the user's private directory: without it, the change is refused here, before consent
-        const backupDir = p.action !== "none" && p.configExists ? privateBackupDir(deps.env, installDir) : null
-        const lines = previewLines(p, claudeExe, version, backupDir)
-        // a registration that did not finish (crash or incomplete rollback): where its copy is, found again for this user
-        if (record?.claude?.state === "pending" || record?.claude?.state === "rollback-failed") {
-            const note = describeBackup(recordedBackup(installDir, record, deps.env))
-            if (note !== null) lines.push(`Una registrazione precedente non si è conclusa. ${note}`)
-        }
+        const lines = desktopPreview(p, installDir, record, deps.env)
         return [["action", p.action], ["planHash", p.hash], ...lines.map((line): [string, string] => ["preview", line])]
+    },
+    "desktop-register": (request, deps) => {
+        if (!flag(request, "consent")) throw new SetupRefusal("la registrazione in Claude Desktop richiede il tuo consenso esplicito: nessuna modifica eseguita")
+        const installDir = installDirOf(request, deps)
+        const outcome = registerDesktop({
+            configPath: checkDesktopTarget(required(request, "configPath"), deps.env, installDir),
+            installDir,
+            profileDir: checkProfile(required(request, "profileDir"), installDir).canonical,
+            recordPath: recordPath(installDir),
+            expectPlan: required(request, "planHash"),
+            allowReplaceForeign: flag(request, "replaceForeign"),
+        }, desktopDeps(deps))
+        return [["action", outcome.action], ["backup", outcome.backup ?? ""]]
+    },
+    "desktop-unregister": (request, deps) => {
+        const installDir = recordedInstallDir(required(request, "installDir"), deps.env)
+        const { outcome, message } = unregisterDesktop(recordPath(installDir), desktopDeps(deps))
+        return [["outcome", outcome], ["message", message]]
     },
     // ---------------------------------------------------------------- installation transaction (see transaction.ts)
     "tx-recover": (request, deps) => {
@@ -156,10 +179,12 @@ const COMMANDS: Record<string, (request: Request, deps: HelperDeps) => Promise<F
     // ---------------------------------------------------------------- uninstallation (see uninstall.ts)
     "un-status": (request, deps) => {
         const status = uninstallStatus(required(request, "installDir"), deps.env)
-        // read-only: where this installation's copies of the Claude configuration stay (shown at the end; never deleted)
+        // read-only: where this installation's copies of the Claude configurations stay, and an entry an earlier setup
+        // left in Claude Code (shown at the end; neither is touched)
         let backups = ""
         try {
-            backups = backupNote(installRoot(required(request, "installDir"), deps.env), deps.env)
+            const root = installRoot(required(request, "installDir"), deps.env)
+            backups = [backupNote(root, deps.env), legacyCodeNote(readRecord(recordPath(root)), true)].filter((note) => note !== "").join(" ")
         } catch {
             // nothing to report
         }
@@ -182,8 +207,8 @@ const COMMANDS: Record<string, (request: Request, deps: HelperDeps) => Promise<F
             const listed = new Set(readInventory(current).files.map((f) => f.path))
             for (const helper of HELPER_FILES) if (!listed.has(helper) || !fs.existsSync(path.win32.join(current, ...helper.split("/")))) throw new SetupRefusal(`il programma di supporto è incompleto (${helper})`)
         }
-        const status = registrationStatus(readRecord(recordPath(installDir)))
-        return [["claude", status.status]]
+        const record = readRecord(recordPath(installDir))
+        return [["desktop", desktopStatus(record, deps.env)], ["claude", registrationStatus(record).status]]
     },
     "un-begin": (request, deps) => {
         uninstallBegin(required(request, "installDir"), deps.env)
@@ -200,24 +225,6 @@ const COMMANDS: Record<string, (request: Request, deps: HelperDeps) => Promise<F
     "un-finish": (request, deps) => {
         uninstallFinish(required(request, "installDir"), deps.env, deps.uninstallCheckpoint)
         return []
-    },
-    register: (request, deps) => {
-        if (!flag(request, "consent")) throw new SetupRefusal("la registrazione in Claude Code richiede il tuo consenso esplicito: nessuna modifica eseguita")
-        const installDir = installDirOf(request, deps)
-        const outcome = register({
-            claudeExe: required(request, "claudeExe"),
-            installDir,
-            profileDir: checkProfile(required(request, "profileDir"), installDir).canonical,
-            recordPath: recordPath(installDir),
-            expectPlan: required(request, "planHash"),
-            allowReplaceForeign: flag(request, "replaceForeign"),
-        }, claudeDeps(deps))
-        return [["action", outcome.action], ["backup", outcome.backup ?? ""]]
-    },
-    unregister: (request, deps) => {
-        const installDir = recordedInstallDir(required(request, "installDir"), deps.env)
-        const { outcome, message } = unregister(recordPath(installDir), request.get("claudeExe") || null, claudeDeps(deps))
-        return [["outcome", outcome], ["message", message]]
     },
     "verify-tree": async (request, deps) => {
         const root = required(request, "root")
