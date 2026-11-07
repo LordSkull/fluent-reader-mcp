@@ -17,6 +17,7 @@
  */
 
 import { isDeepStrictEqual } from "node:util"
+import { TOOLS } from "../../installer/lib/package-content.js"
 import type { z } from "zod"
 import { ERROR_CODES, FrMcpError, type ErrorCode, type ErrorReason } from "../../src/errors.js"
 import { SERVER_NAME } from "../../src/server.js"
@@ -308,7 +309,6 @@ const ERROR_REASONS: Readonly<Record<ErrorReason, true>> = {
     "position-changed": true,
     "source-identity-unverifiable": true,
     // rule writes
-    "writes-disabled": true,
     "lockfile-present": true,
     "app-started": true,
     "revision-mismatch": true,
@@ -321,6 +321,7 @@ const ERROR_REASONS: Readonly<Record<ErrorReason, true>> = {
     "byte-order-mark": true,
     "hard-linked": true,
     "write-in-progress": true,
+    "write-guard-orphaned": true,
     "write-lock-orphaned": true,
     "backup-location": true,
     "backup-failed": true,
@@ -328,7 +329,6 @@ const ERROR_REASONS: Readonly<Record<ErrorReason, true>> = {
     "replace-failed": true,
     "read-back-failed": true,
     // news preferences
-    "preferences-disabled": true,
     "storage-location": true,
     "unsafe-storage": true,
     "profile-identity": true,
@@ -620,7 +620,7 @@ export function verifyTranscript(text: string, meta?: ProcessMetadata): Transcri
     const tools = Array.isArray(init?.tools) ? init.tools.map(String) : []
     const foreign = tools.filter((t) => !t.startsWith(MCP_PREFIX) && !TOLERATED_CLIENT_TOOLS.has(t))
     const discovered = CLIENT_TOOL_NAMES.filter((t) => tools.includes(t))
-    check("client.tools-discovered", discovered.length === TOOL_NAMES.length && tools.filter((t) => t.startsWith(MCP_PREFIX)).length === TOOL_NAMES.length, `${discovered.length}/7 smoke tools in the session tool list`)
+    check("client.tools-discovered", discovered.length === TOOL_NAMES.length && tools.filter((t) => t.startsWith(MCP_PREFIX)).every((t) => TOOLS.includes(t.slice(MCP_PREFIX.length))), `${discovered.length}/7 smoke tools in the session tool list`)
     check("client.no-other-tools", init !== undefined && foreign.length === 0, foreign.length === 0 ? "no built-in or foreign tool available" : `other tools available: ${foreign.join(", ")}`)
 
     const calls = analysis.calls

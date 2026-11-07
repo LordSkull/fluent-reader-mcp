@@ -264,7 +264,7 @@ describe("NSIS script", () => {
 
     test("DEC-DESKTOP: the end of the setup never declares the client connected: it says what to verify, in the client", () => {
         const done = MAIN.slice(MAIN.indexOf('RunHelper "desktop-register"'), MAIN.indexOf("Goto install_done"))
-        for (const fact of ["non può dimostrare che Claude Desktop legga proprio questo file", "Chiudi del tutto Claude Desktop", "nove strumenti", "seleziona l'altro file", "$DesktopConfig", "NON è registrato in Claude Desktop", "Claude Desktop non è stato modificato"]) assert.ok(done.includes(fact), fact)
+        for (const fact of ["non può dimostrare che Claude Desktop legga proprio questo file", "Chiudi del tutto Claude Desktop", "sedici strumenti", "seleziona l'altro file", "$DesktopConfig", "NON è registrato in Claude Desktop", "Claude Desktop non è stato modificato"]) assert.ok(done.includes(fact), fact)
         assert.doesNotMatch(done, /connesso|collegato correttamente|funziona/i)
     })
 
@@ -286,13 +286,16 @@ describe("NSIS script", () => {
         for (const m of CODE.matchAll(/RemoveOwnTree "[^"]*" "[^"]*" "([^"]*)"/g)) assert.ok(["current", ".staging", "previous"].includes(m[1] as string), m[0])
     })
 
-    test("the wizard states the privacy facts, the default mode and the explicit opt-in mode", () => {
-        for (const fact of ["sola lettura", "impostazione predefinita", "non effettua richieste di rete proprie", "servizio Anthropic", "nove strumenti", "tredici strumenti", "setup non li abilita", "La ricerca usa solo dati già salvati", "Nessun servizio Windows"]) {
+    test("the wizard states the privacy facts and that writes happen only on request, with their protections", () => {
+        for (const fact of ["Il database resta sempre in sola lettura", "non effettua richieste di rete proprie", "servizio Anthropic", "sedici strumenti", "senza attivazioni", "richiesta esplicita", "con Fluent Reader chiuso e dopo un backup", "file privato fuori dal profilo", "La ricerca usa solo dati già salvati", "Nessun servizio Windows"]) {
             assert.ok(SCRIPT.includes(fact), fact)
         }
         assert.match(SCRIPT, /non cerca profili da solo/)
-        // FR-MCP-04-BETA-RELEASE-01: the payload carries the nine tools (TOOLS); no page may still promise fewer
-        assert.doesNotMatch(SCRIPT, /sette strumenti|otto strumenti|ricerca degli articoli non è ancora disponibile/, "no stale tool count in the wizard")
+        // The payload carries all sixteen tools (TOOLS); no page may still promise another count, a read-only default or an activation.
+        assert.doesNotMatch(SCRIPT, /sette strumenti|otto strumenti|nove strumenti|tredici strumenti|ricerca degli articoli non è ancora disponibile/, "no stale tool count in the wizard")
+        assert.doesNotMatch(SCRIPT, /opt-in|impostazione predefinita|non abilita le scritture/i, "no activation or read-only default in the wizard")
+        const welcome = /!define MUI_WELCOMEPAGE_TEXT "([^\n]*)"/.exec(SCRIPT)?.[1] ?? ""
+        assert.ok(welcome.length > 0 && welcome.length < 1024, "within the NSIS string limit")
         assert.doesNotMatch(SCRIPT, /LogSet|LogText/, "no setup log file")
     })
 

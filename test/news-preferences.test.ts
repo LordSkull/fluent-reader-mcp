@@ -71,7 +71,6 @@ interface SessionOptions {
     readonly p?: Profile
     readonly store?: Store
     readonly now?: () => number
-    readonly rules?: boolean
     readonly step?: (step: PreferenceStep) => void
 }
 
@@ -79,7 +78,6 @@ async function session(options: SessionOptions = {}): Promise<Session> {
     const p = options.p ?? profile()
     const store = options.store ?? storage()
     const settings: NewsPreferenceSettings = {
-        enabled: true,
         ...store,
         previewKey: crypto.randomBytes(32),
         usedTokens: new Set(),
@@ -87,7 +85,7 @@ async function session(options: SessionOptions = {}): Promise<Session> {
     }
     const h = await harness(p, {
         ...(options.now && { now: options.now }),
-        ruleWrites: { enabled: options.rules === true, ...store },
+        ruleWrites: store,
         newsPreferences: settings,
     })
     open.push(h)
@@ -154,58 +152,37 @@ async function effectiveLayers(s: Session, args: Record<string, unknown> = {}): 
 const textOf = (section: any, field: string): string => section.fields.find((f: any) => f.field === field)?.text ?? ""
 
 describe("tool exposure", () => {
-    test("each opt-in enables only with the exact value 1", () => {
-        for (const value of [undefined, "", "0", "true", "01", " 1", "1 "]) {
-            assert.equal(newsPreferenceSettingsFromEnv({ FLUENT_READER_MCP_ENABLE_NEWS_PREFERENCES: value }).enabled, false)
-        }
-        assert.equal(newsPreferenceSettingsFromEnv({ FLUENT_READER_MCP_ENABLE_NEWS_PREFERENCES: "1" }).enabled, true)
-    })
-
-    test("the independent opt-ins expose exactly 9, 12, 13 and 16 tools, with the expected annotations", async () => {
-        for (const [rules, prefs, count] of [[false, false, 9], [false, true, 12], [true, false, 13], [true, true, 16]] as const) {
-            const store = storage()
-            const h = await harness(profile(), {
-                ruleWrites: { enabled: rules, ...store },
-                newsPreferences: { enabled: prefs, ...store, previewKey: crypto.randomBytes(32), usedTokens: new Set() },
-            })
-            open.push(h)
-            const { tools } = await h.client.listTools()
-            assert.equal(tools.length, count)
-            const named = new Map(tools.map((tool) => [tool.name, tool]))
-            for (const name of ["get_news_preferences", "preview_news_preferences_change", "apply_news_preferences_change"]) assert.equal(named.has(name), prefs)
-            if (prefs) {
-                assert.equal(named.get("get_news_preferences")?.annotations?.readOnlyHint, true)
-                assert.equal(named.get("preview_news_preferences_change")?.annotations?.readOnlyHint, true)
-                assert.equal(named.get("apply_news_preferences_change")?.annotations?.destructiveHint, true)
-            }
+    test("the settings read only the storage location: the legacy variable means nothing, at any value", () => {
+        for (const value of [undefined, "", "0", "true", "01", " 1", "1 ", "1"]) {
+            const settings = newsPreferenceSettingsFromEnv({ FLUENT_READER_MCP_ENABLE_NEWS_PREFERENCES: value, LOCALAPPDATA: "a", USERPROFILE: "b" })
+            assert.deepEqual([settings.localAppData, settings.userProfile], ["a", "b"])
+            assert.equal("enabled" in settings, false)
         }
     })
 
-    test("the real entry point honours both variables and creates nothing when reading", async () => {
-        const p = profile()
-        for (const [rules, prefs, count] of [[false, false, 9], [true, false, 13], [false, true, 12], [true, true, 16]] as const) {
-            const store = storage()
-            const server = startServer(["--profile-dir", p.dir], childEnv({
-                LOCALAPPDATA: store.localAppData,
-                USERPROFILE: store.userProfile,
-                FLUENT_READER_MCP_ENABLE_NEWS_PREFERENCES: prefs ? "1" : "0",
-                FLUENT_READER_MCP_ENABLE_RULE_WRITES: rules ? "1" : "0",
-            }))
-            await request(server, {
-                jsonrpc: "2.0", id: 1, method: "initialize",
-                params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "prefs-test", version: "0" } },
-            })
-            server.child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`)
-            const listed = await request(server, { jsonrpc: "2.0", id: 2, method: "tools/list" })
-            assert.equal((listed.result as { tools: unknown[] }).tools.length, count)
-            if (prefs) {
-                const got = await request(server, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "get_news_preferences", arguments: {} } })
-                assert.equal((got.result as { isError?: boolean }).isError, undefined)
-            }
-            assert.deepEqual(snapshotDir(store.localAppData), new Map())
-            server.child.stdin.end()
-            assert.equal((await server.exited(5_000)).code, 0)
-        }
+    test("the three tools keep their annotations: only apply can write", async () => {
+        const s = await session()
+        const named = new Map((await s.h.client.listTools()).tools.map((tool) => [tool.name, tool]))
+        assert.equal(named.size, 16)
+        assert.equal(named.get("get_news_preferences")?.annotations?.readOnlyHint, true)
+        assert.equal(named.get("preview_news_preferences_change")?.annotations?.readOnlyHint, true)
+        assert.equal(named.get("apply_news_preferences_change")?.annotations?.readOnlyHint, false)
+        assert.equal(named.get("apply_news_preferences_change")?.annotations?.destructiveHint, true)
+    })
+
+    test("the real entry point serves them without any variable, and reading creates nothing", async () => {
+        const store = storage()
+        const server = startServer(["--profile-dir", profile().dir], childEnv({ LOCALAPPDATA: store.localAppData, USERPROFILE: store.userProfile }))
+        await request(server, {
+            jsonrpc: "2.0", id: 1, method: "initialize",
+            params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "prefs-test", version: "0" } },
+        })
+        server.child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`)
+        const got = await request(server, { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "get_news_preferences", arguments: {} } })
+        assert.equal((got.result as { isError?: boolean }).isError, undefined)
+        assert.deepEqual(snapshotDir(store.localAppData), new Map())
+        server.child.stdin.end()
+        assert.equal((await server.exited(5_000)).code, 0)
     })
 })
 
@@ -234,8 +211,8 @@ describe("B1: the profile binding survives normal replacement of its files", () 
         assert.match(JSON.stringify(await effectiveLayers(restarted, { sourceId: 0 })), /Tecnologia/)
     })
 
-    test("a real add_rule, with both opt-ins, leaves the preferences effective and editable", async () => {
-        const s = await session({ rules: true })
+    test("a real add_rule leaves the preferences effective and editable", async () => {
+        const s = await session()
         await initialize(s, ["Prima della regola"])
         const inode = fs.statSync(s.p.configPath, { bigint: true }).ino
         const { revision } = ok(await s.h.call("list_rules", { limit: 100, scope: "group", groupId: 0 }))
@@ -1936,7 +1913,7 @@ describe("storage safety", () => {
         const elsewhere = path.join(root, `elsewhere-${++counter}`)
         fs.mkdirSync(elsewhere)
         const settings = (localAppData: string | undefined, userProfile: string | undefined): NewsPreferenceSettings => ({
-            enabled: true, localAppData, userProfile, previewKey: crypto.randomBytes(32), usedTokens: new Set(),
+            localAppData, userProfile, previewKey: crypto.randomBytes(32), usedTokens: new Set(),
         })
         for (const s of [settings(elsewhere, store.userProfile), settings("relative", "relative"), settings(undefined, undefined)]) {
             const h = await harness(profile(), { newsPreferences: s })
@@ -1945,20 +1922,23 @@ describe("storage safety", () => {
         }
     })
 
-    test("disabled preferences refuse every tool handler even if called directly", async () => {
+    test("without private storage every handler refuses, even if called directly", async () => {
         const { getNewsPreferences, previewNewsPreferencesChange, applyNewsPreferencesChange } = await import("../src/tools/news-preferences.js")
         const { createToolContext } = await import("../src/tools/context.js")
         const p = profile()
         const context = createToolContext({ database: { withReadConnection: () => { throw new Error("unused") } }, configPath: p.configPath, profileDir: p.dir })
-        for (const call of [getNewsPreferences, previewNewsPreferencesChange, applyNewsPreferencesChange]) {
-            await assert.rejects(call(context, {}), (e: any) => e.code === "NEWS_PREFERENCES_DISABLED")
-        }
+        const changes = { operation: "initialize", interests: ["x"] }
+        const unavailable = (e: any): boolean => e.code === "PREFERENCES_UNAVAILABLE" && e.reason === "storage-location"
+        await assert.rejects(getNewsPreferences(context, {}), unavailable)
+        await assert.rejects(previewNewsPreferencesChange(context, { expectedRevision: "absent", changes }), unavailable)
+        await assert.rejects(applyNewsPreferencesChange(context, { previewToken: `npp1.${"A".repeat(30)}.${"A".repeat(43)}`, expectedRevision: "absent", changes, confirm: true }), unavailable)
+        for (const call of [previewNewsPreferencesChange, applyNewsPreferencesChange]) await assert.rejects(call(context, {}), (e: any) => e.code === "INVALID_ARGUMENT")
     })
 })
 
 describe("isolation", () => {
     test("config.json, the database and the rules are byte-identical after every operation", async () => {
-        const s = await session({ rules: true })
+        const s = await session()
         const before = snapshotDir(s.p.dir)
         await read(s)
         await initialize(s, ["A"])

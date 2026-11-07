@@ -7,6 +7,7 @@ import { storedRuleFrom } from "../src/domain/rule-definition.js"
 import { analyzeRule, REGEX_CHECK_MAX, RULES_CONSULTED_MAX } from "../src/domain/rules.js"
 import { spliceRuleTarget } from "../src/settings/json-splice.js"
 import { CFG_MAX } from "../src/settings/read-settings.js"
+import { TOOLS } from "../installer/lib/package-content.js"
 import { APP_LOCK_FILE, BACKUP_KIND, BACKUP_LOCATION, BACKUP_NAME, BACKUP_ROOT, GUARD_STALE_MS, RENAME_PAUSE_MS, ruleWriteSettingsFromEnv, WRITE_GUARD_FILE, type RuleWriteSettings, type RuleWriteStep } from "../src/settings/rule-store.js"
 import { addRule, deleteRule, updateRule } from "../src/tools/rule-change.js"
 import { getRuleChainOutput, listRulesOutput, previewRuleChangeOutput, RULE_CHANGE_EFFECT, RULE_PREVIEW_LIMITS, ruleWriteOutput } from "../src/tools/schemas.js"
@@ -64,7 +65,7 @@ async function setup(config: unknown = settings(), ruleWrites: Partial<RuleWrite
     const dir = path.join(root, `rw${++counter}`)
     const p = createSourcesProfile(dir, { sources: [{ sid: 1 }, { sid: 2 }, { sid: 3 }], settings: config })
     const store = storage()
-    const h = await harness(p, { ruleWrites: { enabled: true, ...store, ...ruleWrites } })
+    const h = await harness(p, { ruleWrites: { ...store, ...ruleWrites } })
     open.push(h)
     return { p, h, store, backupRoot: path.join(store.localAppData, BACKUP_ROOT, BACKUP_KIND) }
 }
@@ -671,7 +672,7 @@ describe("concurrent changes", () => {
         assert.equal(config(s.p).sourceRules["source:1"].length, 4)
     })
 
-    test("another copy of the server writing: busy; a guard left by a crash is replaced once stale", async () => {
+    test("another copy of the server writing: busy; a guard left by a crash stays until removed by hand", async () => {
         const s = await setup()
         const target = await source(s.h)
         const guard = path.join(s.p.dir, WRITE_GUARD_FILE)
@@ -682,6 +683,10 @@ describe("concurrent changes", () => {
         assert.equal(fs.readFileSync(guard, "utf8"), "partial")
         const old = new Date(Date.now() - GUARD_STALE_MS - 1000)
         fs.utimesSync(guard, old, old)
+        refused(await s.h.call("add_rule", { ...target, rule: RULE }), "RULE_WRITE_BUSY", "write-guard-orphaned")
+        assert.deepEqual(bytes(s.p), before)
+        assert.equal(fs.readFileSync(guard, "utf8"), "partial")
+        fs.unlinkSync(guard)
         ok(await s.h.call("add_rule", { ...target, rule: RULE }), ruleWriteOutput)
         assert.equal(fs.existsSync(guard), false)
     })
@@ -744,7 +749,7 @@ describe("retries of the rename", () => {
         const seen = { attempts: 0 }
         const real = fs.renameSync
         t.mock.method(fs, "renameSync", (from: fs.PathLike, to: fs.PathLike): void => {
-            if (path.basename(String(from)) === WRITE_GUARD_FILE && ++seen.attempts <= failures) {
+            if (/^config.json.frmcp-write..*.partial$/.test(path.basename(String(from))) && ++seen.attempts <= failures) {
                 onRefusal?.()
                 throw Object.assign(new Error(`${code} ${SECRET_SENTINEL}`), { code })
             }
@@ -1011,7 +1016,7 @@ describe("private backups", () => {
         const dir = path.join(root, `rw${++counter}`)
         const p = createSourcesProfile(dir, { sources: [{ sid: 1 }], settings: settings() })
         const store = storage()
-        const h = await harness(p, { now: () => Date.UTC(2026, 10, 4, 12, 0, 0), ruleWrites: { enabled: true, ...store } })
+        const h = await harness(p, { now: () => Date.UTC(2026, 10, 4, 12, 0, 0), ruleWrites: store })
         open.push(h)
         const names: string[] = []
         for (let i = 0; i < 3; i++) names.push((ok(await h.call("add_rule", { ...(await source(h)), rule: { ...RULE, pattern: `p${i}` } }), ruleWriteOutput).backup?.name) as string)
@@ -1064,36 +1069,32 @@ describe("private backups", () => {
     })
 })
 
-describe("explicit enabling", () => {
-    test("the environment variable enables only with exactly 1", () => {
-        for (const value of [undefined, "", "0", "true", "yes", "TRUE", " 1", "1 "]) {
-            assert.equal(ruleWriteSettingsFromEnv({ FLUENT_READER_MCP_ENABLE_RULE_WRITES: value }).enabled, false, String(value))
+describe("always available, never automatic", () => {
+    test("the settings read only the storage location: the legacy variable means nothing, at any value", () => {
+        for (const value of [undefined, "", "0", "true", "yes", "TRUE", " 1", "1 ", "1"]) {
+            assert.deepEqual(ruleWriteSettingsFromEnv({ FLUENT_READER_MCP_ENABLE_RULE_WRITES: value, LOCALAPPDATA: "a", USERPROFILE: "b" }), { localAppData: "a", userProfile: "b" }, String(value))
         }
-        assert.equal(ruleWriteSettingsFromEnv({ FLUENT_READER_MCP_ENABLE_RULE_WRITES: "1" }).enabled, true)
     })
 
-    test("disabled (the default): the nine tools only, and the handlers refuse before reading anything", async () => {
+    test("listed even without private storage, where a write is refused and the profile stays as it was", async () => {
         const dir = path.join(root, `rw${++counter}`)
         const p = createSourcesProfile(dir, { sources: [{ sid: 1 }], settings: settings() })
         const h = await harness(p)
         open.push(h)
         const tools = (await h.client.listTools()).tools
-        assert.deepEqual(tools.map((t) => t.name).sort(), ["get_article", "get_group", "get_rule_chain", "get_source", "list_articles", "list_groups", "list_rules", "list_sources", "search_articles"])
+        assert.deepEqual(tools.map((t) => t.name).sort(), [...TOOLS])
         const initial = snapshotDir(p.dir)
-        for (const name of ["add_rule", "update_rule", "delete_rule", "preview_rule_change"]) {
-            const call = await h.call(name, { scope: "source", sourceId: 1, expectedRevision: "rr1.AAAAAAAAAAAAAAAAAAAAAA", rule: RULE, index: 0 }).catch((error: unknown) => error)
-            assert.ok(call instanceof Error || (call as ToolOutcome).isError, name)
-        }
+        refused(await h.call("add_rule", { ...(await source(h)), rule: RULE }), "RULE_BACKUP_UNAVAILABLE")
         for (const handler of [addRule, updateRule, deleteRule]) {
-            await assert.rejects(handler(h.context, { anything: true }), { code: "RULE_WRITES_DISABLED", reason: "writes-disabled" })
+            await assert.rejects(handler(h.context, { anything: true }), { code: "INVALID_ARGUMENT" })
         }
         assert.deepEqual(snapshotDir(p.dir), initial)
     })
 
-    test("enabled: thirteen tools, with annotations telling reads, writes and deletion apart", async () => {
+    test("sixteen tools, with annotations telling reads, writes and deletion apart", async () => {
         const s = await setup()
         const tools = new Map((await s.h.client.listTools()).tools.map((t) => [t.name, t]))
-        assert.equal(tools.size, 13)
+        assert.equal(tools.size, 16)
         for (const name of ["list_rules", "get_rule_chain", "preview_rule_change"]) {
             assert.deepEqual([tools.get(name)?.annotations?.readOnlyHint, tools.get(name)?.annotations?.destructiveHint], [true, false], name)
         }
@@ -1146,26 +1147,27 @@ describe("over stdio, with the real entry point", { timeout: 60_000 }, () => {
         return server
     }
 
-    test("without the variable nine tools and a tool error; with it the whole flow saves on disk", async () => {
+    test("without the variable, or with the legacy one at any value: sixteen tools and the same refusals; the whole flow saves on disk", async () => {
         const dir = path.join(root, `rw${++counter}`)
         const p = createSourcesProfile(dir, { sources: [{ sid: 1 }], settings: JSON.stringify(settings(), undefined, "\t") })
         const store = storage()
         const env = { LOCALAPPDATA: store.localAppData, USERPROFILE: store.userProfile }
         const initial = snapshotDir(p.dir)
 
-        const off = await start({ ...env, FLUENT_READER_MCP_ENABLE_RULE_WRITES: "0" }, p.dir)
-        const offList = await request(off, { jsonrpc: "2.0", id: 2, method: "tools/list" })
-        assert.equal((offList.result as { tools: unknown[] }).tools.length, 9)
-        const offCall = await request(off, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "add_rule", arguments: {} } })
-        assert.ok("error" in offCall || (offCall.result as { isError?: boolean }).isError === true)
-        off.child.stdin.end()
-        const offExit = await off.exited(5_000)
-        assert.match(offExit.stderr, /"event":"rule_writes","enabled":false/)
-        assert.deepEqual(snapshotDir(p.dir), initial)
+        for (const legacy of ["0", "1"]) {
+            const server = await start({ ...env, FLUENT_READER_MCP_ENABLE_RULE_WRITES: legacy }, p.dir)
+            const listed = await request(server, { jsonrpc: "2.0", id: 2, method: "tools/list" })
+            assert.equal((listed.result as { tools: unknown[] }).tools.length, 16)
+            const refusedCall = await request(server, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "add_rule", arguments: {} } })
+            assert.ok("error" in refusedCall || (refusedCall.result as { isError?: boolean }).isError === true)
+            server.child.stdin.end()
+            assert.equal((await server.exited(5_000)).code, 0)
+            assert.deepEqual(snapshotDir(p.dir), initial)
+        }
 
-        const on = await start({ ...env, FLUENT_READER_MCP_ENABLE_RULE_WRITES: "1" }, p.dir)
+        const on = await start(env, p.dir)
         const onList = await request(on, { jsonrpc: "2.0", id: 2, method: "tools/list" })
-        assert.equal((onList.result as { tools: unknown[] }).tools.length, 13)
+        assert.equal((onList.result as { tools: unknown[] }).tools.length, 16)
         const call = async (id: number, name: string, args: unknown): Promise<any> => ((await request(on, { jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } })).result as { structuredContent: unknown }).structuredContent
         const preview = await call(3, "preview_rule_change", { operation: "add", scope: "source", sourceId: 1, rule: RULE })
         const saved = await call(4, "add_rule", { scope: "source", sourceId: 1, sourceRef: preview.target.sourceRef, expectedRevision: preview.currentRevision, rule: RULE })
@@ -1175,7 +1177,6 @@ describe("over stdio, with the real entry point", { timeout: 60_000 }, () => {
         on.child.stdin.end()
         const onExit = await on.exited(5_000)
         assert.equal(onExit.code, 0)
-        assert.match(onExit.stderr, /"event":"rule_writes","enabled":true/)
         assert.deepEqual(findLeaks([onExit.stdout, onExit.stderr], [SECRET_SENTINEL, FAKE_PASSWORD, p.dir, store.userProfile]), [])
         const onDisk = config(p)
         assert.equal(onDisk.sourceRules["source:1"].length, 4)

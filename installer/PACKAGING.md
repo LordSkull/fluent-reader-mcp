@@ -1,9 +1,9 @@
 # FR-MCP-04-BETA-01 — Pacchetto portatile Windows x64 (beta privata)
 
-Builder del pacchetto ZIP autonomo di Fluent Reader MCP. Per impostazione predefinita espone nove strumenti in sola lettura; dopo l'opt-in manuale espone tredici strumenti, dei quali `preview_rule_change` resta in sola lettura e `add_rule`, `update_rule`, `delete_rule` possono modificare le regole.
+Builder del pacchetto ZIP autonomo di Fluent Reader MCP. La prossima build espone sedici strumenti, tutti disponibili automaticamente: dodici non modificano nulla; `add_rule`, `update_rule`, `delete_rule` possono cambiare le regole RSS e `apply_news_preferences_change` salva le preferenze in un file privato, soltanto su richiesta esplicita e con le protezioni del server.
 Il pacchetto non è un installer: non registra nulla, non crea servizi né porte di rete, non legge profili.
 
-> Stato (FR-MCP-04-BETA-RELEASE-04): la beta attuale ha la versione **0.1.3**, nove strumenti predefiniti e tredici solo con opt-in; il wizard resta Desktop-first (il
+> Stato (FR-MCP-04-BETA-RELEASE-04): la beta già prodotta ha la versione **0.1.3**, nove strumenti predefiniti e fino a tredici con attivazione manuale. Il codice attuale ne espone sedici senza attivazioni, ma nessun pacchetto che li contenga esiste prima di una nuova build verificata; il wizard resta Desktop-first (il
 > setup aggiorna anche la 0.1.2, che ha nove strumenti); il progetto è sotto licenza **MIT** (D-13, [LICENSE](../LICENSE));
 > la notice di Koffi è inclusa anche per il pacchetto nativo che non ne contiene una (vedi "Licenze"). Lo ZIP e l'EXE
 > preliminari 0.1.0 di FR-MCP-04-BETA-RELEASE-01 (`--allow-dirty`, `gitDirty: true`) **non sono la build finale**: va
@@ -129,10 +129,10 @@ Opzioni:
 6. **Archivio:** ZIP deterministico (ordine stabile, data del commit, nomi UTF-8), riletto, estratto in
    `work-<versione>\verify`, ogni file confrontato con il manifest; quindi **auto-test** del pacchetto estratto:
    il suo `runtime\node.exe` avvia il suo `server\dist\main.js` su un profilo **sintetico** (la fixture dello smoke
-    test) in una cartella temporanea, con handshake MCP e `tools/list` due volte: senza variabile di opt-in devono
-    esserci esattamente nove strumenti in sola lettura, con il valore esatto `1` esattamente tredici. Nel percorso
-    predefinito prova anche `list_sources` e `get_article` (SQLite e lock Win32/Koffi), quindi chiude con EOF. La
-    variabile viene impostata solo nel processo sintetico dell'auto-test e non viene aggiunta dall'installer.
+    test) in una cartella temporanea, con handshake MCP e `tools/list`: senza variabili di attivazione devono
+    esserci esattamente i sedici strumenti, e lo stesso con le vecchie variabili a `0` e a `1`, che vengono ignorate.
+    Prova anche `list_sources` e `get_article` (SQLite e lock Win32/Koffi), quindi chiude con EOF. Non chiama alcuno
+    strumento di scrittura. Le variabili vengono impostate solo nel processo sintetico dell'auto-test.
 7. **Pubblicazione, fase A (preparazione):** ZIP, `.sha256` e report vengono scritti come
    `<nome>.partial`, ciascuno **creato in modo esclusivo** (fallisce se il nome esiste già); un `.partial`
    appartiene alla build solo se questa creazione è riuscita. Dopo tutte le verifiche e l'auto-test la cartella di
@@ -267,7 +267,7 @@ Il manifest (`schemaVersion: 1`) è l'interfaccia per l'installer:
 | --- | --- |
 | `product` | `fluent-reader-mcp`, versione, canale `beta`, piattaforma `win-x64` |
 | `runtime.executable` | `runtime/node.exe` |
-| `server.entrypoint` | `server/dist/main.js`, trasporto `stdio`, i nove strumenti predefiniti; l'auto-test verifica separatamente i tredici opt-in |
+| `server.entrypoint` | `server/dist/main.js`, trasporto `stdio`, tutti i sedici strumenti |
 | `launch` | `runtime/node.exe` + `["server/dist/main.js", "--profile-dir", "{profileDir}"]`, `profileDirRequired: true` |
 | `install` | `scope: currentUser`, `defaultDirectory: %LOCALAPPDATA%\FluentReaderMCP` (P-INS-05), `approved: false` |
 | `install.ownedEntries` | `runtime/`, `server/`, `licenses/`, `manifest.json`, `PACKAGING-INFO.md`: ciò che l'installer potrà rimuovere |

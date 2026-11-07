@@ -2,10 +2,11 @@
  * Functional self-test of an EXTRACTED package: its own runtime/node.exe
  * runs its own server/dist/main.js on a synthetic profile (the FR-MCP-02A-06
  * smoke fixture) created in a temporary directory outside the package.
- * Raw JSON-RPC over stdio: initialize and tools/list in both supported modes
- * (nine read-only tools by default, thirteen after explicit opt-in), plus
- * list_sources and get_article in the default mode (SQLite and the
- * Win32/Koffi lock), then stdin EOF and a clean exit. No real profile is used.
+ * Raw JSON-RPC over stdio: initialize and tools/list without any activation
+ * variable (all sixteen tools), plus list_sources and get_article (SQLite and
+ * the Win32/Koffi lock), then stdin EOF and a clean exit; then tools/list again
+ * with the legacy activation variables set, which must change nothing. No real
+ * profile is used, and no write tool is called.
  */
 
 import { spawn } from "node:child_process"
@@ -15,7 +16,7 @@ import path from "node:path"
 import { isDeepStrictEqual } from "node:util"
 import { buildSmokeProfile } from "../../test/e2e/smoke-fixture.js"
 import { BuildError, childEnv } from "./common.js"
-import { ALL_TOOLS, RULE_WRITES_ENV_VAR, TOOLS } from "./package-content.js"
+import { LEGACY_ACTIVATION_ENV_VARS, TOOLS } from "./package-content.js"
 
 const TIMEOUT_MS = 30_000
 
@@ -110,25 +111,29 @@ export const runSelfTest: SelfTestFn = async (input) => {
     try {
         const profile = buildSmokeProfile(path.join(temp, "synthetic profile àè"))
         const baseEnv = childEnv(input.env)
-        for (const key of Object.keys(baseEnv)) if (key.toUpperCase() === RULE_WRITES_ENV_VAR) delete baseEnv[key]
+        for (const key of Object.keys(baseEnv)) if ((LEGACY_ACTIVATION_ENV_VARS as readonly string[]).includes(key.toUpperCase())) delete baseEnv[key]
         const result = await runProtocol(input, temp, profile.dir, baseEnv, true)
         const byId = (id: number): Response | undefined => result.responses.find((r) => r.id === id)
         verifyProcess(result, "default")
         report.push("self-test: default mode initialized and exited cleanly on stdin EOF")
         const tools = ((byId(2)?.result?.tools as { name: string }[] | undefined) ?? []).map((t) => t.name).sort()
         if (!isDeepStrictEqual(tools, [...TOOLS])) throw new BuildError(`self-test (default): tools/list returned ${JSON.stringify(tools)}`)
-        report.push(`self-test: absent ${RULE_WRITES_ENV_VAR} returned exactly the ${TOOLS.length} read-only tools`)
+        report.push(`self-test: without activation variables tools/list returned exactly the ${TOOLS.length} tools`)
         const sources = (byId(3)?.result?.structuredContent as { sources?: { sourceId: number }[] } | undefined)?.sources?.map((s) => s.sourceId)
         if (!isDeepStrictEqual(sources, [1, 2, 3, 4, 5])) throw new BuildError("self-test: list_sources did not read the synthetic profile")
         const article = byId(4)?.result?.structuredContent as { articleId?: number; untrusted?: boolean } | undefined
         if (article?.articleId !== 2 || article.untrusted !== true) throw new BuildError("self-test: get_article did not read the synthetic article")
         report.push("self-test: list_sources and get_article read the synthetic profile (SQLite and Win32 lock)")
 
-        const enabled = await runProtocol(input, temp, profile.dir, { ...baseEnv, [RULE_WRITES_ENV_VAR]: "1" }, false)
-        verifyProcess(enabled, "rule writes enabled")
-        const enabledTools = ((enabled.responses.find((r) => r.id === 2)?.result?.tools as { name: string }[] | undefined) ?? []).map((t) => t.name).sort()
-        if (!isDeepStrictEqual(enabledTools, ALL_TOOLS)) throw new BuildError(`self-test (rule writes enabled): tools/list returned ${JSON.stringify(enabledTools)}`)
-        report.push(`self-test: ${RULE_WRITES_ENV_VAR}=1 returned exactly all ${ALL_TOOLS.length} tools`)
+        for (const value of ["0", "1"]) {
+            const legacyEnv: NodeJS.ProcessEnv = { ...baseEnv }
+            for (const name of LEGACY_ACTIVATION_ENV_VARS) legacyEnv[name] = value
+            const legacy = await runProtocol(input, temp, profile.dir, legacyEnv, false)
+            verifyProcess(legacy, `legacy variables at ${value}`)
+            const legacyTools = ((legacy.responses.find((r) => r.id === 2)?.result?.tools as { name: string }[] | undefined) ?? []).map((t) => t.name).sort()
+            if (!isDeepStrictEqual(legacyTools, [...TOOLS])) throw new BuildError(`self-test (legacy variables at ${value}): tools/list returned ${JSON.stringify(legacyTools)}`)
+        }
+        report.push(`self-test: the legacy activation variables, at 0 and at 1, changed nothing: exactly the ${TOOLS.length} tools`)
         return report
     } finally {
         fs.rmSync(temp, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })

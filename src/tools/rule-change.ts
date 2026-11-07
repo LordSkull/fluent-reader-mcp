@@ -1,7 +1,7 @@
 /**
  * add_rule, update_rule, delete_rule and preview_rule_change
  * (FR-MCP-03-RULE-WRITE-01): the only tools that can change the profile, on
- * `source:<sid>` and `group:<gid>` only, and only when the user enabled them.
+ * `source:<sid>` and `group:<gid>` only, and only through the checks below.
  *
  * A change is one transaction, serialized with every other tool of this process:
  * Fluent Reader closed → document read → target resolved (a source exists and
@@ -337,24 +337,17 @@ async function write(context: ToolContext, tool: string, operation: Operation, a
     })
 }
 
-function requireEnabled(context: ToolContext): void {
-    if (!context.ruleWrites.enabled) throw new FrMcpError("RULE_WRITES_DISABLED", "writes-disabled")
-}
-
 export async function addRule(context: ToolContext, args: unknown): Promise<CallToolResult> {
-    requireEnabled(context)
     const input = parseArgs(addRuleInput, args)
     return write(context, ADD_RULE, "add", input, storedRuleFrom(input.rule))
 }
 
 export async function updateRule(context: ToolContext, args: unknown): Promise<CallToolResult> {
-    requireEnabled(context)
     const input = parseArgs(updateRuleInput, args)
     return write(context, UPDATE_RULE, "update", input, storedRuleFrom(input.rule))
 }
 
 export async function deleteRule(context: ToolContext, args: unknown): Promise<CallToolResult> {
-    requireEnabled(context)
     const input = parseArgs(deleteRuleInput, args)
     return write(context, DELETE_RULE, "delete", input, null)
 }
@@ -398,7 +391,7 @@ export async function previewRuleChange(context: ToolContext, args: unknown): Pr
                 overlaps: impact.overlaps,
                 overlapsOmitted: impact.overlapsOmitted,
                 warnings: [...impact.warnings, ...(stale ? (["expectedRevisionStale"] as const) : []), ...(open ? (["fluentReaderOpen"] as const) : [])],
-                writeAvailability: { writesEnabled: context.ruleWrites.enabled, fluentReaderOpen: open },
+                writeAvailability: { writesEnabled: true, fluentReaderOpen: open },
                 limits: RULE_PREVIEW_LIMITS,
                 effect: RULE_CHANGE_EFFECT,
                 meta: { generatedAt: new Date(context.now()).toISOString(), schemaVersion: RESULT_SCHEMA_VERSION },

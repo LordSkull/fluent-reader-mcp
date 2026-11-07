@@ -21,12 +21,14 @@ export const MANIFEST = "manifest.json"
 export const INFO = "PACKAGING-INFO.md"
 /** P-INS-05; still subject to the owner's approval. */
 export const DEFAULT_INSTALL_DIR = "%LOCALAPPDATA%\\FluentReaderMCP"
-/** The nine tools exposed by default, all read-only, sorted. */
-export const TOOLS = ["get_article", "get_group", "get_rule_chain", "get_source", "list_articles", "list_groups", "list_rules", "list_sources", "search_articles"] as const
-/** The four tools exposed only after the user explicitly enables rule writes; three write and preview_rule_change is read-only. */
-export const RULE_TOOLS = ["add_rule", "delete_rule", "preview_rule_change", "update_rule"] as const
-export const ALL_TOOLS = [...TOOLS, ...RULE_TOOLS].sort(compareOrdinal)
-export const RULE_WRITES_ENV_VAR = "FLUENT_READER_MCP_ENABLE_RULE_WRITES"
+/** The tools that never change anything, sorted. */
+export const READ_ONLY_TOOLS = ["get_article", "get_group", "get_news_preferences", "get_rule_chain", "get_source", "list_articles", "list_groups", "list_rules", "list_sources", "preview_news_preferences_change", "preview_rule_change", "search_articles"] as const
+/** The tools that can write, each only through its own checks, sorted. */
+export const WRITE_TOOLS = ["add_rule", "apply_news_preferences_change", "delete_rule", "update_rule"] as const
+/** Every tool of the server, always available, sorted. */
+export const TOOLS: readonly string[] = [...READ_ONLY_TOOLS, ...WRITE_TOOLS].sort(compareOrdinal)
+/** Activation variables of beta 0.1.3 and of older source builds: existing client entries may still set them, and they change nothing. */
+export const LEGACY_ACTIVATION_ENV_VARS = ["FLUENT_READER_MCP_ENABLE_RULE_WRITES", "FLUENT_READER_MCP_ENABLE_NEWS_PREFERENCES"] as const
 /** Top-level entries owned by the product (for a future uninstaller). */
 export const OWNED_ENTRIES = ["runtime/", "server/", "licenses/", MANIFEST, INFO] as const
 export const KOFFI_NATIVE = "server/node_modules/@koromix/koffi-win32-x64/win32_x64/koffi.node"
@@ -305,12 +307,13 @@ export function packagingInfo(version: string, lock: RuntimeLock): string {
     return [
         `# ${PRODUCT_NAME} ${version} — private beta (Windows x64)`,
         "",
-        "Local MCP server (stdio) for one Fluent Reader profile, read-only by default.",
-        `Default tools (9, all read-only): ${TOOLS.join(", ")}.`,
-        `Explicit opt-in tools (13 total): ${RULE_TOOLS.join(", ")}; three can change source or group rules and preview_rule_change is read-only.`,
+        "Local MCP server (stdio) for one Fluent Reader profile.",
+        `All ${TOOLS.length} tools are available automatically, with no activation.`,
+        `Tools that change nothing (${READ_ONLY_TOOLS.length}): ${READ_ONLY_TOOLS.join(", ")}.`,
+        `Tools that can write, only on the user's explicit request (${WRITE_TOOLS.length}): ${WRITE_TOOLS.join(", ")}.`,
         "",
-        `Rule writes stay disabled unless the MCP client entry sets ${RULE_WRITES_ENV_VAR} to the exact value 1; this package and its installer never enable it automatically.`,
-        "With the default configuration Fluent Reader data is not modified. With rule writes enabled, close Fluent Reader before changing rules and keep the generated backups.",
+        "Available does not mean automatic: add_rule, update_rule and delete_rule change source or group rules in config.json only with Fluent Reader closed, a current revision and a private backup; apply_news_preferences_change writes only a private file outside the profile, after a preview. Keep the generated backups.",
+        `Client entries that still set ${LEGACY_ACTIVATION_ENV_VARS.join(" or ")} keep working: those variables are ignored.`,
         "It is not an installer: nothing is registered, no service or network port is created.",
         "",
         "## Contents",

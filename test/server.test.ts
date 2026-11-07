@@ -4,6 +4,7 @@ import path from "node:path"
 import { after, before, describe, test } from "node:test"
 import { Client, type CallToolResult } from "@modelcontextprotocol/client"
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio"
+import { READ_ONLY_TOOLS, TOOLS } from "../installer/lib/package-content.js"
 import { SERVER_NAME, SERVER_VERSION } from "../src/server.js"
 import {
     createProfile,
@@ -75,13 +76,13 @@ describe("MCP over stdio with the SDK v2 client", { timeout: 60_000 }, () => {
                 const tools = await client.listTools()
                 assert.deepEqual(
                     tools.tools.map((t) => t.name).sort(),
-                    ["get_article", "get_group", "get_rule_chain", "get_source", "list_articles", "list_groups", "list_rules", "list_sources", "search_articles"],
-                    "exactly the FR-MCP-02A-02 to 02A-05 tools, FR-MCP-02B-01 list_articles and FR-MCP-02B-02 search_articles",
+                    [...TOOLS],
+                    "exactly the sixteen tools, always",
                 )
                 for (const tool of tools.tools) {
-                    assert.equal(tool.annotations?.readOnlyHint, true)
+                    assert.equal(tool.annotations?.readOnlyHint, (READ_ONLY_TOOLS as readonly string[]).includes(tool.name), tool.name)
                     assert.equal(tool.annotations?.openWorldHint, false)
-                    assert.equal(tool.annotations?.destructiveHint, false)
+                    assert.equal(tool.annotations?.destructiveHint, ["update_rule", "delete_rule", "apply_news_preferences_change"].includes(tool.name), tool.name)
                     assert.equal(tool.inputSchema.type, "object")
                     assert.equal((tool.inputSchema as { additionalProperties?: unknown }).additionalProperties, false)
                     assert.equal(tool.outputSchema?.type, "object")
@@ -201,7 +202,7 @@ describe("MCP over stdio with raw JSON-RPC", { timeout: 60_000 }, () => {
         server.child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`)
         assert.deepEqual((await request(server, { jsonrpc: "2.0", id: 2, method: "ping" })).result, {})
         const list = await request(server, { jsonrpc: "2.0", id: 3, method: "tools/list" })
-        assert.deepEqual((list.result as { tools: { name: string }[] }).tools.map((t) => t.name).sort(), ["get_article", "get_group", "get_rule_chain", "get_source", "list_articles", "list_groups", "list_rules", "list_sources", "search_articles"])
+        assert.deepEqual((list.result as { tools: { name: string }[] }).tools.map((t) => t.name).sort(), [...TOOLS])
         const unknown = await request(server, { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "simulate_rules", arguments: {} } })
         assert.ok("error" in unknown || (unknown.result as { isError?: boolean }).isError === true)
         const call = await request(server, { jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "list_sources", arguments: {} } })

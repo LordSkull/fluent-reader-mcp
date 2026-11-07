@@ -46,7 +46,7 @@ function step(name: PreferenceStep): void {
 
 const h = await harness(
     { dir: input.dir, dbPath: path.join(input.dir, "fluent-reader.db"), configPath: path.join(input.dir, "config.json") },
-    { newsPreferences: { enabled: true, localAppData: input.localAppData, userProfile: input.userProfile, previewKey: crypto.randomBytes(32), usedTokens: new Set(), step } },
+    { newsPreferences: { localAppData: input.localAppData, userProfile: input.userProfile, previewKey: crypto.randomBytes(32), usedTokens: new Set(), step } },
 )
 
 async function attempt(text: string): Promise<[string, string] | null> {

@@ -16,7 +16,7 @@ import path from "node:path"
 import { after, before, describe, test } from "node:test"
 import { isDeepStrictEqual } from "node:util"
 import { BuildError, canonicalPath, isInside, sha256Bytes, type ExecFn } from "../../installer/lib/common.js"
-import { PROJECT_LICENSE, RULE_WRITES_ENV_VAR, SUPPLIED_LICENSES } from "../../installer/lib/package-content.js"
+import { LEGACY_ACTIVATION_ENV_VARS, PROJECT_LICENSE, SUPPLIED_LICENSES } from "../../installer/lib/package-content.js"
 import { assertHardLinks, buildPortable, NPM_REGISTRY, OwnedFiles, promoteArtifacts, type BuildDeps, type BuildOptions, type CheckpointStep } from "../../installer/lib/pipeline.js"
 import type { FetchFn } from "../../installer/lib/runtime.js"
 import { runSelfTest, type SelfTestFn } from "../../installer/lib/selftest.js"
@@ -443,11 +443,13 @@ describe("builder pipeline refusals", { timeout: 60_000 }, () => {
 })
 
 describe("self-test protocol (build machine Node + repository server, not a package)", { timeout: 60_000 }, () => {
-    test("handshake, nine default tools, thirteen opt-in tools, synthetic reads and clean exits", async () => {
-        const lines = await runSelfTest({ nodeExe: process.execPath, entrypoint: MAIN_JS, env: { ...process.env, [RULE_WRITES_ENV_VAR]: "1" } })
+    test("handshake, all sixteen tools without activation, synthetic reads, legacy variables ignored and clean exits", async () => {
+        // A legacy variable in the environment that launches the self-test must not influence its first run.
+        const inherited = Object.fromEntries(LEGACY_ACTIVATION_ENV_VARS.map((name) => [name, "0"]))
+        const lines = await runSelfTest({ nodeExe: process.execPath, entrypoint: MAIN_JS, env: { ...process.env, ...inherited } })
         assert.equal(lines.length, 4)
-        assert.match(lines[1] ?? "", /exactly the 9 read-only tools/)
-        assert.match(lines[3] ?? "", /exactly all 13 tools/)
+        assert.match(lines[1] ?? "", /without activation variables tools\/list returned exactly the 16 tools/)
+        assert.match(lines[3] ?? "", /legacy activation variables, at 0 and at 1, changed nothing: exactly the 16 tools/)
     })
 
     test("a server that is not the MCP server fails the self-test", async () => {

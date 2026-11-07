@@ -13,7 +13,6 @@ import { assertRelativePath, BuildError, canonicalPath, childEnv, listFiles, ove
 import {
     artifactName,
     assertProductionSet,
-    ALL_TOOLS,
     assertServerDist,
     buildManifest,
     ENTRYPOINT,
@@ -24,11 +23,12 @@ import {
     MANIFEST,
     packagingInfo,
     RUNTIME_EXE,
-    RULE_TOOLS,
-    RULE_WRITES_ENV_VAR,
+    LEGACY_ACTIVATION_ENV_VARS,
+    READ_ONLY_TOOLS,
     SUPPLIED_LICENSES,
     TOOLS,
     verifyManifest,
+    WRITE_TOOLS,
 } from "../../installer/lib/package-content.js"
 import { acquireRuntimeArchive, extractRuntime, shasumFor, type FetchFn } from "../../installer/lib/runtime.js"
 import { parseRuntimeLock, satisfiesRange, type RuntimeLock } from "../../installer/lib/runtime-lock.js"
@@ -341,17 +341,20 @@ describe("package content and manifest", () => {
 
     const STALE_TOOL_COUNT = /\b(seven|eight) read-only tools\b|article search is not included/
 
-    test("PACKAGING-INFO.md distinguishes the nine default tools from the thirteen explicit opt-in tools", () => {
+    test("PACKAGING-INFO.md lists all sixteen tools, without activation, and tells reads from writes", () => {
         const lock = parseRuntimeLock(JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, "installer", "runtime-lock.json"), "utf8")), ">=24.15.0 <25")
         const info = packagingInfo("0.1.0", lock)
-        assert.equal(TOOLS.length, 9)
-        assert.equal(RULE_TOOLS.length, 4)
-        assert.equal(ALL_TOOLS.length, 13)
-        for (const tool of ALL_TOOLS) assert.ok(info.includes(tool), tool)
-        assert.match(info, /Default tools \(9, all read-only\)/)
-        assert.match(info, /Explicit opt-in tools \(13 total\)/)
-        assert.match(info, new RegExp(`${RULE_WRITES_ENV_VAR}.*exact value 1`))
-        assert.match(info, /never enable it automatically/)
+        assert.equal(TOOLS.length, 16)
+        assert.equal(new Set(TOOLS).size, 16)
+        assert.equal(READ_ONLY_TOOLS.length, 12)
+        assert.deepEqual([...WRITE_TOOLS], ["add_rule", "apply_news_preferences_change", "delete_rule", "update_rule"])
+        for (const tool of TOOLS) assert.ok(info.includes(tool), tool)
+        assert.match(info, /All 16 tools are available automatically, with no activation/)
+        assert.match(info, /only on the user's explicit request \(4\)/)
+        assert.match(info, /Fluent Reader closed, a current revision and a private backup/)
+        for (const name of LEGACY_ACTIVATION_ENV_VARS) assert.ok(info.includes(name), name)
+        assert.match(info, /those variables are ignored/)
+        assert.doesNotMatch(info, /read-only by default|opt-in|Default tools/i)
         assert.doesNotMatch(info, /No write tools|data is never modified/)
         assert.doesNotMatch(info, STALE_TOOL_COUNT)
         // the check itself must work: real \b word boundaries (not 0x08 control characters), stale text rejected, current text accepted

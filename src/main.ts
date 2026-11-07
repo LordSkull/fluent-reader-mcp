@@ -66,8 +66,6 @@ async function main(): Promise<void> {
         await probeSettings(profile.configPath, profile.directory)
         const ruleWrites = ruleWriteSettingsFromEnv(process.env)
         const newsPreferences = newsPreferenceSettingsFromEnv(process.env)
-        logEvent("rule_writes", { enabled: ruleWrites.enabled })
-        logEvent("news_preferences", { enabled: newsPreferences.enabled })
         context = createToolContext({ database, configPath: profile.configPath, profileDir: profile.directory, ruleWrites, newsPreferences })
     } catch (error) {
         const safe = toSafeError(error)

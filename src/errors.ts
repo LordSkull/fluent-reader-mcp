@@ -32,7 +32,6 @@ export const ERROR_CODES = [
     "CURSOR_EXPIRED",
     "CURSOR_MISMATCH",
     "CURSOR_STALE",
-    "RULE_WRITES_DISABLED",
     "FLUENT_READER_RUNNING",
     "REVISION_CONFLICT",
     "RULE_NOT_FOUND",
@@ -40,7 +39,6 @@ export const ERROR_CODES = [
     "RULE_BACKUP_UNAVAILABLE",
     "RULE_WRITE_FAILED",
     "RULE_WRITE_UNVERIFIED",
-    "NEWS_PREFERENCES_DISABLED",
     "PREFERENCES_UNAVAILABLE",
     "PREFERENCES_INVALID",
     "PROFILE_BINDING_REQUIRED",
@@ -134,7 +132,6 @@ export type ErrorReason =
     | "position-changed"
     | "source-identity-unverifiable"
     // rule writes
-    | "writes-disabled"
     | "lockfile-present"
     | "app-started"
     | "revision-mismatch"
@@ -147,6 +144,7 @@ export type ErrorReason =
     | "byte-order-mark"
     | "hard-linked"
     | "write-in-progress"
+    | "write-guard-orphaned"
     | "write-lock-orphaned"
     | "backup-location"
     | "backup-failed"
@@ -154,7 +152,6 @@ export type ErrorReason =
     | "replace-failed"
     | "read-back-failed"
     // news preferences
-    | "preferences-disabled"
     | "storage-location"
     | "unsafe-storage"
     | "profile-identity"
@@ -285,10 +282,6 @@ const TEXT: Readonly<Record<ErrorCode, { message: string; hint: string }>> = {
         message: "The data behind the cursor changed, or can no longer be verified, in a way that invalidates the listing.",
         hint: "Start the listing again without a cursor. A list_articles or search_articles listing filtered on a source whose feed URL cannot be verified (larger than 64 KiB, or not text) cannot be continued past its first page.",
     },
-    RULE_WRITES_DISABLED: {
-        message: "Changing rules is disabled for this server; nothing was written.",
-        hint: "The user can enable it by setting FLUENT_READER_MCP_ENABLE_RULE_WRITES to 1 in this server's entry of the MCP client configuration and restarting the client.",
-    },
     FLUENT_READER_RUNNING: {
         message: "Fluent Reader is open on this profile, or its lock file is present, so config.json cannot be changed safely; nothing was written.",
         hint: "Close Fluent Reader completely (also from the notification area), then retry; this server never terminates it. If it is already closed, open and close it once: that clears a lock file left by a power loss.",
@@ -303,7 +296,7 @@ const TEXT: Readonly<Record<ErrorCode, { message: string; hint: string }>> = {
     },
     RULE_WRITE_BUSY: {
         message: "Another rule change on this profile is in progress; nothing was written.",
-        hint: "Retry shortly; another copy of this server may be saving a change.",
+        hint: "Retry shortly; another copy of this server may be saving a change. A guard left by a crash is never removed automatically: if this persists, close Fluent Reader and every MCP client using this profile, then delete config.json.frmcp-write.tmp from the profile folder. config.json was not touched.",
     },
     RULE_BACKUP_UNAVAILABLE: {
         message: "The private backup of config.json could not be created, so no change was made.",
@@ -316,10 +309,6 @@ const TEXT: Readonly<Record<ErrorCode, { message: string; hint: string }>> = {
     RULE_WRITE_UNVERIFIED: {
         message: "config.json was replaced, but the saved result could not be verified; nothing was restored automatically.",
         hint: "Do not retry blindly. Call list_rules to check the rules. A private copy taken before the change is in %LOCALAPPDATA%\\FluentReaderMCP-Data\\rule-backups; it holds the whole configuration, credentials included.",
-    },
-    NEWS_PREFERENCES_DISABLED: {
-        message: "Personal news preferences are disabled for this server; nothing was written.",
-        hint: "Set FLUENT_READER_MCP_ENABLE_NEWS_PREFERENCES to 1 in this server's MCP configuration and restart the client.",
     },
     PREFERENCES_UNAVAILABLE: {
         message: "The private personal-preferences storage is unavailable or unsafe.",

@@ -19,9 +19,9 @@ export interface ToolContext {
     readonly cursors: CursorRegistry
     readonly identity: SourceIdentity
     readonly now: () => number
-    /** Disabled unless the user enabled it explicitly (see settings/rule-store.ts). */
+    /** Where the private backups of rule changes go (see settings/rule-store.ts). */
     readonly ruleWrites: RuleWriteSettings
-    /** Independent opt-in and process state for the personal editorial profile. */
+    /** Private storage and process state of the personal editorial profile. */
     readonly newsPreferences: NewsPreferenceSettings
 }
 
@@ -44,7 +44,7 @@ export function createToolContext(options: ToolContextOptions): ToolContext {
         cursors: options.cursors ?? new CursorRegistry({ now }),
         identity: new SourceIdentity(),
         now,
-        ruleWrites: options.ruleWrites ?? { enabled: false },
+        ruleWrites: options.ruleWrites ?? {},
         newsPreferences: options.newsPreferences ?? newsPreferenceSettingsFromEnv({}),
     }
 }

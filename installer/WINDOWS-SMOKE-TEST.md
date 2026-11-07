@@ -23,7 +23,7 @@ distribuzione.
 | 1 | Si prepara una copia di sicurezza indipendente e si annota quale file apre **Modifica configurazione** | C.3, C.4, C.5 | Qualsiasi | 10 min |
 | 2 | Cartelle: valida senza finestre, `D:\` mostrata nel campo, `D:\Windows` rifiutata, `D:\Program Files (x86)\FRMCP` accettata, `C:\Program Files\FRMCP` rifiutata con messaggio chiaro; poi **Annulla** | N-03, N-04, N-08, N-19 | Anche la macchina personale: non installa nulla | 5 min |
 | 3 | Installazione con registrazione nel file giusto | N-13 | Account di prova o VM | 5 min |
-| 4 | **La prova che conta:** Claude Desktop reale mostra `fluent-reader` con nove strumenti predefiniti e le altre voci, come `foundry-mcp`, funzionano ancora | N-14, N-15 | Come il passo 3 | 5 min |
+| 4 | **La prova che conta:** Claude Desktop reale mostra `fluent-reader` con sedici strumenti e le altre voci, come `foundry-mcp`, funzionano ancora | N-14, N-15 | Come il passo 3 | 5 min |
 | 5 | Più file candidati: il setup non sceglie da solo e tocca solo quello selezionato | N-20 | Come il passo 3 | 5 min |
 | 6 | Riparazione ripetuta: nessuna modifica al file, nessun nuovo backup | U-02 | Come il passo 3 | 5 min |
 | 7 | Sopra un'installazione Code-first, se ne hai una di prova: Code intatto | U-08 | Come il passo 3 | 5 min |
@@ -63,7 +63,7 @@ Ogni prova ha una categoria. **Non eseguire una prova in un ambiente meno isolat
 categoria.**
 
 **Categoria 1 — reversibili.** Non installano nulla: apertura del wizard, navigazione fra le pagine, scelta e rifiuto
-delle cartelle, lettura dei messaggi, annullamento prima dell'installazione, verifica dei nove strumenti su un ambiente
+delle cartelle, lettura dei messaggi, annullamento prima dell'installazione, verifica dei sedici strumenti su un ambiente
 di prova. L'unica scrittura è la prova che il controllo della cartella crea e rimuove subito (un file nella cartella
 esistente, oppure una sottocartella di prova nella cartella esistente più vicina). Ambiente: anche la macchina personale.
 
@@ -136,16 +136,17 @@ categoria 1 si fermano con **Annulla** prima della pagina di installazione.
 **N-01 — Avvio del wizard** (cat. 1)
 - Preparazione: EXE identificato (sezione A).
 - Azione: avvia l'EXE; avvialo una seconda volta mentre il primo è aperto.
-- Atteso: nessuna richiesta UAC; pagina di benvenuto della beta in sola lettura per impostazione predefinita; la seconda istanza dice che il setup è
+- Atteso: nessuna richiesta UAC; pagina di benvenuto con i sedici strumenti e le modifiche solo su richiesta esplicita; la seconda istanza dice che il setup è
   già in esecuzione.
 - Fallimento: richiesta di elevazione, avvio di due wizard, errore all'avvio.
 - Evidenza: screenshot della pagina di benvenuto; versione mostrata.
 
-**N-02 — Informativa sui nove strumenti predefiniti e sull'opt-in** (cat. 1)
+**N-02 — Informativa sui sedici strumenti e sulle modifiche** (cat. 1)
 - Preparazione: wizard aperto.
 - Azione: leggi benvenuto e pagina di riepilogo/informativa.
-- Atteso: nove strumenti in sola lettura per default; tredici soltanto dopo un opt-in manuale che il setup non aggiunge,
-  con un'anteprima in sola lettura e tre scritture di regole; la ricerca degli articoli lavora solo sui dati già salvati;
+- Atteso: sedici strumenti senza attivazioni; tre possono cambiare le regole RSS, con Fluent Reader chiuso e dopo un backup,
+  e uno salva le preferenze in un file privato fuori dal profilo, soltanto su richiesta esplicita; il database resta in sola
+  lettura; la ricerca degli articoli lavora solo sui dati già salvati;
   nessun servizio Windows; il server non fa richieste di rete proprie; i risultati possono essere inviati da Claude
   Desktop al servizio Anthropic.
 - Fallimento: "sette" o "otto" strumenti, ricerca "non disponibile", affermazioni diverse da INSTALLER.md.
@@ -247,12 +248,12 @@ categoria 1 si fermano con **Annulla** prima della pagina di installazione.
   mostrati; collegamento dichiarato riuscito.
 - Evidenza: screenshot della pagina (senza dati personali), confronto del file nell'ambiente sintetico.
 
-**N-14 — Nove strumenti in Claude Desktop reale** (cat. 1 sull'ambiente di prova già installato)
+**N-14 — Sedici strumenti in Claude Desktop reale** (cat. 1 sull'ambiente di prova già installato)
 - Preparazione: installazione di N-13; copia del profilo.
 - Azione: chiudi del tutto Claude Desktop (anche dall'area di notifica), riaprilo, guarda i server MCP locali nelle
   impostazioni e l'elenco degli strumenti di `fluent-reader`.
-- Atteso: server connesso; esattamente `get_article`, `get_group`, `get_rule_chain`, `get_source`, `list_articles`,
-  `list_groups`, `list_rules`, `list_sources`, `search_articles`; le voci fittizie ancora presenti.
+- Atteso: server connesso; esattamente `add_rule`, `apply_news_preferences_change`, `delete_rule`, `get_article`, `get_group`, `get_news_preferences`, `get_rule_chain`, `get_source`, `list_articles`, `list_groups`, `list_rules`, `list_sources`, `preview_news_preferences_change`, `preview_rule_change`, `search_articles`, `update_rule`; le voci fittizie ancora presenti.
+  Nessuna variabile di attivazione nella voce. Controlla anche che il client chieda conferma per gli strumenti che scrivono, secondo le sue impostazioni.
 - Fallimento: uno strumento in meno o in più; altre voci sparite. **Server assente:** non è ancora un difetto
   dell'installer: controlla se il file selezionato è quello attivo (C.2, N-20), ed è comunque un'osservazione da annotare,
   con la versione e il tipo di installazione di Claude Desktop.
@@ -320,8 +321,8 @@ vi è già installata: i suoi file verranno reinstallati (riparazione)"). Annota
 - Preparazione: VM o account di prova con una beta precedente installata (di norma nella cartella predefinita); hash del
   file di Claude Desktop registrati.
 - Azione: avvia il nuovo setup, stessa cartella.
-- Atteso: riepilogo di **aggiornamento** dalla versione trovata alla 0.1.3; al termine
-  nove strumenti (N-14, se registri); profilo e altre voci MCP invariati; registro di installazione e "App installate" con
+- Atteso: riepilogo di **aggiornamento** dalla versione trovata a quella della build in prova; al termine
+  sedici strumenti (N-14, se registri); profilo e altre voci MCP invariati; registro di installazione e "App installate" con
   la nuova versione.
 - Fallimento: rifiuto senza motivo; versione precedente persa senza nuova versione; altre voci cambiate.
 - Evidenza: screenshot del riepilogo, elenco strumenti dopo.
@@ -373,8 +374,8 @@ U-06 e R-02 hanno risultati separati nel modulo (sezione H).
 
 - Preparazione:
   - solo VM o installazione sacrificabile, con snapshot ripristinabile preso **dopo** la preparazione qui sotto;
-  - un'installazione valida e funzionante: una beta precedente (sette o nove strumenti, come in U-01) oppure questa build
-    (nove strumenti, come in U-02), registrata o no in Claude Desktop; Claude Desktop e Fluent Reader chiusi;
+  - un'installazione valida e funzionante: una beta precedente (sette, nove o tredici strumenti, come in U-01) oppure questa build
+    (sedici strumenti, come in U-02), registrata o no in Claude Desktop; Claude Desktop e Fluent Reader chiusi;
   - annota la versione iniziale (0.1.0 con sette strumenti, oppure 0.1.1 o 0.1.2 con nove, oppure 0.1.3 con nove per default: annota anche il numero di
     strumenti visto con N-14), il percorso di installazione e lo stato dei file gestiti: nomi in `current`,
     `state\` e nella radice (`Get-ChildItem -Force -Name`) e SHA-256 di `current\installer-files.json`,

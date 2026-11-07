@@ -214,10 +214,12 @@ describe("installer builder: bundle verification", { timeout: 60_000 }, () => {
         ["a file not listed in the manifest", { extraUnlisted: true }, /differs from its manifest/],
         ["another runtime version", { manifestPatch: (m) => ({ ...m, runtime: { ...m.runtime, version: "24.0.0" } }) }, /runtime differs/],
         ["another product version", { manifestPatch: (m) => ({ ...m, product: { ...m.product, version: "0.0.9" } }) }, /bundle version 0\.0\.9, expected 0\.1\.0/],
-        ["a manifest without the nine default tools", { manifestPatch: (m) => ({ ...m, server: { ...m.server, tools: ["get_article"] } }) }, /nine default tools/],
-        ["a manifest with only the seven FR-MCP-02A tools", { manifestPatch: (m) => ({ ...m, server: { ...m.server, tools: m.server.tools.filter((t) => t !== "list_articles" && t !== "search_articles") } }) }, /nine default tools/],
-        ["a manifest with the eight tools before search_articles", { manifestPatch: (m) => ({ ...m, server: { ...m.server, tools: m.server.tools.filter((t) => t !== "search_articles") } }) }, /nine default tools/],
-        ["a manifest with an unexpected tenth default tool", { manifestPatch: (m) => ({ ...m, server: { ...m.server, tools: [...m.server.tools, "simulate_rules"] } }) }, /nine default tools/],
+        ["a manifest with one tool only", { manifestPatch: (m) => ({ ...m, server: { ...m.server, tools: ["get_article"] } }) }, /16 tools/],
+        ["a manifest with the nine tools of beta 0.1.3", { manifestPatch: (m) => ({ ...m, server: { ...m.server, tools: m.server.tools.filter((t) => !t.includes("news_preferences") && !["add_rule", "update_rule", "delete_rule", "preview_rule_change"].includes(t)) } }) }, /16 tools/],
+        ["a manifest without the news preference tools", { manifestPatch: (m) => ({ ...m, server: { ...m.server, tools: m.server.tools.filter((t) => !t.includes("news_preferences")) } }) }, /16 tools/],
+        ["a manifest without the FR-MCP-02B tools", { manifestPatch: (m) => ({ ...m, server: { ...m.server, tools: m.server.tools.filter((t) => t !== "list_articles" && t !== "search_articles") } }) }, /16 tools/],
+        ["a manifest without search_articles", { manifestPatch: (m) => ({ ...m, server: { ...m.server, tools: m.server.tools.filter((t) => t !== "search_articles") } }) }, /16 tools/],
+        ["a manifest with an unexpected seventeenth tool", { manifestPatch: (m) => ({ ...m, server: { ...m.server, tools: [...m.server.tools, "simulate_rules"] } }) }, /16 tools/],
         ["a file whose hash differs from the manifest", { manifestPatch: (m) => ({ ...m, files: m.files.map((x) => (x.path === "runtime/LICENSE" ? { ...x, sha256: "0".repeat(64) } : x)) }) }, /altered: runtime\/LICENSE/],
     ]
     for (const [label, bundleOptions, message] of bad) {

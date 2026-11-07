@@ -5,7 +5,6 @@ import { setTimeout as sleep } from "node:timers/promises"
 import { FrMcpError, isFrMcpError, systemErrorCode } from "../errors.js"
 import { inspectPreferences, PREFERENCES_BYTES_MAX, type DocumentIssue, type ParsedPreferences } from "./markdown.js"
 
-export const NEWS_PREFERENCES_ENV_VAR = "FLUENT_READER_MCP_ENABLE_NEWS_PREFERENCES"
 export const PREFERENCES_ROOT = "FluentReaderMCP-Data"
 export const PREFERENCES_KIND = "news-preferences"
 export const PREFERENCES_FILE = "preferences.md"
@@ -24,7 +23,6 @@ const PARTIAL_FILE = /^\.(?:preferences|identity)\.[0-9a-f]{16}\.partial$/
 export type PreferenceStep = "before-rename" | "after-rename" | "key-written"
 
 export interface NewsPreferenceSettings {
-    readonly enabled: boolean
     readonly localAppData?: string | undefined
     readonly userProfile?: string | undefined
     readonly previewKey: Buffer
@@ -58,7 +56,6 @@ export interface PreferenceState {
 
 export function newsPreferenceSettingsFromEnv(env: Readonly<Record<string, string | undefined>>): NewsPreferenceSettings {
     return {
-        enabled: env[NEWS_PREFERENCES_ENV_VAR] === "1",
         localAppData: env.LOCALAPPDATA,
         userProfile: env.USERPROFILE,
         previewKey: crypto.randomBytes(32),

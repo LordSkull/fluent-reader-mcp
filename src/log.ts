@@ -17,8 +17,6 @@ export type LogEvent =
     | "serving"
     | "transport_error"
     | "tool_error"
-    | "rule_writes"
-    | "news_preferences"
     | "rule_write_committed"
     | "shutdown"
     | "fatal"

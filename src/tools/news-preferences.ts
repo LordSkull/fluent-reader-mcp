@@ -205,10 +205,6 @@ const PREVIEW_LIMITS =
 const CONSENT_LIMITATION =
     "The authenticated preview token proves that this server produced a preview for the exact plan and revisions. It does not prove that a human reviewed or authorized the request; confirm:true is supplied by the client."
 
-function requireEnabled(context: ToolContext): void {
-    if (!context.newsPreferences.enabled) throw new FrMcpError("NEWS_PREFERENCES_DISABLED", "preferences-disabled")
-}
-
 function encodeCursor(view: string, basis: string, offset: number): string {
     return `npc1.${Buffer.from(JSON.stringify({ v: view, b: basis, o: offset })).toString("base64url")}`
 }
@@ -549,7 +545,6 @@ function effectiveView(context: ToolContext, read: ReadContext, input: z.output<
 }
 
 export async function getNewsPreferences(context: ToolContext, args: unknown) {
-    requireEnabled(context)
     const input = parseArgs(getNewsPreferencesInput, args)
     return context.cursors.exclusive(async () => {
         const view = input.view ?? "summary"
@@ -624,7 +619,6 @@ function planEntryForClient(entry: PlanEntry) {
 }
 
 export async function previewNewsPreferencesChange(context: ToolContext, args: unknown) {
-    requireEnabled(context)
     const input = parseArgs(previewNewsPreferencesChangeInput, args)
     const changes = normalizeChanges(input.changes)
     return context.cursors.exclusive(async () => {
@@ -667,7 +661,6 @@ export async function previewNewsPreferencesChange(context: ToolContext, args: u
 }
 
 export async function applyNewsPreferencesChange(context: ToolContext, args: unknown) {
-    requireEnabled(context)
     const input = parseArgs(applyNewsPreferencesChangeInput, args)
     const changes = normalizeChanges(input.changes)
     return context.cursors.exclusive(async () => {

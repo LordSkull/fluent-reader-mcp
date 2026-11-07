@@ -1,7 +1,7 @@
 /**
  * The only code that writes config.json (FR-MCP-03-RULE-WRITE-01). Nothing else
- * in this server changes a profile, and this module never runs unless the user
- * enabled rule writes.
+ * in this server changes a profile, and this module runs only for a rule change
+ * a client explicitly asked for, never at startup or when listing tools.
  *
  * Why Fluent Reader must be closed. The app's main process reads config.json
  * before every get and set (conf has no cache) and saves it with atomically
@@ -28,20 +28,40 @@
  *
  * Commit sequence:
  *   1. lockfile absent, profile directory still canonical (not re-routed);
- *   2. the guard: the temporary file, created exclusively at a fixed name. It
- *      also keeps two copies of this server from writing at once (one left by a
- *      crash is replaced once older than GUARD_STALE_MS; it never holds the
- *      only copy of anything);
+ *   2. the guard, created exclusively at a fixed name, holding only a random
+ *      owner token (see below);
  *   3. the private backup, exactly the bytes the change starts from;
- *   4. new content written to the guard and flushed;
+ *   4. new content written to a temporary file with a unique name and flushed;
  *   5. lockfile still absent and config.json still byte for byte the same;
- *   6. rename over config.json (atomic; config.json is never written in place).
- *      A retry after a brief refusal repeats step 5 first, after its pause: the
- *      refusal may be the app saving, and that save must not be overwritten;
- *   7. read back and compared; lockfile absent.
+ *   6. the guard still holds this writer's token, then rename of the temporary
+ *      file over config.json (atomic; config.json is never written in place). A
+ *      retry after a brief refusal repeats step 5 and this check first, after
+ *      its pause: the refusal may be the app saving, and that save must not be
+ *      overwritten;
+ *   7. read back and compared; lockfile absent;
+ *   8. the guard released.
  * A failure up to step 6 leaves config.json untouched and removes the temporary
  * file. After step 6 nothing is restored automatically: the file may hold
  * someone else's change, and a backup is the user's to restore.
+ *
+ * The guard keeps two copies of this server from writing at once, until the
+ * result has been read back. Only the exclusive create takes it, and nothing
+ * here removes a guard it did not create: whether one was abandoned cannot be
+ * proven atomically, because between looking at it and deleting it a new owner
+ * may have taken its place. So age is only a diagnostic (RULE_WRITE_BUSY with
+ * reason write-guard-orphaned), and a guard left by a crash refuses writes, never
+ * reads or previews, until someone removes it on purpose:
+ *   1. close Fluent Reader and every MCP client using this profile, so that no
+ *      writer is alive;
+ *   2. delete config.json.frmcp-write.tmp from the profile directory. config.json
+ *      was not touched. The next writer also removes the temporary file a crash
+ *      left, which holds a copy of the settings.
+ * If the token cannot be written, the guard stays where it is, for the same reason.
+ *
+ * Remaining gap, documented: a holder compares its token and then acts (rename,
+ * release), with no way to do both atomically. It matters only if someone deletes
+ * the guard of a writer still alive and a new writer takes it in those few
+ * microseconds, which step 1 of the recovery excludes.
  *
  * Backups hold the whole configuration, credentials included. They are kept
  * only in %LOCALAPPDATA%\FluentReaderMCP-Data\rule-backups\<profile key>\, the
@@ -60,9 +80,12 @@ import { readConfigBytes, samePath } from "./read-settings.js"
 
 export const APP_LOCK_FILE = "lockfile"
 export const WRITE_GUARD_FILE = "config.json.frmcp-write.tmp"
+const WRITE_TEMP_PREFIX = "config.json.frmcp-write."
+const WRITE_TEMP = /^config\.json\.frmcp-write\.[0-9a-f]{16}\.partial$/
 export const BACKUP_ROOT = "FluentReaderMCP-Data"
 export const BACKUP_KIND = "rule-backups"
 export const BACKUP_NAME = /^config\.json\.\d{8}T\d{6}Z(?:-\d+)?\.bak$/
+/** Beyond this age a guard is reported as possibly orphaned. It decides nothing about the guard. */
 export const GUARD_STALE_MS = 60_000
 const RENAME_ATTEMPTS = 5
 export const RENAME_PAUSE_MS = 50
@@ -73,17 +96,13 @@ export const BACKUP_LOCATION = `%LOCALAPPDATA%\\${BACKUP_ROOT}\\${BACKUP_KIND}`
 export type RuleWriteStep = "after-guard" | "after-backup" | "after-temp" | "before-rename" | "before-retry" | "after-rename"
 
 export interface RuleWriteSettings {
-    readonly enabled: boolean
     readonly localAppData?: string | undefined
     readonly userProfile?: string | undefined
     readonly step?: (step: RuleWriteStep) => void
 }
 
-/** Rule writes are on only for exactly "1": any other value, an empty one included, leaves them off. */
-export const RULE_WRITES_ENV_VAR = "FLUENT_READER_MCP_ENABLE_RULE_WRITES"
-
 export function ruleWriteSettingsFromEnv(env: Readonly<Record<string, string | undefined>>): RuleWriteSettings {
-    return { enabled: env[RULE_WRITES_ENV_VAR] === "1", localAppData: env.LOCALAPPDATA, userProfile: env.USERPROFILE }
+    return { localAppData: env.LOCALAPPDATA, userProfile: env.USERPROFILE }
 }
 
 /** Whether the app's lock file is there (see above). Unknown counts as open. */
@@ -114,23 +133,88 @@ export function requireSingleLink(configPath: string): void {
     if (fs.statSync(configPath, { throwIfNoEntry: false })?.nlink !== 1) throw new FrMcpError("SETTINGS_UNAVAILABLE", "hard-linked")
 }
 
-function acquireGuard(profileDir: string, now: number): { fd: number; file: string } {
-    const file = path.join(profileDir, WRITE_GUARD_FILE)
-    for (let attempt = 0; attempt < 2; attempt++) {
-        try {
-            return { fd: fs.openSync(file, "wx", 0o666), file }
-        } catch (error) {
-            if (systemErrorCode(error) !== "EEXIST") throw new FrMcpError("RULE_WRITE_FAILED", "write-failed")
-        }
+interface HeldGuard {
+    readonly file: string
+    readonly token: string
+}
+
+function guardLooksOrphaned(file: string, now: number): boolean {
+    try {
         const stats = fs.lstatSync(file, { throwIfNoEntry: false })
-        if (stats !== undefined && (!stats.isFile() || now - stats.mtimeMs < GUARD_STALE_MS)) break
+        return stats !== undefined && now - stats.mtimeMs >= GUARD_STALE_MS
+    } catch {
+        return false
+    }
+}
+
+function acquireGuard(profileDir: string, now: number): HeldGuard {
+    const file = path.join(profileDir, WRITE_GUARD_FILE)
+    let fd: number
+    try {
+        fd = fs.openSync(file, "wx", 0o666)
+    } catch (error) {
+        if (systemErrorCode(error) !== "EEXIST") throw new FrMcpError("RULE_WRITE_FAILED", "write-failed")
+        throw new FrMcpError("RULE_WRITE_BUSY", guardLooksOrphaned(file, now) ? "write-guard-orphaned" : "write-in-progress")
+    }
+    const token = crypto.randomBytes(16).toString("hex")
+    try {
+        fs.writeSync(fd, token)
+    } catch {
+        // The pathname may already belong to someone else, so it is left alone: at worst an orphan guard, recovered by hand.
+        try { fs.closeSync(fd) } catch { /* the write failure is the error to report */ }
+        throw new FrMcpError("RULE_WRITE_FAILED", "write-failed")
+    }
+    try { fs.closeSync(fd) } catch { /* the token is written; the guard is held */ }
+    return { file, token }
+}
+
+function ownsGuard(guard: HeldGuard): boolean {
+    try {
+        return fs.readFileSync(guard.file, "utf8") === guard.token
+    } catch {
+        return false
+    }
+}
+
+function requireOwnedGuard(guard: HeldGuard): void {
+    if (!ownsGuard(guard)) throw new FrMcpError("RULE_WRITE_BUSY", "write-in-progress")
+}
+
+/** A guard that is not this writer's, or that stays held, is left where it is: the next write reports it. */
+async function releaseGuard(guard: HeldGuard): Promise<void> {
+    for (let attempt = 1; attempt <= RENAME_ATTEMPTS; attempt++) {
+        if (!ownsGuard(guard)) return
         try {
-            if (stats !== undefined) fs.unlinkSync(file)
-        } catch {
-            break
+            fs.unlinkSync(guard.file)
+            return
+        } catch (error) {
+            const code = systemErrorCode(error)
+            if (code !== "EPERM" && code !== "EACCES" && code !== "EBUSY") return
+            if (attempt < RENAME_ATTEMPTS) await sleep(RENAME_PAUSE_MS)
         }
     }
-    throw new FrMcpError("RULE_WRITE_BUSY", "write-in-progress")
+}
+
+/** Only a dead writer leaves these, and whoever really holds the guard is the only live writer. */
+function removeDeadTemps(profileDir: string, guard: HeldGuard): void {
+    if (!ownsGuard(guard)) return
+    try {
+        for (const name of fs.readdirSync(profileDir)) {
+            if (WRITE_TEMP.test(name)) fs.rmSync(path.join(profileDir, name), { force: true })
+        }
+    } catch {
+        // Retried by the next writer.
+    }
+}
+
+function writeTemp(file: string, bytes: Buffer): void {
+    const fd = fs.openSync(file, "wx", 0o666)
+    try {
+        fs.writeFileSync(fd, bytes)
+        fs.fsyncSync(fd)
+    } finally {
+        fs.closeSync(fd)
+    }
 }
 
 function backupUnavailable(reason: "backup-location" | "backup-failed"): FrMcpError {
@@ -240,47 +324,45 @@ export async function commitConfig(input: CommitInput): Promise<string> {
     requireClosed(profileDir)
     requireCanonicalProfile(profileDir)
     const guard = acquireGuard(profileDir, now)
-    let open = true
-    let backup: string
+    // Nobody else knows this name, so what is renamed over config.json, or removed after a failure, is always this writer's own file.
+    const temp = path.join(profileDir, `${WRITE_TEMP_PREFIX}${crypto.randomBytes(8).toString("hex")}.partial`)
     try {
-        settings.step?.("after-guard")
-        backup = writeBackup(settings, profileDir, original, now)
-        settings.step?.("after-backup")
-        fs.writeFileSync(guard.fd, next)
-        fs.fsyncSync(guard.fd)
-        fs.closeSync(guard.fd)
-        open = false
-        settings.step?.("after-temp")
-        await requireUntouched(configPath, profileDir, original)
-        settings.step?.("before-rename")
-        await replaceWithRetry(guard.file, configPath, async () => {
-            settings.step?.("before-retry")
+        let backup: string
+        try {
+            removeDeadTemps(profileDir, guard)
+            settings.step?.("after-guard")
+            backup = writeBackup(settings, profileDir, original, now)
+            settings.step?.("after-backup")
+            writeTemp(temp, next)
+            settings.step?.("after-temp")
             await requireUntouched(configPath, profileDir, original)
-        })
-    } catch (error) {
-        if (open) {
+            settings.step?.("before-rename")
+            requireOwnedGuard(guard)
+            await replaceWithRetry(temp, configPath, async () => {
+                settings.step?.("before-retry")
+                await requireUntouched(configPath, profileDir, original)
+                requireOwnedGuard(guard)
+            })
+        } catch (error) {
             try {
-                fs.closeSync(guard.fd)
+                fs.rmSync(temp, { force: true })
             } catch {
-                // already closed
+                // Removed by the next writer that holds the guard; config.json was not touched.
             }
+            throw isFrMcpError(error) ? error : new FrMcpError("RULE_WRITE_FAILED", "write-failed")
         }
         try {
-            fs.rmSync(guard.file, { force: true })
+            settings.step?.("after-rename")
+            const saved = await readConfigBytes(configPath, profileDir, undefined)
+            const same = saved.bytes.equals(next)
+            saved.bytes.fill(0)
+            if (!same) throw new FrMcpError("RULE_WRITE_UNVERIFIED", "read-back-failed")
         } catch {
-            // Left behind, it is replaced once stale; config.json was not touched.
+            throw new FrMcpError("RULE_WRITE_UNVERIFIED", "read-back-failed")
         }
-        throw isFrMcpError(error) ? error : new FrMcpError("RULE_WRITE_FAILED", "write-failed")
+        if (fluentReaderOpen(profileDir)) throw new FrMcpError("RULE_WRITE_UNVERIFIED", "app-started")
+        return backup
+    } finally {
+        await releaseGuard(guard)
     }
-    try {
-        settings.step?.("after-rename")
-        const saved = await readConfigBytes(configPath, profileDir, undefined)
-        const same = saved.bytes.equals(next)
-        saved.bytes.fill(0)
-        if (!same) throw new FrMcpError("RULE_WRITE_UNVERIFIED", "read-back-failed")
-    } catch {
-        throw new FrMcpError("RULE_WRITE_UNVERIFIED", "read-back-failed")
-    }
-    if (fluentReaderOpen(profileDir)) throw new FrMcpError("RULE_WRITE_UNVERIFIED", "app-started")
-    return backup
 }

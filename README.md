@@ -1,10 +1,14 @@
 # Fluent Reader MCP
 
-**Fluent Reader MCP** collega [Fluent Reader](https://github.com/yang991178/fluent-reader) ai client compatibili con il [Model Context Protocol (MCP)](https://modelcontextprotocol.io/), come Claude Desktop. Permette di consultare fonti RSS, gruppi, articoli e regole salvati localmente, senza aggiornare i feed o scaricare articoli dal Web.
+**Fluent Reader MCP** collega [Fluent Reader](https://github.com/yang991178/fluent-reader) ai client compatibili con il [Model Context Protocol (MCP)](https://modelcontextprotocol.io/), come Claude Desktop. Permette di consultare fonti RSS, gruppi, articoli e regole salvati localmente, senza aggiornare i feed o scaricare articoli dal Web, e, su richiesta esplicita, di modificare le regole RSS e il profilo editoriale personale.
 
 **Versione del repository:** `0.1.3` · **Windows x64** · **Beta privata**
 
-Il codice sorgente aggiornato comprende 9 strumenti di consultazione e 7 strumenti da attivare separatamente. L'installer beta 0.1.3 già prodotto è precedente al profilo editoriale personale e include soltanto i 9 strumenti predefiniti e i 4 strumenti opzionali per le regole.
+| Versione | Strumenti |
+| -------- | --------- |
+| Codice sorgente aggiornato | 16 strumenti predefiniti |
+| Installer beta 0.1.3 già prodotto | Comportamento precedente: 9 strumenti predefiniti e fino a 13 con attivazione manuale |
+| Prossimo installer | 16 strumenti senza attivazioni, soltanto dopo una nuova build verificata |
 
 ## Installazione Windows
 
@@ -13,50 +17,32 @@ Servono un profilo locale di Fluent Reader contenente `fluent-reader.db` e `conf
 1. Chiudi completamente Claude Desktop prima di avviare l'installer `.exe` della beta.
 2. Nel wizard scegli la cartella di installazione e il profilo Fluent Reader.
 3. Per collegare Claude Desktop, seleziona **il file di configurazione effettivamente utilizzato dall'app**, verificandolo da *Impostazioni → Modifica configurazione*. In alternativa scegli **Installa solo il server**.
-4. Riavvia completamente Claude Desktop e verifica che il server `fluent-reader` esponga **9 strumenti**.
+4. Riavvia completamente Claude Desktop e verifica che il server `fluent-reader` esponga il numero di strumenti indicato per la tua versione: **9** con l'installer beta 0.1.3.
 
-L'installer registra soltanto `mcpServers.fluent-reader`, su conferma dell'utente; non configura automaticamente Claude Code e non abilita le scritture. Per aggiornamento, riparazione, disinstallazione e problemi di configurazione consulta [la guida installer](installer/INSTALLER.md).
+L'installer registra soltanto `mcpServers.fluent-reader`, su conferma dell'utente, e non configura automaticamente Claude Code. Per aggiornamento, riparazione, disinstallazione e problemi di configurazione consulta [la guida installer](installer/INSTALLER.md).
 
 ## Strumenti MCP disponibili
 
-| Strumento | Funzione | Accesso |
-| --------- | -------- | ------- |
-| `list_sources` | Elenca le fonti RSS configurate | Sempre attivo |
-| `get_source` | Mostra i dettagli di una fonte | Sempre attivo |
-| `list_groups` | Elenca i gruppi di fonti | Sempre attivo |
-| `get_group` | Mostra un gruppo e le sue fonti | Sempre attivo |
-| `get_article` | Legge un articolo salvato localmente | Sempre attivo |
-| `list_rules` | Elenca le regole configurate | Sempre attivo |
-| `get_rule_chain` | Mostra l'ordine delle regole applicabili | Sempre attivo |
-| `list_articles` | Elenca gli articoli locali con filtri | Sempre attivo |
-| `search_articles` | Cerca testo negli articoli locali | Sempre attivo |
-| `preview_rule_change` | Mostra l'effetto di una modifica alle regole | Da attivare |
-| `add_rule` | Aggiunge una regola a una fonte o un gruppo | Da attivare |
-| `update_rule` | Modifica una regola esistente | Da attivare |
-| `delete_rule` | Elimina una regola esistente | Da attivare |
-| `get_news_preferences` | Legge il profilo editoriale personale | Da attivare |
-| `preview_news_preferences_change` | Mostra l'anteprima di una preferenza | Da attivare |
-| `apply_news_preferences_change` | Salva una preferenza già verificata | Da attivare |
+| Strumento | Funzione |
+| --------- | -------- |
+| `list_sources` | Elenca le fonti RSS configurate |
+| `get_source` | Mostra i dettagli di una fonte |
+| `list_groups` | Elenca i gruppi di fonti |
+| `get_group` | Mostra un gruppo e le sue fonti |
+| `get_article` | Legge un articolo salvato localmente |
+| `list_articles` | Elenca gli articoli locali con filtri |
+| `search_articles` | Cerca testo negli articoli locali |
+| `list_rules` | Elenca le regole configurate |
+| `get_rule_chain` | Mostra l'ordine delle regole applicabili |
+| `preview_rule_change` | Mostra l'effetto di una modifica alle regole |
+| `add_rule` | Aggiunge una regola a una fonte o un gruppo |
+| `update_rule` | Modifica una regola esistente |
+| `delete_rule` | Elimina una regola esistente |
+| `get_news_preferences` | Legge il profilo editoriale personale |
+| `preview_news_preferences_change` | Mostra l'anteprima di una preferenza |
+| `apply_news_preferences_change` | Salva una preferenza già verificata |
 
-## Attivare le funzionalità aggiuntive
-
-I 9 strumenti di consultazione sono disponibili automaticamente. La gestione delle regole e il profilo editoriale personale richiedono due attivazioni distinte, utilizzabili insieme o indipendentemente:
-
-- Nessuna attivazione: **9 strumenti**.
-- Solo regole: **13 strumenti**.
-- Solo preferenze editoriali: **12 strumenti**.
-- Entrambe: **16 strumenti**.
-
-Aggiungi alla **sola** voce `mcpServers.fluent-reader` della configurazione attiva di Claude Desktop una o entrambe le variabili, senza rimuovere `command`, `args` o altre variabili `env` già necessarie:
-
-```json
-"env": {
-  "FLUENT_READER_MCP_ENABLE_RULE_WRITES": "1",
-  "FLUENT_READER_MCP_ENABLE_NEWS_PREFERENCES": "1"
-}
-```
-
-Solo il valore esatto `1` abilita ciascuna funzione. Riavvia completamente il client dopo la modifica. L'installer beta 0.1.3 non imposta queste variabili e non contiene i tre strumenti delle preferenze editoriali.
+Tutti gli strumenti vengono resi disponibili automaticamente, senza variabili da configurare. Questo non rende automatiche le modifiche: `add_rule`, `update_rule`, `delete_rule` e `apply_news_preferences_change` vanno usati soltanto su richiesta esplicita e restano soggetti alle protezioni descritte in [Sicurezza e limiti](#sicurezza-e-limiti).
 
 ## Profilo editoriale personale
 
@@ -95,7 +81,7 @@ Il server compilato è `dist/main.js` e comunica attraverso MCP su **stdio**, se
 
 ## Stato del progetto
 
-Secondo il collaudo dichiarato dal proprietario, il **7 novembre 2026** l'installer beta 0.1.3 ha verificato in Claude Desktop tutti i **13 strumenti allora inclusi**, comprese aggiunta, modifica ed eliminazione delle regole. I tre strumenti del profilo editoriale sono presenti soltanto nel codice sorgente aggiornato e la suite del repository ha superato **1222 test su 1222**.
+Secondo il collaudo dichiarato dal proprietario, il **7 novembre 2026** l'installer beta 0.1.3 ha verificato in Claude Desktop tutti i **13 strumenti allora inclusi**, comprese aggiunta, modifica ed eliminazione delle regole. I tre strumenti del profilo editoriale sono presenti soltanto nel codice sorgente aggiornato e la suite del repository ha superato **1258 test su 1258**.
 
 Il proprietario ha confermato la presenza fisica di tre backup delle regole; la loro ripristinabilità non è ancora stata verificata completamente. Restano inoltre necessarie ulteriori prove di aggiornamento e recupero su Windows prima di una distribuzione pubblica; consulta la [checklist Windows](installer/WINDOWS-SMOKE-TEST.md).
 

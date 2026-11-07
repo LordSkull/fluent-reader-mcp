@@ -14,6 +14,7 @@ import { DatabaseSync } from "node:sqlite"
 import { after, before, describe, test } from "node:test"
 import { Client, type CallToolResult } from "@modelcontextprotocol/client"
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio"
+import { READ_ONLY_TOOLS, TOOLS } from "../../installer/lib/package-content.js"
 import { SERVER_NAME, SERVER_VERSION } from "../../src/server.js"
 import {
     getArticleOutput,
@@ -139,7 +140,7 @@ describe("FR-MCP-02A-06 synthetic smoke fixture", () => {
 })
 
 describe("compiled server over stdio with the SDK client", { timeout: 60_000 }, () => {
-    test("handshake, nine tools, one conforming call each, errors, no writes, clean shutdown", async () => {
+    test("handshake, sixteen tools, one conforming call each, errors, no writes, clean shutdown", async () => {
         const profile = newSmokeProfile()
         const initial = integritySnapshot(profile.dir, scratch())
         const transport = new StdioClientTransport({
@@ -163,12 +164,13 @@ describe("compiled server over stdio with the SDK client", { timeout: 60_000 }, 
         try {
             assert.deepEqual(client.getServerVersion(), { name: SERVER_NAME, version: SERVER_VERSION })
             const tools = (await client.listTools()).tools
-            // TOOL_NAMES is the set exercised by the Claude Code smoke (FR-MCP-02A); list_articles is FR-MCP-02B-01, search_articles FR-MCP-02B-02.
-            assert.deepEqual(tools.map((t) => t.name).sort(), [...TOOL_NAMES, "list_articles", "search_articles"].sort())
+            // All sixteen are listed; TOOL_NAMES is the read-only subset the Claude Code smoke (FR-MCP-02A) is allowed to call.
+            assert.deepEqual(tools.map((t) => t.name).sort(), [...TOOLS])
+            for (const name of TOOL_NAMES) assert.ok((READ_ONLY_TOOLS as readonly string[]).includes(name), name)
             for (const tool of tools) {
                 assert.equal(tool.inputSchema.type, "object")
                 assert.equal(tool.outputSchema?.type, "object")
-                assert.equal(tool.annotations?.readOnlyHint, true)
+                assert.equal(tool.annotations?.readOnlyHint, (READ_ONLY_TOOLS as readonly string[]).includes(tool.name), tool.name)
             }
 
             // A. Sources
@@ -279,7 +281,7 @@ describe("FR-MCP-02B-01 list_articles over stdio (SDK client)", { timeout: 60_00
         try {
             const tools = (await client.listTools()).tools
             assert.ok(tools.some((t) => t.name === "list_articles"))
-            assert.deepEqual(tools.map((t) => t.name).sort(), [...TOOL_NAMES, "list_articles", "search_articles"].sort(), "the seven FR-MCP-02A tools are still listed")
+            assert.deepEqual(tools.map((t) => t.name).sort(), [...TOOLS], "all sixteen tools are listed")
             const listed = tools.find((t) => t.name === "list_articles")
             assert.equal(listed?.annotations?.readOnlyHint, true)
             assert.equal(listed?.outputSchema?.type, "object")
@@ -357,7 +359,7 @@ describe("FR-MCP-02B-02 search_articles over stdio (SDK client)", { timeout: 60_
         }
         try {
             const tools = (await client.listTools()).tools
-            assert.equal(tools.length, 9)
+            assert.equal(tools.length, 16)
             const searched = tools.find((t) => t.name === "search_articles")
             assert.equal(searched?.annotations?.readOnlyHint, true)
             assert.equal(searched?.outputSchema?.type, "object")
@@ -437,7 +439,7 @@ describe("compiled server over stdio with raw JSON-RPC", { timeout: 60_000 }, ()
         let id = 1
         const tool = (name: string, args: unknown) => request(server, { jsonrpc: "2.0", id: ++id, method: "tools/call", params: { name, arguments: args } })
         const listed = await request(server, { jsonrpc: "2.0", id: ++id, method: "tools/list" })
-        assert.equal((listed.result as { tools: unknown[] }).tools.length, 9)
+        assert.equal((listed.result as { tools: unknown[] }).tools.length, 16)
         const calls: [string, Record<string, unknown>][] = [
             ["list_sources", {}],
             ["get_source", { sourceId: 2 }],
