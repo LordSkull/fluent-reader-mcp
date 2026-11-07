@@ -82,7 +82,7 @@ import {
 } from "./tools/schemas.js"
 
 export const SERVER_NAME = "fluent-reader-mcp"
-export const SERVER_VERSION = "0.1.3"
+export const SERVER_VERSION = "0.1.4"
 
 const ANNOTATIONS = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } as const
 /** Additive write: nothing already stored changes. */

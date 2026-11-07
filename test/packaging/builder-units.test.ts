@@ -387,14 +387,15 @@ describe("package content and manifest", () => {
         assert.equal(artifactName("0.1.0"), "fluent-reader-mcp-v0.1.0-beta-win-x64.zip")
         assert.equal(artifactName("0.1.2"), "fluent-reader-mcp-v0.1.2-beta-win-x64.zip")
         assert.equal(artifactName("0.1.3"), "fluent-reader-mcp-v0.1.3-beta-win-x64.zip")
-        assert.equal(installerName("0.1.3"), "FluentReaderMCP-Setup-v0.1.3-beta-win-x64.exe")
+        assert.equal(artifactName("0.1.4"), "fluent-reader-mcp-v0.1.4-beta-win-x64.zip")
+        assert.equal(installerName("0.1.4"), "FluentReaderMCP-Setup-v0.1.4-beta-win-x64.exe")
     })
 
-    test("the real repository: version 0.1.3, MIT with its LICENSE, supplied notices only for the exact locked versions (FR-MCP-04-BETA-RELEASE-04)", () => {
+    test("the real repository: version 0.1.4, MIT with its LICENSE, supplied notices only for the exact locked versions (FR-MCP-04-BETA-RELEASE-05)", () => {
         const pkg = JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, "package.json"), "utf8")) as { version: string; license: string }
         const lockText = fs.readFileSync(path.join(PROJECT_ROOT, "package-lock.json"), "utf8")
         const lock = JSON.parse(lockText) as { version: string; packages: Record<string, { version?: string; license?: string }> }
-        assert.deepEqual([pkg.version, lock.version, lock.packages[""]?.version], ["0.1.3", "0.1.3", "0.1.3"])
+        assert.deepEqual([pkg.version, lock.version, lock.packages[""]?.version], ["0.1.4", "0.1.4", "0.1.4"])
         assert.deepEqual([pkg.license, lock.packages[""]?.license], ["MIT", "MIT"])
         assert.match(fs.readFileSync(path.join(PROJECT_ROOT, "LICENSE"), "utf8"), /^MIT License\r?\n\r?\nCopyright \(c\) 2026 LordSkull\r?\n/)
         for (const name of [artifactName(pkg.version), installerName(pkg.version)]) assert.equal(name.match(/beta/g)?.length, 1, name)

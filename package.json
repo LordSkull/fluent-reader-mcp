@@ -1,6 +1,6 @@
 {
   "name": "fluent-reader-mcp",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Local MCP server (stdio) for a Fluent Reader profile",
   "license": "MIT",
   "private": true,

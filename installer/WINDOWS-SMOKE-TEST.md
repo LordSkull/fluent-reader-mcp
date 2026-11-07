@@ -5,7 +5,7 @@ qualsiasi distribuzione. I test automatici (`npm.cmd test`) provano il programma
 sintetiche e lo script NSIS solo staticamente; questa checklist copre ciò che resta: il wizard reale, Windows, **Claude
 Desktop reale**.
 
-Vale per il wizard Desktop-first della build **0.1.3** (comportamento introdotto nella 0.1.2). **Non si applica alla build 0.1.1 già costruita**, che registra in Claude Code e conferma
+Vale per il wizard Desktop-first della build **0.1.4** (comportamento introdotto nella 0.1.2). **Non si applica alla build 0.1.1 già costruita**, che registra in Claude Code e conferma
 la cartella con una finestra: per quella resta la versione di questo documento al commit `bd3337d`.
 
 Riferimenti per il comportamento atteso: [INSTALLER.md](INSTALLER.md) (installer, recupero, disinstallazione) e
@@ -51,9 +51,9 @@ per questo esiste il passo 4.
 | Unità secondarie | Lettere disponibili (`D:`, `H:`...), tipo (fisso, rimovibile), file system. **Facoltative**: le prove che ne hanno bisogno si segnano NON ESEGUITO se l'unità non c'è |
 | Ambiente | Macchina personale, account Windows di prova, VM o snapshot: indicarlo per ogni prova (sezione H) |
 
-**Quale EXE.** Il collaudo che vale è quello su una build pulita **0.1.3** (`FluentReaderMCP-Setup-v0.1.3-beta-win-x64.exe`,
-`gitDirty: false` e `scriptsDirty: false` nei report). Sopra una 0.1.0, 0.1.1 o 0.1.2 il setup propone un **aggiornamento**, sopra
-la stessa 0.1.3 una **riparazione**; una versione più recente viene rifiutata. Lo SHA-256 dell'EXE si **annota a
+**Quale EXE.** Il collaudo che vale è quello su una build pulita **0.1.4** (`FluentReaderMCP-Setup-v0.1.4-beta-win-x64.exe`,
+`gitDirty: false` e `scriptsDirty: false` nei report). Sopra una 0.1.0, 0.1.1, 0.1.2 o 0.1.3 il setup propone un **aggiornamento**, sopra
+la stessa 0.1.4 una **riparazione**; una versione più recente viene rifiutata. Lo SHA-256 dell'EXE si **annota a
 ogni collaudo** dal file effettivamente provato: non esiste un valore fisso in questo documento, perché cambia a ogni
 ricompilazione.
 

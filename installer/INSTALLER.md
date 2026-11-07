@@ -12,8 +12,8 @@ e durante l'installazione, su un profilo sintetico) li verifica senza variabili 
 che vengono ignorate.
 
 L'installer beta 0.1.3 già prodotto mantiene il comportamento precedente: nove strumenti predefiniti e fino a tredici con
-attivazione manuale (vedi "Registrazione manuale"). Questa guida descrive il codice attuale; il prossimo installer esisterà
-soltanto dopo una nuova build verificata.
+attivazione manuale (vedi "Registrazione manuale"). Questa guida descrive il codice 0.1.4; il relativo installer non è ancora
+stato prodotto e potrà esistere soltanto dopo una nuova build verificata.
 
 Integrazioni con i client Claude:
 
@@ -23,7 +23,7 @@ Integrazioni con i client Claude:
 - **Claude Code:** non più gestito dal wizard (né ricerca di `claude.exe`, né registrazione). Le voci create dalle beta
   0.1.0 e 0.1.1 restano al loro posto; vedi "Installazioni delle beta 0.1.x" e "Registrazione manuale".
 
-Questo documento descrive il codice 0.1.3; il wizard Desktop-first esiste dalla versione 0.1.2. La build 0.1.1 già costruita registra invece in Claude
+Questo documento descrive il codice 0.1.4; il wizard Desktop-first esiste dalla versione 0.1.2. La build 0.1.1 già costruita registra invece in Claude
 Code e chiede conferma della cartella con una finestra.
 
 ## Prerequisiti (solo per chi costruisce l'installer)
@@ -40,10 +40,10 @@ Code e chiede conferma della cartella con una finestra.
 
 ```powershell
 # 1. Prova a secco: verifica bundle, checksum, manifest, NSIS e percorsi; non scrive nulla e non avvia makensis
-npm.cmd run installer:win -- --bundle "D:\FluentReaderMCP-build\fluent-reader-mcp-v0.1.3-beta-win-x64.zip" --bundle-sha256 <sha256 del bundle> --out "D:\FluentReaderMCP-build" --dry-run
+npm.cmd run installer:win -- --bundle "D:\FluentReaderMCP-build\fluent-reader-mcp-v0.1.4-beta-win-x64.zip" --bundle-sha256 <sha256 del bundle> --out "D:\FluentReaderMCP-build" --dry-run
 
 # 2. Installer
-npm.cmd run installer:win -- --bundle "D:\FluentReaderMCP-build\fluent-reader-mcp-v0.1.3-beta-win-x64.zip" --bundle-sha256 <sha256 del bundle> --out "D:\FluentReaderMCP-build"
+npm.cmd run installer:win -- --bundle "D:\FluentReaderMCP-build\fluent-reader-mcp-v0.1.4-beta-win-x64.zip" --bundle-sha256 <sha256 del bundle> --out "D:\FluentReaderMCP-build"
 ```
 
 Come per il builder portatile, il comando npm compila prima con TypeScript (rigenera `dist-test\`, già ignorata da
@@ -84,9 +84,9 @@ Output:
 
 ```text
 D:\FluentReaderMCP-build\
-  FluentReaderMCP-Setup-v0.1.3-beta-win-x64.exe
-  FluentReaderMCP-Setup-v0.1.3-beta-win-x64.exe.sha256
-  FluentReaderMCP-Setup-v0.1.3-beta-win-x64.exe.build-report.json
+  FluentReaderMCP-Setup-v0.1.4-beta-win-x64.exe
+  FluentReaderMCP-Setup-v0.1.4-beta-win-x64.exe.sha256
+  FluentReaderMCP-Setup-v0.1.4-beta-win-x64.exe.build-report.json
 ```
 
 Il report contiene SHA-256 e dimensione dell'installer, versione NSIS, commit degli script, e la provenienza del

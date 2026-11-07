@@ -3,8 +3,8 @@
 Builder del pacchetto ZIP autonomo di Fluent Reader MCP. La prossima build espone sedici strumenti, tutti disponibili automaticamente: dodici non modificano nulla; `add_rule`, `update_rule`, `delete_rule` possono cambiare le regole RSS e `apply_news_preferences_change` salva le preferenze in un file privato, soltanto su richiesta esplicita e con le protezioni del server.
 Il pacchetto non è un installer: non registra nulla, non crea servizi né porte di rete, non legge profili.
 
-> Stato (FR-MCP-04-BETA-RELEASE-04): la beta già prodotta ha la versione **0.1.3**, nove strumenti predefiniti e fino a tredici con attivazione manuale. Il codice attuale ne espone sedici senza attivazioni, ma nessun pacchetto che li contenga esiste prima di una nuova build verificata; il wizard resta Desktop-first (il
-> setup aggiorna anche la 0.1.2, che ha nove strumenti); il progetto è sotto licenza **MIT** (D-13, [LICENSE](../LICENSE));
+> Stato (FR-MCP-04-BETA-RELEASE-05): la beta già prodotta ha la versione **0.1.3**, nove strumenti predefiniti e fino a tredici con attivazione manuale. Il codice **0.1.4** ne espone sedici senza attivazioni, ma nessun pacchetto 0.1.4 esiste prima di una nuova build verificata; il wizard resta Desktop-first (il
+> setup aggiorna anche la 0.1.3 e le beta precedenti); il progetto è sotto licenza **MIT** (D-13, [LICENSE](../LICENSE));
 > la notice di Koffi è inclusa anche per il pacchetto nativo che non ne contiene una (vedi "Licenze"). Lo ZIP e l'EXE
 > preliminari 0.1.0 di FR-MCP-04-BETA-RELEASE-01 (`--allow-dirty`, `gitDirty: true`) **non sono la build finale**: va
 > costruita da albero pulito, senza `--allow-dirty`, in una cartella di output nuova, e il wizard reale va collaudato
@@ -161,14 +161,14 @@ va cancellata prima della build successiva.
 
 ```text
 D:\FluentReaderMCP-build\
-  fluent-reader-mcp-v0.1.3-beta-win-x64.zip
-  fluent-reader-mcp-v0.1.3-beta-win-x64.zip.sha256
-  fluent-reader-mcp-v0.1.3-beta-win-x64.zip.build-report.json
+  fluent-reader-mcp-v0.1.4-beta-win-x64.zip
+  fluent-reader-mcp-v0.1.4-beta-win-x64.zip.sha256
+  fluent-reader-mcp-v0.1.4-beta-win-x64.zip.build-report.json
   runtime-cache\node-v24.22.1-win-x64.zip
 ```
 
-Il nome deriva da `package.json` (`0.1.3`) più l'etichetta di canale `beta` e la piattaforma `win-x64`.
-Una nuova beta ha una nuova versione in `package.json` (decisione del proprietario: 0.1.0 → 0.1.1 → 0.1.2 → 0.1.3, suffisso `-beta`
+Il nome deriva da `package.json` (`0.1.4`) più l'etichetta di canale `beta` e la piattaforma `win-x64`.
+Una nuova beta ha una nuova versione in `package.json` (decisione del proprietario: 0.1.0 → 0.1.1 → 0.1.2 → 0.1.3 → 0.1.4, suffisso `-beta`
 solo dal canale). Due build della stessa versione hanno lo stesso nome, e la seconda viene rifiutata se la prima è
 ancora nella cartella di output.
 
@@ -191,7 +191,7 @@ FluentReaderMCP/
 ## Verifica manuale
 
 ```powershell
-$zip = "D:\FluentReaderMCP-build\fluent-reader-mcp-v0.1.3-beta-win-x64.zip"
+$zip = "D:\FluentReaderMCP-build\fluent-reader-mcp-v0.1.4-beta-win-x64.zip"
 (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLower()
 Get-Content -LiteralPath "$zip.sha256"
 ```

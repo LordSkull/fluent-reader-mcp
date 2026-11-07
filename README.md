@@ -2,13 +2,13 @@
 
 **Fluent Reader MCP** collega [Fluent Reader](https://github.com/yang991178/fluent-reader) ai client compatibili con il [Model Context Protocol (MCP)](https://modelcontextprotocol.io/), come Claude Desktop. Permette di consultare fonti RSS, gruppi, articoli e regole salvati localmente, senza aggiornare i feed o scaricare articoli dal Web, e, su richiesta esplicita, di modificare le regole RSS e il profilo editoriale personale.
 
-**Versione del repository:** `0.1.3` · **Windows x64** · **Beta privata**
+**Versione del repository:** `0.1.4` · **Windows x64** · **Beta privata**
 
 | Versione | Strumenti |
 | -------- | --------- |
-| Codice sorgente aggiornato | 16 strumenti predefiniti |
+| Codice sorgente 0.1.4 | 16 strumenti disponibili automaticamente |
 | Installer beta 0.1.3 già prodotto | Comportamento precedente: 9 strumenti predefiniti e fino a 13 con attivazione manuale |
-| Prossimo installer | 16 strumenti senza attivazioni, soltanto dopo una nuova build verificata |
+| Installer beta 0.1.4 | Non ancora prodotto: 16 strumenti senza attivazioni dopo build e collaudo |
 
 ## Installazione Windows
 
@@ -81,7 +81,7 @@ Il server compilato è `dist/main.js` e comunica attraverso MCP su **stdio**, se
 
 ## Stato del progetto
 
-Secondo il collaudo dichiarato dal proprietario, il **7 novembre 2026** l'installer beta 0.1.3 ha verificato in Claude Desktop tutti i **13 strumenti allora inclusi**, comprese aggiunta, modifica ed eliminazione delle regole. I tre strumenti del profilo editoriale sono presenti soltanto nel codice sorgente aggiornato e la suite del repository ha superato **1258 test su 1258**.
+Secondo il collaudo dichiarato dal proprietario, il **7 novembre 2026** l'installer beta 0.1.3 ha verificato in Claude Desktop tutti i **13 strumenti allora inclusi**, comprese aggiunta, modifica ed eliminazione delle regole. I tre strumenti del profilo editoriale sono inclusi nel codice sorgente 0.1.4, il cui installer non è ancora stato prodotto o distribuito; la suite del repository ha superato **1259 test su 1259**.
 
 Il proprietario ha confermato la presenza fisica di tre backup delle regole; la loro ripristinabilità non è ancora stata verificata completamente. Restano inoltre necessarie ulteriori prove di aggiornamento e recupero su Windows prima di una distribuzione pubblica; consulta la [checklist Windows](installer/WINDOWS-SMOKE-TEST.md).
 
