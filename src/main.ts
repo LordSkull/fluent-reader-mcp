@@ -15,6 +15,7 @@ import { logEvent } from "./log.js"
 import { createServer } from "./server.js"
 import { readSettings } from "./settings/read-settings.js"
 import { ruleWriteSettingsFromEnv } from "./settings/rule-store.js"
+import { newsPreferenceSettingsFromEnv } from "./preferences/store.js"
 import { createToolContext, type ToolContext } from "./tools/context.js"
 
 /** Backstop: exit even if some handle keeps the event loop alive. */
@@ -64,8 +65,10 @@ async function main(): Promise<void> {
         logEvent("database_ok", { sqliteVersion: capabilities.sqliteVersion, encoding: capabilities.encoding })
         await probeSettings(profile.configPath, profile.directory)
         const ruleWrites = ruleWriteSettingsFromEnv(process.env)
+        const newsPreferences = newsPreferenceSettingsFromEnv(process.env)
         logEvent("rule_writes", { enabled: ruleWrites.enabled })
-        context = createToolContext({ database, configPath: profile.configPath, profileDir: profile.directory, ruleWrites })
+        logEvent("news_preferences", { enabled: newsPreferences.enabled })
+        context = createToolContext({ database, configPath: profile.configPath, profileDir: profile.directory, ruleWrites, newsPreferences })
     } catch (error) {
         const safe = toSafeError(error)
         logEvent("startup_failed", { code: safe.code, ...(safe.reason && { reason: safe.reason }) })

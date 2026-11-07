@@ -12,7 +12,10 @@ export const MAIN_JS = path.join(PROJECT_ROOT, "dist", "main.js")
 export function childEnv(extra: Record<string, string> = {}): Record<string, string> {
     const env: Record<string, string> = {}
     for (const [key, value] of Object.entries(process.env)) {
-        if (value !== undefined && key.toUpperCase() !== "FLUENT_READER_PROFILE_DIR") env[key] = value
+        if (
+            value !== undefined &&
+            !["FLUENT_READER_PROFILE_DIR", "FLUENT_READER_MCP_ENABLE_RULE_WRITES", "FLUENT_READER_MCP_ENABLE_NEWS_PREFERENCES"].includes(key.toUpperCase())
+        ) env[key] = value
     }
     return { ...env, ...extra }
 }

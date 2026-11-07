@@ -40,6 +40,19 @@ export const ERROR_CODES = [
     "RULE_BACKUP_UNAVAILABLE",
     "RULE_WRITE_FAILED",
     "RULE_WRITE_UNVERIFIED",
+    "NEWS_PREFERENCES_DISABLED",
+    "PREFERENCES_UNAVAILABLE",
+    "PREFERENCES_INVALID",
+    "PROFILE_BINDING_REQUIRED",
+    "PREVIEW_INVALID",
+    "PREVIEW_EXPIRED",
+    "PREFERENCES_REVISION_CONFLICT",
+    "PREFERENCES_WRITE_BUSY",
+    "PREFERENCES_BACKUP_UNAVAILABLE",
+    "PREFERENCES_WRITE_FAILED",
+    "PREFERENCES_WRITE_UNVERIFIED",
+    "PREFERENCE_TEXT_REJECTED",
+    "PREFERENCE_BINDING_REVIEW_REQUIRED",
     "INTERNAL_ERROR",
 ] as const
 
@@ -134,11 +147,40 @@ export type ErrorReason =
     | "byte-order-mark"
     | "hard-linked"
     | "write-in-progress"
+    | "write-lock-orphaned"
     | "backup-location"
     | "backup-failed"
     | "write-failed"
     | "replace-failed"
     | "read-back-failed"
+    // news preferences
+    | "preferences-disabled"
+    | "storage-location"
+    | "unsafe-storage"
+    | "profile-identity"
+    | "invalid-markdown"
+    | "preferences-too-large"
+    | "catalog-too-large"
+    | "profile-binding"
+    | "already-initialized"
+    | "not-initialized"
+    | "preview-invalid"
+    | "preview-expired"
+    | "preview-mismatch"
+    | "preview-reused"
+    | "catalog-changed"
+    | "duplicate-mapping"
+    | "invalid-mapping"
+    | "preference-target-not-found"
+    | "preferences-read-failed"
+    | "unmapped-sections"
+    | "binding-review-required"
+    | "text-empty"
+    | "text-too-long"
+    | "text-control"
+    | "text-markup"
+    | "text-url"
+    | "text-credential"
     // generic
     | "async-callback"
     | "unexpected"
@@ -274,6 +316,58 @@ const TEXT: Readonly<Record<ErrorCode, { message: string; hint: string }>> = {
     RULE_WRITE_UNVERIFIED: {
         message: "config.json was replaced, but the saved result could not be verified; nothing was restored automatically.",
         hint: "Do not retry blindly. Call list_rules to check the rules. A private copy taken before the change is in %LOCALAPPDATA%\\FluentReaderMCP-Data\\rule-backups; it holds the whole configuration, credentials included.",
+    },
+    NEWS_PREFERENCES_DISABLED: {
+        message: "Personal news preferences are disabled for this server; nothing was written.",
+        hint: "Set FLUENT_READER_MCP_ENABLE_NEWS_PREFERENCES to 1 in this server's MCP configuration and restart the client.",
+    },
+    PREFERENCES_UNAVAILABLE: {
+        message: "The private personal-preferences storage is unavailable or unsafe.",
+        hint: "Use the regular local %LOCALAPPDATA% area of the current Windows user; links, junctions, non-regular files and storage outside the user profile are refused.",
+    },
+    PREFERENCES_INVALID: {
+        message: "preferences.md is too large, malformed or does not have the supported managed structure.",
+        hint: "Call get_news_preferences for the line of the first problem, then repair the Markdown markers or restore a private backup; the server never rewrites an invalid document automatically.",
+    },
+    PROFILE_BINDING_REQUIRED: {
+        message: "The preferences document is not verified for the current Fluent Reader profile.",
+        hint: "Preview and explicitly apply reassociate_profile. Until then all stored preferences, including the general ones, remain non-effective.",
+    },
+    PREVIEW_INVALID: {
+        message: "The preview token is invalid, altered, already used or does not match the submitted change.",
+        hint: "Run preview_news_preferences_change again and apply the same changes with the returned token and revision. A preview made before identity.key existed does not survive a server restart.",
+    },
+    PREVIEW_EXPIRED: {
+        message: "The preview token has expired.",
+        hint: "Run preview_news_preferences_change again: a preview lasts 15 minutes.",
+    },
+    PREFERENCES_REVISION_CONFLICT: {
+        message: "The preferences document or live catalog changed after the requested revision was observed; nothing was written.",
+        hint: "Read the preferences and live catalog again, then obtain a new preview for the intended change.",
+    },
+    PREFERENCES_WRITE_BUSY: {
+        message: "Another personal-preferences update is in progress; nothing was written.",
+        hint: "Retry after the other MCP client finishes, starting with a new read and preview. A lock left by a crash is never removed automatically: if get_news_preferences keeps warning writeLockMayBeOrphaned, close every MCP client using this profile, then delete preferences.lock from its storageLocation.",
+    },
+    PREFERENCES_BACKUP_UNAVAILABLE: {
+        message: "The previous preferences.md could not be backed up, so no change was made.",
+        hint: "Check the private news-preferences backup directory and available disk space, then obtain a new preview.",
+    },
+    PREFERENCES_WRITE_FAILED: {
+        message: "The personal-preferences change could not be saved; preferences.md was not replaced.",
+        hint: "Check the private storage and retry from a new read and preview. preferences.md was not touched.",
+    },
+    PREFERENCES_WRITE_UNVERIFIED: {
+        message: "preferences.md was written but the result or profile binding could not be verified; nothing was restored automatically.",
+        hint: "Do not retry blindly. Read the preferences state and inspect a private backup before deciding whether to restore it.",
+    },
+    PREFERENCE_TEXT_REJECTED: {
+        message: "The preference text contains markup, addresses, credentials or control characters that are not stored; nothing was written.",
+        hint: "Rephrase it as plain text. HTML comments, tags, code fences, URLs, secrets and invisible or bidirectional characters are refused.",
+    },
+    PREFERENCE_BINDING_REVIEW_REQUIRED: {
+        message: "This section is not associated with a verified group or source; nothing was written.",
+        hint: "Read the sections view, then confirm the association with rebind_section or delete the section with remove_section.",
     },
     INTERNAL_ERROR: {
         message: "An internal error occurred.",

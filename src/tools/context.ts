@@ -10,6 +10,7 @@ import { CursorRegistry } from "../scan/cursors.js"
 import { SourceIdentity } from "../scan/identity.js"
 import { readSettings } from "../settings/read-settings.js"
 import type { RuleWriteSettings } from "../settings/rule-store.js"
+import { newsPreferenceSettingsFromEnv, type NewsPreferenceSettings } from "../preferences/store.js"
 
 export interface ToolContext {
     readonly database: Pick<DatabaseAccess, "withReadConnection">
@@ -20,6 +21,8 @@ export interface ToolContext {
     readonly now: () => number
     /** Disabled unless the user enabled it explicitly (see settings/rule-store.ts). */
     readonly ruleWrites: RuleWriteSettings
+    /** Independent opt-in and process state for the personal editorial profile. */
+    readonly newsPreferences: NewsPreferenceSettings
 }
 
 export interface ToolContextOptions {
@@ -29,6 +32,7 @@ export interface ToolContextOptions {
     readonly cursors?: CursorRegistry
     readonly now?: () => number
     readonly ruleWrites?: RuleWriteSettings
+    readonly newsPreferences?: NewsPreferenceSettings
 }
 
 export function createToolContext(options: ToolContextOptions): ToolContext {
@@ -41,6 +45,7 @@ export function createToolContext(options: ToolContextOptions): ToolContext {
         identity: new SourceIdentity(),
         now,
         ruleWrites: options.ruleWrites ?? { enabled: false },
+        newsPreferences: options.newsPreferences ?? newsPreferenceSettingsFromEnv({}),
     }
 }
 

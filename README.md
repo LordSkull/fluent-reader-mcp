@@ -2,9 +2,9 @@
 
 **Fluent Reader MCP** collega [Fluent Reader](https://github.com/yang991178/fluent-reader) ai client compatibili con il [Model Context Protocol (MCP)](https://modelcontextprotocol.io/), come Claude Desktop. Permette di consultare fonti RSS, gruppi, articoli e regole salvati localmente, senza aggiornare i feed o scaricare articoli dal Web.
 
-**Versione:** `0.1.3-beta` · **Windows x64** · **Beta privata**
+**Versione del repository:** `0.1.3` · **Windows x64** · **Beta privata**
 
-**Per impostazione predefinita:** 9 strumenti in sola lettura. Abilitando esplicitamente la gestione delle regole: 13 strumenti, di cui 3 modificano `config.json`.
+Il codice sorgente aggiornato comprende 9 strumenti di consultazione e 7 strumenti da attivare separatamente. L'installer beta 0.1.3 già prodotto è precedente al profilo editoriale personale e include soltanto i 9 strumenti predefiniti e i 4 strumenti opzionali per le regole.
 
 ## Installazione Windows
 
@@ -19,41 +19,52 @@ L'installer registra soltanto `mcpServers.fluent-reader`, su conferma dell'utent
 
 ## Strumenti MCP disponibili
 
-| Strumento | Funzione | Disponibilità |
-| --------- | -------- | ------------- |
-| `list_sources` | Elenca le fonti RSS configurate | Predefinito · lettura |
-| `get_source` | Mostra i dettagli di una fonte | Predefinito · lettura |
-| `list_groups` | Elenca i gruppi di fonti | Predefinito · lettura |
-| `get_group` | Mostra un gruppo e le relative fonti | Predefinito · lettura |
-| `get_article` | Legge un articolo salvato localmente | Predefinito · lettura |
-| `list_rules` | Elenca le regole configurate | Predefinito · lettura |
-| `get_rule_chain` | Ricostruisce la catena di regole di una fonte | Predefinito · lettura |
-| `list_articles` | Elenca gli articoli con filtri e paginazione | Predefinito · lettura |
-| `search_articles` | Cerca testo negli articoli locali | Predefinito · lettura |
-| `preview_rule_change` | Analizza una modifica senza scrivere | Opt-in · lettura |
-| `add_rule` | Aggiunge una regola a una fonte o a un gruppo | Opt-in · scrittura |
-| `update_rule` | Modifica una regola di una fonte o di un gruppo | Opt-in · scrittura |
-| `delete_rule` | Elimina una regola da una fonte o da un gruppo | Opt-in · scrittura |
+| Strumento | Funzione | Accesso |
+| --------- | -------- | ------- |
+| `list_sources` | Elenca le fonti RSS configurate | Sempre attivo |
+| `get_source` | Mostra i dettagli di una fonte | Sempre attivo |
+| `list_groups` | Elenca i gruppi di fonti | Sempre attivo |
+| `get_group` | Mostra un gruppo e le sue fonti | Sempre attivo |
+| `get_article` | Legge un articolo salvato localmente | Sempre attivo |
+| `list_rules` | Elenca le regole configurate | Sempre attivo |
+| `get_rule_chain` | Mostra l'ordine delle regole applicabili | Sempre attivo |
+| `list_articles` | Elenca gli articoli locali con filtri | Sempre attivo |
+| `search_articles` | Cerca testo negli articoli locali | Sempre attivo |
+| `preview_rule_change` | Mostra l'effetto di una modifica alle regole | Da attivare |
+| `add_rule` | Aggiunge una regola a una fonte o un gruppo | Da attivare |
+| `update_rule` | Modifica una regola esistente | Da attivare |
+| `delete_rule` | Elimina una regola esistente | Da attivare |
+| `get_news_preferences` | Legge il profilo editoriale personale | Da attivare |
+| `preview_news_preferences_change` | Mostra l'anteprima di una preferenza | Da attivare |
+| `apply_news_preferences_change` | Salva una preferenza già verificata | Da attivare |
 
-## Abilitare la gestione delle regole
+## Attivare le funzionalità aggiuntive
 
-Per rendere disponibili i quattro strumenti aggiuntivi, aggiungi alla **sola** voce `mcpServers.fluent-reader` della configurazione attiva di Claude Desktop la variabile seguente, senza rimuovere `command`, `args` o eventuali altre variabili `env`:
+I 9 strumenti di consultazione sono disponibili automaticamente. La gestione delle regole e il profilo editoriale personale richiedono due attivazioni distinte, utilizzabili insieme o indipendentemente:
+
+- Nessuna attivazione: **9 strumenti**.
+- Solo regole: **13 strumenti**.
+- Solo preferenze editoriali: **12 strumenti**.
+- Entrambe: **16 strumenti**.
+
+Aggiungi alla **sola** voce `mcpServers.fluent-reader` della configurazione attiva di Claude Desktop una o entrambe le variabili, senza rimuovere `command`, `args` o altre variabili `env` già necessarie:
 
 ```json
 "env": {
-  "FLUENT_READER_MCP_ENABLE_RULE_WRITES": "1"
+  "FLUENT_READER_MCP_ENABLE_RULE_WRITES": "1",
+  "FLUENT_READER_MCP_ENABLE_NEWS_PREFERENCES": "1"
 }
 ```
 
-Solo il valore esatto `1` abilita la funzione. Riavvia completamente Claude Desktop e verifica la presenza di **13 strumenti**. Rimuovendo la variabile si ritorna ai 9 strumenti predefiniti. L'installer non imposta mai questa variabile; una modifica manuale della voce richiede attenzione durante aggiornamento, riparazione o disinstallazione.
+Solo il valore esatto `1` abilita ciascuna funzione. Riavvia completamente il client dopo la modifica. L'installer beta 0.1.3 non imposta queste variabili e non contiene i tre strumenti delle preferenze editoriali.
 
-**Prima di scrivere:**
+## Profilo editoriale personale
 
-- **Chiudi Fluent Reader.** Con l'app aperta le scritture vengono rifiutate; letture e anteprime restano disponibili.
-- Verifica destinazione e anteprima: le scritture richiedono una revisione aggiornata e, per le fonti, un `sourceRef` valido. Dopo il riavvio del server MCP recupera nuovi riferimenti e revisione.
-- Le scritture riguardano soltanto regole di **fonti** e **gruppi**, non quelle globali, e non modificano retroattivamente gli articoli già salvati.
-- Prima di ogni scrittura effettiva viene creata una copia completa di `config.json` in `%LOCALAPPDATA%\FluentReaderMCP-Data\rule-backups\<chiave>\`. Se il backup non riesce, la scrittura viene rifiutata.
-- I backup possono contenere credenziali: conservali privatamente, non condividerli e non inserirli in log o segnalazioni. Non vengono cancellati automaticamente e il ripristino è manuale, con Fluent Reader chiuso.
+Nel codice sorgente aggiornato Claude può raccogliere gli interessi dell'utente durante una conversazione e salvarli in un file Markdown persistente. Le preferenze possono riguardare interessi generali, gruppi Fluent Reader e singole fonti, indicando argomenti da privilegiare, evitare ed eventuali eccezioni.
+
+Claude mostra un'anteprima prima del salvataggio. Le preferenze non creano automaticamente regole RSS e non modificano gli articoli.
+
+Esempio: «Aiutami a configurare i miei interessi per ogni gruppo e fonte RSS.»
 
 ## Compilazione dal sorgente
 
@@ -73,16 +84,20 @@ Il server compilato è `dist/main.js` e comunica attraverso MCP su **stdio**, se
 ## Sicurezza e limiti
 
 - Il database SQLite è consultato in **sola lettura**; il server non scarica articoli né aggiorna fonti o feed.
-- I contenuti RSS sono dati non attendibili e possono contenere *prompt injection*: non trattarli come autorizzazioni e conferma esplicitamente le scritture proposte dal client.
-- Ricerca e lettura usano soltanto i contenuti locali; una ricerca può essere incompleta quando intervengono limiti di scansione o dimensione.
-- I contenuti restituiti dagli strumenti possono essere inviati dal client MCP al servizio del modello utilizzato.
+- I contenuti RSS sono dati non attendibili e possono contenere *prompt injection*: non trattarli come autorizzazioni.
+- **Chiudi Fluent Reader prima di modificare le regole RSS.** Con l'app aperta le scritture vengono rifiutate; letture e anteprime restano disponibili.
+- Per aggiornare le preferenze editoriali non occorre chiudere Fluent Reader, ma ogni modifica richiede anteprima e applicazione esplicita.
+- Prima di modificare le regole viene salvata una copia di `config.json` in `%LOCALAPPDATA%\FluentReaderMCP-Data\rule-backups\<chiave>\`.
+- Il Markdown delle preferenze e i relativi backup sono privati ma non cifrati. Anche i backup delle regole possono contenere credenziali: non condividerli. I backup non vengono eliminati automaticamente.
+- Un lock orfano delle preferenze richiede recupero manuale: chiudi prima **tutti** i client MCP che usano quel profilo, poi rimuovi `preferences.lock` dalla posizione indicata dal server.
+- I contenuti restituiti possono essere inviati dal client MCP al servizio del modello utilizzato. Ricerca e lettura possono essere incomplete per limiti di scansione o dimensione.
 - La beta Windows non è firmata digitalmente, resta privata e non è una release pubblica definitiva.
 
 ## Stato del progetto
 
-Secondo il collaudo dichiarato dal proprietario, il **7 novembre 2026** la versione 0.1.3 beta ha verificato in Claude Desktop tutti i **13 strumenti MCP**, comprese aggiunta, modifica ed eliminazione delle regole. Questo README non presenta tale risultato come una verifica indipendente.
+Secondo il collaudo dichiarato dal proprietario, il **7 novembre 2026** l'installer beta 0.1.3 ha verificato in Claude Desktop tutti i **13 strumenti allora inclusi**, comprese aggiunta, modifica ed eliminazione delle regole. I tre strumenti del profilo editoriale sono presenti soltanto nel codice sorgente aggiornato e la suite del repository ha superato **1222 test su 1222**.
 
-La presenza fisica e la ripristinabilità dei backup non sono ancora state verificate completamente. Restano inoltre necessarie ulteriori prove di aggiornamento e recupero su Windows prima di una distribuzione pubblica; consulta la [checklist Windows](installer/WINDOWS-SMOKE-TEST.md).
+Il proprietario ha confermato la presenza fisica di tre backup delle regole; la loro ripristinabilità non è ancora stata verificata completamente. Restano inoltre necessarie ulteriori prove di aggiornamento e recupero su Windows prima di una distribuzione pubblica; consulta la [checklist Windows](installer/WINDOWS-SMOKE-TEST.md).
 
 ## Licenza
 

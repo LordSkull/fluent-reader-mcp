@@ -15,6 +15,7 @@ import { SOURCE_SQL } from "../../src/domain/sources.js"
 import { createServer } from "../../src/server.js"
 import type { CursorRegistry } from "../../src/scan/cursors.js"
 import type { RuleWriteSettings } from "../../src/settings/rule-store.js"
+import type { NewsPreferenceSettings } from "../../src/preferences/store.js"
 import { createToolContext, type ToolContext } from "../../src/tools/context.js"
 import { CONFIG_NAME, DB_NAME, ITEMS_DDL, SOURCES_DDL, writeSettings, type ProfileFixture } from "./fixtures.js"
 
@@ -251,6 +252,7 @@ export interface HarnessOptions {
     readonly access?: DatabaseAccessOptions
     readonly database?: Pick<DatabaseAccess, "withReadConnection">
     readonly ruleWrites?: RuleWriteSettings
+    readonly newsPreferences?: NewsPreferenceSettings
 }
 
 /** createServer() with a context on the profile, connected to an SDK v2 client in memory. */
@@ -264,6 +266,7 @@ export async function harness(profile: ProfileFixture, options: HarnessOptions =
         ...(options.now && { now: options.now }),
         ...(options.cursors && { cursors: options.cursors }),
         ...(options.ruleWrites && { ruleWrites: options.ruleWrites }),
+        ...(options.newsPreferences && { newsPreferences: options.newsPreferences }),
     })
     const server = createServer(context)
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
