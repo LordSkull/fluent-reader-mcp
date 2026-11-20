@@ -79,12 +79,6 @@ Il server compilato è `dist/main.js` e comunica attraverso MCP su **stdio**, se
 - I contenuti restituiti possono essere inviati dal client MCP al servizio del modello utilizzato. Ricerca e lettura possono essere incomplete per limiti di scansione o dimensione.
 - La beta Windows non è firmata digitalmente, resta privata e non è una release pubblica definitiva.
 
-## Stato del progetto
-
-Secondo il collaudo dichiarato dal proprietario, il **7 novembre 2026** l'installer beta 0.1.3 ha verificato in Claude Desktop tutti i **13 strumenti allora inclusi**, comprese aggiunta, modifica ed eliminazione delle regole. I tre strumenti del profilo editoriale sono inclusi nel codice sorgente 0.1.4, il cui installer non è ancora stato prodotto o distribuito; la suite del repository ha superato **1259 test su 1259**.
-
-Il proprietario ha confermato la presenza fisica di tre backup delle regole; la loro ripristinabilità non è ancora stata verificata completamente. Restano inoltre necessarie ulteriori prove di aggiornamento e recupero su Windows prima di una distribuzione pubblica; consulta la [checklist Windows](installer/WINDOWS-SMOKE-TEST.md).
-
 ## Licenza
 
 Il progetto è distribuito con licenza [MIT](LICENSE). I pacchetti includono le licenze e le notice del runtime e delle dipendenze.
