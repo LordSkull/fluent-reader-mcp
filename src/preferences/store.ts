@@ -2,7 +2,9 @@ import crypto from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
-import { FrMcpError, isFrMcpError, systemErrorCode } from "../errors.js"
+import { FrMcpError, isFrMcpError, systemErrorCode, type ErrorReason, type RecoveryCopy } from "../errors.js"
+import { logEvent } from "../log.js"
+import { abandonTransaction, beginTransaction, completeTransaction, copyStatus, fileIdentity, recoverTransactions, rollBack, writeDurable, type CurrentTarget, type Transaction } from "../write-transaction.js"
 import { inspectPreferences, PREFERENCES_BYTES_MAX, type DocumentIssue, type ParsedPreferences } from "./markdown.js"
 
 export const PREFERENCES_ROOT = "FluentReaderMCP-Data"
@@ -20,7 +22,7 @@ const READ_CHUNK = 64 * 1024
 const PARTIAL_FILE = /^\.(?:preferences|identity)\.[0-9a-f]{16}\.partial$/
 
 /** Fault injection points for tests. */
-export type PreferenceStep = "before-rename" | "after-rename" | "key-written"
+export type PreferenceStep = "before-rename" | "after-rename" | "key-written" | "before-restore" | "before-move-aside" | "after-move-aside" | "after-restore" | "before-cleanup"
 
 export interface NewsPreferenceSettings {
     readonly localAppData?: string | undefined
@@ -318,16 +320,6 @@ function partialPath(paths: PreferencePaths, kind: "preferences" | "identity"): 
     return path.join(paths.root, `.${kind}.${crypto.randomBytes(8).toString("hex")}.partial`)
 }
 
-function writeDurable(file: string, bytes: Buffer): void {
-    const fd = fs.openSync(file, "wx", 0o600)
-    try {
-        fs.writeFileSync(fd, bytes)
-        fs.fsyncSync(fd)
-    } finally {
-        fs.closeSync(fd)
-    }
-}
-
 /**
  * identity.key appears complete or not at all: written aside and renamed under
  * the lock. A file of the wrong size (an older interrupted write) is moved
@@ -361,35 +353,106 @@ export function ensureIdentityKey(settings: NewsPreferenceSettings, profileDir: 
     }
 }
 
-function backup(paths: PreferencePaths, bytes: Buffer, now: number): string {
+/** The private folder of this profile's transactions (and of the permanent .bak copies of earlier versions, left as they are). */
+function transactionDirectory(paths: PreferencePaths): string {
     try {
-        ensureDirectory(paths.root, PREFERENCES_BACKUPS)
+        return ensureDirectory(paths.root, PREFERENCES_BACKUPS)
     } catch {
         throw new FrMcpError("PREFERENCES_BACKUP_UNAVAILABLE", "backup-failed")
     }
-    const stamp = new Date(now).toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")
-    for (let index = 0; ; index++) {
-        const name = `preferences.md.${stamp}${index === 0 ? "" : `-${index}`}.bak`
-        const target = path.join(paths.backups, name)
-        try {
-            writeDurable(target, bytes)
-            if (!fs.readFileSync(target).equals(bytes)) throw new FrMcpError("PREFERENCES_BACKUP_UNAVAILABLE", "backup-failed")
-            return name
-        } catch (error) {
-            if (systemErrorCode(error) === "EEXIST") continue
-            try { fs.rmSync(target, { force: true }) } catch { /* kept private */ }
-            throw isFrMcpError(error) ? error : new FrMcpError("PREFERENCES_BACKUP_UNAVAILABLE", "backup-failed")
-        }
+}
+
+/**
+ * preferences.md as it is now, read through ONE descriptor, so that every check
+ * describes the bytes returned; null when absent. Never writes. Throws
+ * PREFERENCES_UNAVAILABLE (unsafe-storage) for a link, a non-regular file or a
+ * second hard link; PREFERENCES_INVALID (file-too-large) beyond
+ * PREFERENCES_BYTES_MAX, before reading anything; PREFERENCES_REVISION_CONFLICT
+ * when another file took the name, or the file changed, while it was read.
+ */
+export function readCurrentDocument(paths: PreferencePaths): CurrentTarget | null {
+    if (!regular(paths.document)) return null
+    const changed = (): FrMcpError => new FrMcpError("PREFERENCES_REVISION_CONFLICT", "revision-mismatch")
+    const before = fs.lstatSync(paths.document, { throwIfNoEntry: false, bigint: true })
+    if (before === undefined) return null
+    let fd: number
+    try {
+        fd = fs.openSync(paths.document, "r")
+    } catch (error) {
+        if (systemErrorCode(error) === "ENOENT") return null
+        throw new FrMcpError("PREFERENCES_UNAVAILABLE", "preferences-read-failed")
     }
+    let result: CurrentTarget
+    try {
+        const stats = fs.fstatSync(fd, { bigint: true })
+        if (!stats.isFile() || stats.nlink !== 1n) throw new FrMcpError("PREFERENCES_UNAVAILABLE", "unsafe-storage")
+        // The descriptor must be the file whose name and kind were checked, not one put under the name since.
+        if (fileIdentity(stats) !== fileIdentity(before)) throw changed()
+        if (stats.size > BigInt(PREFERENCES_BYTES_MAX)) throw new FrMcpError("PREFERENCES_INVALID", "file-too-large")
+        const size = Number(stats.size)
+        const bytes = Buffer.alloc(size)
+        let total = 0
+        while (total < size) {
+            const read = fs.readSync(fd, bytes, total, size - total, total)
+            if (read === 0) throw changed()
+            total += read
+        }
+        if (fs.readSync(fd, Buffer.alloc(1), 0, 1, size) !== 0) throw changed()
+        const after = fs.fstatSync(fd, { bigint: true })
+        if (after.size !== stats.size || after.mtimeNs !== stats.mtimeNs) throw changed()
+        result = { bytes, identity: fileIdentity(stats) }
+    } finally {
+        fs.closeSync(fd)
+    }
+    // Still the same file under the name once read.
+    const now = fs.lstatSync(paths.document, { throwIfNoEntry: false, bigint: true })
+    if (now === undefined || fileIdentity(now) !== result.identity) throw changed()
+    return result
+}
+
+/**
+ * After the rename, still under the lock: the document is this write's file
+ * with exactly the new bytes, a valid managed document with the expected
+ * revision, and bound to the current profile by the identity key on disk.
+ * Returns why not, or null.
+ */
+function verifyCommitted(settings: NewsPreferenceSettings, profileDir: string, paths: PreferencePaths, written: CurrentTarget): ErrorReason | null {
+    try {
+        settings.step?.("after-rename")
+        const current = readCurrentDocument(paths)
+        const same = current !== null && current.identity === written.identity && current.bytes.equals(written.bytes)
+        if (!same) return "read-back-failed"
+        const state = readPreferenceState(settings, profileDir)
+        if (state.documentStatus !== "ready" || state.bytes?.equals(written.bytes) !== true || state.revision !== documentRevision(written.bytes)) return "verification-failed"
+        if (state.profileBinding !== "verified") return "profile-binding"
+    } catch {
+        return "read-back-failed"
+    }
+    return null
 }
 
 export interface CommitResult {
     readonly applied: boolean
     readonly previousRevision: string
     readonly revision: string
-    readonly backup: string | null
+    /** The verified temporary copy left after a verified change because it could not be removed, or null (the normal case). */
+    readonly keptCopy: { readonly location: string; readonly name: string } | null
+    /** Something of the finished transaction could not be removed and is not a verified copy (its journal, or a file that is not provably the copy). */
+    readonly cleanupPending: boolean
 }
 
+/**
+ * One transaction (see ../write-transaction.ts), under the lock: the
+ * transactions an interrupted writer left are settled; the revision is
+ * compared; an identical document is not written and no copy is made; the
+ * previous document (or the fact that there was none) is recorded durably; the
+ * new one is renamed into place; then content, structure, revision and profile
+ * binding are verified before the copy is removed. A failed verification
+ * restores the previous state only when that is provably safe (lock still
+ * held, storage paths unchanged, the document still this write's file); a first
+ * save is undone by removing the new document under the same conditions.
+ * identity.key is never removed here.
+ */
 export async function commitPreferences(
     settings: NewsPreferenceSettings,
     profileDir: string,
@@ -400,42 +463,87 @@ export async function commitPreferences(
     const paths = ensureRoot(settings, profileDir)
     const lock = acquireLock(paths, now)
     const temp = partialPath(paths, "preferences")
-    let renamed = false
     try {
-        removeDeadPartials(paths, lock)
-        const state = readPreferenceState(settings, profileDir)
-        if (state.revision !== expectedRevision) throw new FrMcpError("PREFERENCES_REVISION_CONFLICT", "revision-mismatch")
-        if (state.bytes?.equals(next) === true) return { applied: false, previousRevision: state.revision, revision: state.revision, backup: null }
-        const backupName = state.bytes === null ? null : backup(paths, state.bytes, now)
-        writeDurable(temp, next)
-        if (!fs.readFileSync(temp).equals(next)) throw new FrMcpError("PREFERENCES_WRITE_FAILED", "write-failed")
-        for (let attempt = 1; ; attempt++) {
-            settings.step?.("before-rename")
-            if (!ownsLock(paths, lock)) throw new FrMcpError("PREFERENCES_WRITE_BUSY", "write-in-progress")
-            const current = readPreferenceState(settings, profileDir)
-            if (current.revision !== expectedRevision || (state.bytes !== null && current.bytes?.equals(state.bytes) !== true)) {
-                throw new FrMcpError("PREFERENCES_REVISION_CONFLICT", "revision-mismatch")
-            }
+        let tx: Transaction | null = null
+        let dir: string
+        let location: string
+        let identity: string
+        try {
+            removeDeadPartials(paths, lock)
+            location = `${storageLocation(profileDir)}\\${PREFERENCES_BACKUPS}`
+            dir = transactionDirectory(paths)
+            // Under the lock: whoever holds it is the only live writer, so what a dead one left can be settled.
+            const recovered = await recoverTransactions(dir, "preferences", async () => readCurrentDocument(paths)?.bytes ?? null)
+            if (recovered.cleaned + recovered.kept > 0) logEvent("write_transactions_settled", { store: "preferences", cleaned: recovered.cleaned, kept: recovered.kept })
+            const state = readPreferenceState(settings, profileDir)
+            if (state.revision !== expectedRevision) throw new FrMcpError("PREFERENCES_REVISION_CONFLICT", "revision-mismatch")
+            if (state.bytes?.equals(next) === true) return { applied: false, previousRevision: state.revision, revision: state.revision, keptCopy: null, cleanupPending: false }
+            // Only an absent document may have no bytes: a document too large to hold is never replaced.
+            if (state.bytes === null && state.documentStatus !== "absent") throw new FrMcpError("PREFERENCES_INVALID", "file-too-large")
             try {
-                fs.renameSync(temp, paths.document)
-                renamed = true
-                break
-            } catch (error) {
-                const code = systemErrorCode(error)
-                if (attempt >= RENAME_ATTEMPTS || !["EPERM", "EACCES", "EBUSY"].includes(code ?? "")) throw new FrMcpError("PREFERENCES_WRITE_FAILED", "replace-failed")
-                await sleep(RENAME_PAUSE_MS)
+                tx = beginTransaction(dir, "preferences", state.bytes, next)
+            } catch {
+                throw new FrMcpError("PREFERENCES_BACKUP_UNAVAILABLE", "backup-failed")
+            }
+            identity = writeDurable(temp, next)
+            if (!fs.readFileSync(temp).equals(next)) throw new FrMcpError("PREFERENCES_WRITE_FAILED", "write-failed")
+            for (let attempt = 1; ; attempt++) {
+                settings.step?.("before-rename")
+                if (!ownsLock(paths, lock)) throw new FrMcpError("PREFERENCES_WRITE_BUSY", "write-in-progress")
+                const current = readPreferenceState(settings, profileDir)
+                if (current.revision !== expectedRevision || (state.bytes !== null && current.bytes?.equals(state.bytes) !== true)) {
+                    throw new FrMcpError("PREFERENCES_REVISION_CONFLICT", "revision-mismatch")
+                }
+                try {
+                    fs.renameSync(temp, paths.document)
+                    break
+                } catch (error) {
+                    const code = systemErrorCode(error)
+                    if (attempt >= RENAME_ATTEMPTS || !["EPERM", "EACCES", "EBUSY"].includes(code ?? "")) throw new FrMcpError("PREFERENCES_WRITE_FAILED", "replace-failed")
+                    await sleep(RENAME_PAUSE_MS)
+                }
+            }
+        } catch (error) {
+            try { fs.rmSync(temp, { force: true }) } catch { /* removed under the next lock */ }
+            // preferences.md was not replaced: nothing to restore, only this writer's own copy and journal to remove.
+            if (tx !== null) abandonTransaction(tx)
+            if (isFrMcpError(error)) throw error
+            throw new FrMcpError("PREFERENCES_WRITE_FAILED", "write-failed")
+        }
+
+        // From here preferences.md is this writer's file, until proven otherwise.
+        const written: CurrentTarget = { bytes: next, identity }
+        const failure = verifyCommitted(settings, profileDir, paths, written)
+        if (failure === null) {
+            const completion = completeTransaction(tx, () => settings.step?.("before-cleanup"))
+            return {
+                applied: true,
+                previousRevision: expectedRevision,
+                revision: documentRevision(next),
+                keptCopy: completion === "copy-kept" && tx.copyName !== null ? { location, name: tx.copyName } : null,
+                cleanupPending: completion === "pending",
             }
         }
-        settings.step?.("after-rename")
-        const saved = fs.readFileSync(paths.document)
-        if (!saved.equals(next)) throw new FrMcpError("PREFERENCES_WRITE_UNVERIFIED", "read-back-failed")
-        return { applied: true, previousRevision: expectedRevision, revision: documentRevision(saved), backup: backupName }
-    } catch (error) {
-        try { fs.rmSync(temp, { force: true }) } catch { /* removed under the next lock */ }
-        if (renamed) throw new FrMcpError("PREFERENCES_WRITE_UNVERIFIED", "read-back-failed")
-        if (isFrMcpError(error)) throw error
-        throw new FrMcpError("PREFERENCES_WRITE_FAILED", "write-failed")
+        const outcome = await rollBack(tx, written, {
+            target: paths.document,
+            tempPath: () => partialPath(paths, "preferences"),
+            // Not of the kind removeDeadPartials removes: a concurrent file that could not be put back stays for the user.
+            asidePath: () => path.join(paths.root, `.preferences.${crypto.randomBytes(8).toString("hex")}.aside`),
+            holdsLock: () => ownsLock(paths, lock),
+            locationSafe: () => samePath(preferencePaths(settings, profileDir).root, paths.root) && realDirectory(paths.root) && realDirectory(dir),
+            readCurrent: async () => readCurrentDocument(paths),
+            step: (step) => settings.step?.(step),
+        })
+        if (outcome.restored) throw new FrMcpError("PREFERENCES_WRITE_ROLLED_BACK", failure)
+        if (outcome.stranded) logEvent("write_concurrent_file_aside", { store: "preferences" })
+        throw new FrMcpError("PREFERENCES_WRITE_UNVERIFIED", outcome.reason, recoveryOf(location, tx))
     } finally {
         releaseLock(paths, lock)
     }
+}
+
+/** What is left of the previous document, checked now: a name is given only for a file that is there. */
+function recoveryOf(location: string, tx: Transaction): RecoveryCopy {
+    const copy = copyStatus(tx)
+    return { location, name: copy === "verified" || copy === "unverifiable" ? tx.copyName : null, copy }
 }

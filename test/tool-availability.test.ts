@@ -152,55 +152,65 @@ describe("available does not mean automatic", { timeout: 120_000 }, () => {
         const f = fixture()
         const before = fs.readFileSync(f.configPath)
         const server = await open(f)
-        const { revision } = (await call(server, "list_rules", { limit: 100, scope: "group", groupId: 0 })).payload
-        const target = { scope: "group", groupId: 0, expectedRevision: revision, rule: RULE }
+        // The server is a child process: it is closed even when an assertion fails, or the test runner would wait for it forever.
+        try {
+            const { revision } = (await call(server, "list_rules", { limit: 100, scope: "group", groupId: 0 })).payload
+            const target = { scope: "group", groupId: 0, expectedRevision: revision, rule: RULE }
 
-        refused(await call(server, "add_rule", {}), "INVALID_ARGUMENT")
-        refused(await call(server, "add_rule", { ...target, expectedRevision: "rr1.AAAAAAAAAAAAAAAAAAAAAA" }), "REVISION_CONFLICT")
-        refused(await call(server, "add_rule", { ...target, groupId: 999 }), "NOT_FOUND")
-        refused(await call(server, "add_rule", { scope: "source", sourceId: 0, expectedRevision: revision, rule: RULE }), "INVALID_ARGUMENT")
+            refused(await call(server, "add_rule", {}), "INVALID_ARGUMENT")
+            refused(await call(server, "add_rule", { ...target, expectedRevision: "rr1.AAAAAAAAAAAAAAAAAAAAAA" }), "REVISION_CONFLICT")
+            refused(await call(server, "add_rule", { ...target, groupId: 999 }), "NOT_FOUND")
+            refused(await call(server, "add_rule", { scope: "source", sourceId: 0, expectedRevision: revision, rule: RULE }), "INVALID_ARGUMENT")
 
-        const lock = path.join(f.dir, APP_LOCK_FILE)
-        fs.writeFileSync(lock, "")
-        refused(await call(server, "add_rule", target), "FLUENT_READER_RUNNING")
-        refused(await call(server, "update_rule", { scope: "group", groupId: 0, expectedRevision: revision, index: 0, rule: RULE }), "FLUENT_READER_RUNNING")
-        refused(await call(server, "delete_rule", { scope: "group", groupId: 0, expectedRevision: revision, index: 0 }), "FLUENT_READER_RUNNING")
-        const preview = await call(server, "preview_rule_change", { operation: "add", scope: "group", groupId: 0, rule: RULE })
-        assert.equal(preview.isError, false)
-        assert.deepEqual(preview.payload.writeAvailability, { writesEnabled: true, fluentReaderOpen: true })
-        fs.unlinkSync(lock)
-        assert.ok(fs.readFileSync(f.configPath).equals(before), "nothing written by any refused call or by the preview")
-        assert.deepEqual(snapshotDir(f.localAppData), new Map(), "and no backup taken")
+            const lock = path.join(f.dir, APP_LOCK_FILE)
+            fs.writeFileSync(lock, "")
+            refused(await call(server, "add_rule", target), "FLUENT_READER_RUNNING")
+            refused(await call(server, "update_rule", { scope: "group", groupId: 0, expectedRevision: revision, index: 0, rule: RULE }), "FLUENT_READER_RUNNING")
+            refused(await call(server, "delete_rule", { scope: "group", groupId: 0, expectedRevision: revision, index: 0 }), "FLUENT_READER_RUNNING")
+            const preview = await call(server, "preview_rule_change", { operation: "add", scope: "group", groupId: 0, rule: RULE })
+            assert.equal(preview.isError, false)
+            assert.deepEqual(preview.payload.writeAvailability, { writesEnabled: true, fluentReaderOpen: true })
+            fs.unlinkSync(lock)
+            assert.ok(fs.readFileSync(f.configPath).equals(before), "nothing written by any refused call or by the preview")
+            assert.deepEqual(snapshotDir(f.localAppData), new Map(), "and no backup taken")
 
-        const saved = await call(server, "add_rule", target)
-        assert.equal(saved.isError, false, JSON.stringify(saved.payload))
-        assert.equal(saved.payload.applied, true)
-        assert.ok(saved.payload.backup?.name, "the real write took a backup first")
-        assert.equal(fs.readFileSync(f.configPath).equals(before), false)
-        await close(server)
+            const saved = await call(server, "add_rule", target)
+            assert.equal(saved.isError, false, JSON.stringify(saved.payload))
+            assert.equal(saved.payload.applied, true)
+            assert.equal(saved.payload.backup, null, "verified: the temporary copy was removed, no permanent backup")
+            assert.equal(fs.readFileSync(f.configPath).equals(before), false)
+            const copies = path.join(f.localAppData, "FluentReaderMCP-Data", "rule-backups")
+            assert.deepEqual(fs.readdirSync(copies).flatMap((key) => fs.readdirSync(path.join(copies, key))), [], "no copy and no journal left")
+        } finally {
+            await close(server)
+        }
     })
 
     test("preference writes without any variable need the preview, its token and confirm", async () => {
         const f = fixture()
         const profileBefore = snapshotDir(f.dir)
         const server = await open(f)
-        const changes = { operation: "initialize", interests: ["Sintetico"] }
-        const preview = await call(server, "preview_news_preferences_change", { expectedRevision: "absent", changes })
-        assert.equal(preview.isError, false, JSON.stringify(preview.payload))
-        assert.deepEqual(snapshotDir(f.localAppData), new Map(), "a preview writes nothing")
+        try {
+            const changes = { operation: "initialize", interests: ["Sintetico"] }
+            const preview = await call(server, "preview_news_preferences_change", { expectedRevision: "absent", changes })
+            assert.equal(preview.isError, false, JSON.stringify(preview.payload))
+            assert.deepEqual(snapshotDir(f.localAppData), new Map(), "a preview writes nothing")
 
-        const forged = `npp1.${"A".repeat(30)}.${"A".repeat(43)}`
-        refused(await call(server, "apply_news_preferences_change", { expectedRevision: "absent", changes, confirm: true }), "INVALID_ARGUMENT")
-        refused(await call(server, "apply_news_preferences_change", { previewToken: preview.payload.previewToken, expectedRevision: "absent", changes }), "INVALID_ARGUMENT")
-        refused(await call(server, "apply_news_preferences_change", { previewToken: preview.payload.previewToken, expectedRevision: "absent", changes, confirm: false }), "INVALID_ARGUMENT")
-        refused(await call(server, "apply_news_preferences_change", { previewToken: forged, expectedRevision: "absent", changes, confirm: true }), "PREVIEW_INVALID")
-        refused(await call(server, "apply_news_preferences_change", { previewToken: preview.payload.previewToken, expectedRevision: "absent", changes: { ...changes, interests: ["Altro"] }, confirm: true }), "PREVIEW_INVALID")
-        assert.deepEqual(snapshotDir(f.localAppData), new Map(), "no refused call writes anything")
+            const forged = `npp1.${"A".repeat(30)}.${"A".repeat(43)}`
+            refused(await call(server, "apply_news_preferences_change", { expectedRevision: "absent", changes, confirm: true }), "INVALID_ARGUMENT")
+            refused(await call(server, "apply_news_preferences_change", { previewToken: preview.payload.previewToken, expectedRevision: "absent", changes }), "INVALID_ARGUMENT")
+            refused(await call(server, "apply_news_preferences_change", { previewToken: preview.payload.previewToken, expectedRevision: "absent", changes, confirm: false }), "INVALID_ARGUMENT")
+            refused(await call(server, "apply_news_preferences_change", { previewToken: forged, expectedRevision: "absent", changes, confirm: true }), "PREVIEW_INVALID")
+            refused(await call(server, "apply_news_preferences_change", { previewToken: preview.payload.previewToken, expectedRevision: "absent", changes: { ...changes, interests: ["Altro"] }, confirm: true }), "PREVIEW_INVALID")
+            assert.deepEqual(snapshotDir(f.localAppData), new Map(), "no refused call writes anything")
 
-        const saved = await call(server, "apply_news_preferences_change", { previewToken: preview.payload.previewToken, expectedRevision: "absent", changes, confirm: true })
-        assert.equal(saved.isError, false, JSON.stringify(saved.payload))
-        assert.equal(saved.payload.applied, true)
-        await close(server)
+            const saved = await call(server, "apply_news_preferences_change", { previewToken: preview.payload.previewToken, expectedRevision: "absent", changes, confirm: true })
+            assert.equal(saved.isError, false, JSON.stringify(saved.payload))
+            assert.equal(saved.payload.applied, true)
+            assert.equal(saved.payload.backup, null, "first save, verified: nothing kept")
+        } finally {
+            await close(server)
+        }
         assert.deepEqual(snapshotDir(f.dir), profileBefore, "the preferences never touch the profile")
     })
 })

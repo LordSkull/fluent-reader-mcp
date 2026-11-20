@@ -8,6 +8,7 @@ import { analyzeRule, REGEX_CHECK_MAX, RULES_CONSULTED_MAX } from "../src/domain
 import { spliceRuleTarget } from "../src/settings/json-splice.js"
 import { CFG_MAX } from "../src/settings/read-settings.js"
 import { TOOLS } from "../installer/lib/package-content.js"
+import { beginTransaction, setPhase } from "../src/write-transaction.js"
 import { APP_LOCK_FILE, BACKUP_KIND, BACKUP_LOCATION, BACKUP_NAME, BACKUP_ROOT, GUARD_STALE_MS, RENAME_PAUSE_MS, ruleWriteSettingsFromEnv, WRITE_GUARD_FILE, type RuleWriteSettings, type RuleWriteStep } from "../src/settings/rule-store.js"
 import { addRule, deleteRule, updateRule } from "../src/tools/rule-change.js"
 import { getRuleChainOutput, listRulesOutput, previewRuleChangeOutput, RULE_CHANGE_EFFECT, RULE_PREVIEW_LIMITS, ruleWriteOutput } from "../src/tools/schemas.js"
@@ -109,6 +110,19 @@ async function group(h: Harness, groupId = 7): Promise<Record<string, unknown>> 
 function backups(s: Setup): string[] {
     if (!fs.existsSync(s.backupRoot)) return []
     return fs.readdirSync(s.backupRoot).flatMap((key) => fs.readdirSync(path.join(s.backupRoot, key)).map((name) => path.join(s.backupRoot, key, name)))
+}
+
+/** The file a refused rollback kept, from the reference in the error: always inside this setup's private folder. */
+function kept(s: Setup, outcome: ToolOutcome): string {
+    const recovery = outcome.error?.recovery
+    assert.ok(recovery !== undefined, outcome.text)
+    assert.equal(recovery.copy, "verified", outcome.text)
+    assert.ok(recovery.name !== null)
+    assert.match(recovery.location, /^%LOCALAPPDATA%\\FluentReaderMCP-Data\\rule-backups\\[0-9a-f]{32}$/)
+    assert.match(recovery.name, /^tx-[0-9a-f]{16}\.original$/)
+    const file = path.join(s.store.localAppData, recovery.location.slice("%LOCALAPPDATA%\\".length), recovery.name)
+    assert.ok(fs.existsSync(file))
+    return file
 }
 
 /** The profile is exactly as it was, and no backup or temporary file exists. */
@@ -235,6 +249,7 @@ describe("update_rule", () => {
         const out = ok(await s.h.call("update_rule", { ...target, index: 0, rule: { field: "title", pattern: "first", caseSensitive: false, match: true, actions: [{ action: "star", value: true }] } }), ruleWriteOutput)
         assert.deepEqual([out.applied, out.backup, out.revision], [false, null, target.expectedRevision])
         assertNothingWritten(s, initial)
+        assert.equal(fs.existsSync(s.backupRoot), false, "no copy and no journal: the private folder is not even created")
     })
 
     test("index out of range and stale revision are refused", async () => {
@@ -600,13 +615,16 @@ describe("Fluent Reader open", () => {
         assert.equal(fs.existsSync(path.join(s.p.dir, WRITE_GUARD_FILE)), false)
     })
 
-    test("the app starting right after the rename is reported, not hidden", async () => {
+    test("the app starting right after the rename is reported, not hidden: no rollback while it is open, the copy kept", async () => {
         let s: Setup
         s = await setup(settings(), { step: (step) => { if (step === "after-rename") fs.writeFileSync(path.join(s.p.dir, APP_LOCK_FILE), "") } })
         const target = await source(s.h)
-        refused(await s.h.call("add_rule", { ...target, rule: RULE }), "RULE_WRITE_UNVERIFIED", "app-started")
-        assert.equal(config(s.p).sourceRules["source:1"].length, 4)
-        assert.equal(backups(s).length, 1)
+        const before = bytes(s.p)
+        const call = await s.h.call("add_rule", { ...target, rule: RULE })
+        refused(call, "RULE_WRITE_UNVERIFIED", "rollback-unsafe-app-open")
+        assert.equal(config(s.p).sourceRules["source:1"].length, 4, "config.json not touched again while the app may be reading it")
+        assert.equal(backups(s).length, 2, "the copy and its journal")
+        assert.deepEqual(fs.readFileSync(kept(s, call)), before)
     })
 })
 
@@ -705,7 +723,7 @@ describe("write failures", () => {
         }
         assert.deepEqual(bytes(s.p), before)
         assert.equal(fs.existsSync(path.join(s.p.dir, WRITE_GUARD_FILE)), false)
-        assert.equal(backups(s).length, 1, "the copy taken stays")
+        assert.deepEqual(backups(s), [], "config.json never replaced: the temporary copy and its journal are removed")
     })
 
     test("a failure at any step before the rename leaves config.json intact", async () => {
@@ -722,10 +740,11 @@ describe("write failures", () => {
             assert.deepEqual(findLeaks([call.text], [SECRET_SENTINEL]), [], step)
             assert.deepEqual(bytes(s.p), before, step)
             assert.equal(fs.existsSync(path.join(s.p.dir, WRITE_GUARD_FILE)), false, step)
+            assert.deepEqual(backups(s), [], `${step}: only this writer's copy and journal, removed`)
         }
     })
 
-    test("the result cannot be read back: reported and not restored", async () => {
+    test("config.json changed by someone else after the rename: not restored over it, the copy kept and named", async () => {
         let s: Setup
         s = await setup(settings(), {
             step: (step) => {
@@ -733,10 +752,13 @@ describe("write failures", () => {
             },
         })
         const target = await source(s.h)
+        const before = bytes(s.p)
         const call = await s.h.call("add_rule", { ...target, rule: RULE })
-        refused(call, "RULE_WRITE_UNVERIFIED", "read-back-failed")
+        refused(call, "RULE_WRITE_UNVERIFIED", "rollback-unsafe-changed")
         assert.deepEqual(config(s.p), { someoneElse: true }, "someone else's change is not overwritten")
-        assert.equal(backups(s).length, 1)
+        assert.equal(backups(s).length, 2)
+        assert.deepEqual(fs.readFileSync(kept(s, call)), before, "the kept copy is the previous content")
+        assert.deepEqual(findLeaks([call.text], [s.store.userProfile, s.p.dir, SECRET_SENTINEL, FAKE_PASSWORD]), [], "a reference, never the content or a real path")
     })
 })
 
@@ -790,9 +812,8 @@ describe("retries of the rename", () => {
         assert.equal(config(s.p).theme, "dark")
         assert.equal(config(s.p).sourceRules["source:1"].length, 3)
         assert.equal(guardGone(s), true)
-        const copies = backups(s)
-        assert.equal(copies.length, 1)
-        assert.deepEqual(fs.readFileSync(copies[0] as string), before)
+        assert.deepEqual(backups(s), [], "config.json was never replaced: no copy left")
+        void before
     })
 
     test("the lockfile appearing alone stops the retries too", async (t) => {
@@ -821,7 +842,7 @@ describe("retries of the rename", () => {
                 assert.equal(seen.attempts, 1)
                 assert.deepEqual(bytes(s.p), saved)
                 assert.equal(guardGone(s), true)
-                assert.equal(backups(s).length, 1)
+                assert.deepEqual(backups(s), [])
             })
         }
     })
@@ -908,7 +929,7 @@ describe("retries of the rename", () => {
         assert.equal(config(s.p).sourceRules["source:1"][3].search, "^new")
         assert.equal(config(s.p).sourceRules["source:9"].length, 1)
         assert.equal(guardGone(s), true)
-        assert.equal(backups(s).length, 1)
+        assert.deepEqual(backups(s), [])
 
         const listing = await listed(s.h, { scope: "source", sourceId: 1 })
         assert.equal(listing.revision, added.revision)
@@ -934,7 +955,7 @@ describe("retries of the rename", () => {
         assert.deepEqual([seen.attempts, pauses], [5, 4])
         assert.deepEqual(bytes(s.p), before)
         assert.equal(guardGone(s), true)
-        assert.equal(backups(s).length, 1)
+        assert.deepEqual(backups(s), [])
     })
 
     test("an error that is not retryable: no pause, no retry", async (t) => {
@@ -958,7 +979,7 @@ describe("retries of the rename", () => {
         assert.equal(seen.attempts, 1)
         assert.equal(fs.existsSync(s.p.configPath), false)
         assert.equal(guardGone(s), true)
-        assert.equal(backups(s).length, 1)
+        assert.deepEqual(backups(s), [])
     })
 
     test("the lockfile appearing while the retry reads config.json stops it", async (t) => {
@@ -994,45 +1015,331 @@ describe("retries of the rename", () => {
     })
 })
 
-describe("private backups", () => {
-    test("exact bytes in the private folder, one per change, under a new name; the result has no path", async () => {
-        const s = await setup()
-        const first = bytes(s.p)
-        const a = ok(await s.h.call("add_rule", { ...(await source(s.h)), rule: RULE }), ruleWriteOutput)
-        const second = bytes(s.p)
-        const b = ok(await s.h.call("delete_rule", { ...(await source(s.h)), index: 0 }), ruleWriteOutput)
-        const files = backups(s)
-        assert.equal(files.length, 2)
-        for (const file of files) assert.match(path.basename(file), BACKUP_NAME)
-        assert.deepEqual(fs.readFileSync(path.join(path.dirname(files[0] as string), a.backup?.name as string)), first)
-        assert.deepEqual(fs.readFileSync(path.join(path.dirname(files[0] as string), b.backup?.name as string)), second)
-        assert.equal(a.backup?.location, BACKUP_LOCATION)
-        const text = JSON.stringify([a, b])
-        assert.deepEqual(findLeaks([text], [s.store.userProfile, s.p.dir, SECRET_SENTINEL, FAKE_PASSWORD]), [])
-        assert.deepEqual(fs.readdirSync(s.p.dir).sort(), ["config.json", "fluent-reader.db"])
+describe("temporary copies, verification and rollback (add_rule, update_rule, delete_rule)", () => {
+    type Call = (h: Harness) => Promise<ToolOutcome>
+    const calls: [string, Call][] = [
+        ["add_rule", async (h) => h.call("add_rule", { ...(await source(h)), rule: RULE })],
+        ["update_rule", async (h) => h.call("update_rule", { ...(await source(h)), index: 1, rule: { ...RULE, pattern: "^updated" } })],
+        ["delete_rule", async (h) => h.call("delete_rule", { ...(await source(h)), index: 0 })],
+    ]
+    const keyDir = (s: Setup): string => {
+        const keys = fs.readdirSync(s.backupRoot)
+        assert.equal(keys.length, 1)
+        return path.join(s.backupRoot, keys[0] as string)
+    }
+    const journalOf = (copy: string): { phase: string } => JSON.parse(fs.readFileSync(copy.replace(/\.original$/, ".journal"), "utf8"))
+    const profileFiles = (s: Setup): string[] => fs.readdirSync(s.p.dir).sort()
+
+    for (const [tool, call] of calls) {
+        test(`${tool}: the copy exists only during the change, holds the exact previous bytes, and is removed once verified`, async () => {
+            let during: { name: string; bytes: Buffer }[] = []
+            let s: Setup
+            s = await setup(settings(), {
+                step: (step) => {
+                    if (step !== "before-rename") return
+                    const dir = keyDir(s)
+                    during = fs.readdirSync(dir).sort().map((name) => ({ name, bytes: fs.readFileSync(path.join(dir, name)) }))
+                },
+            })
+            const before = bytes(s.p)
+            const out = ok(await call(s.h), ruleWriteOutput)
+            assert.deepEqual([out.applied, out.backup, out.warnings.includes("temporaryCopyKept")], [true, null, false])
+            assert.deepEqual(during.map((f) => f.name.replace(/[0-9a-f]{16}/, "<id>")), ["tx-<id>.journal", "tx-<id>.original"])
+            assert.deepEqual(during[1]?.bytes, before, "exactly the bytes the change starts from")
+            assert.equal(JSON.parse(String(during[0]?.bytes)).phase, "prepared")
+            assert.deepEqual(backups(s), [], "no copy, no journal after a verified change")
+            assert.deepEqual(profileFiles(s), ["config.json", "fluent-reader.db"], "nothing in the profile folder")
+            assert.notDeepEqual(bytes(s.p), before)
+        })
+
+        test(`${tool}: a failure after the rename with the file still this writer's is rolled back, verified byte for byte`, async () => {
+            const fresh = await setup(settings(), { step: (step) => { if (step === "after-rename") throw new Error(`EIO ${SECRET_SENTINEL}`) } })
+            const before = bytes(fresh.p)
+            const outcome = await call(fresh.h)
+            refused(outcome, "RULE_WRITE_ROLLED_BACK", "read-back-failed")
+            assert.equal(outcome.error?.recovery, undefined, "nothing kept: no reference")
+            assert.deepEqual(findLeaks([outcome.text], [SECRET_SENTINEL]), [])
+            assert.deepEqual(bytes(fresh.p), before, "the previous bytes, exactly")
+            assert.deepEqual(backups(fresh), [])
+            assert.deepEqual(profileFiles(fresh), ["config.json", "fluent-reader.db"])
+            assert.equal((await listed(fresh.h, { scope: "source", sourceId: 1 })).rules.length, 3, "the rules are as before")
+        })
+    }
+
+    test("a concurrent change right before the restoring rename: not overwritten, the copy kept", async () => {
+        let s: Setup
+        let external: Buffer = Buffer.alloc(0)
+        s = await setup(settings(), {
+            step: (step) => {
+                if (step === "after-rename") throw new Error("read failure")
+                if (step === "before-restore") {
+                    const doc = config(s.p)
+                    doc.theme = "changed meanwhile"
+                    external = Buffer.from(JSON.stringify(doc))
+                    const temp = `${s.p.configPath}.tmp-other`
+                    fs.writeFileSync(temp, external)
+                    fs.renameSync(temp, s.p.configPath)
+                }
+            },
+        })
+        const before = bytes(s.p)
+        const outcome = await s.h.call("add_rule", { ...(await source(s.h)), rule: RULE })
+        refused(outcome, "RULE_WRITE_UNVERIFIED", "rollback-unsafe-changed")
+        assert.deepEqual(bytes(s.p), external, "the other change survives")
+        const copy = kept(s, outcome)
+        assert.deepEqual(fs.readFileSync(copy), before)
+        assert.equal(journalOf(copy).phase, "recovery-kept")
+        assert.deepEqual(profileFiles(s), ["config.json", "fluent-reader.db"], "the restoring temporary file is gone")
     })
 
-    test("the same second does not overwrite a backup", async () => {
-        const dir = path.join(root, `rw${++counter}`)
-        const p = createSourcesProfile(dir, { sources: [{ sid: 1 }], settings: settings() })
-        const store = storage()
-        const h = await harness(p, { now: () => Date.UTC(2026, 10, 4, 12, 0, 0), ruleWrites: store })
-        open.push(h)
-        const names: string[] = []
-        for (let i = 0; i < 3; i++) names.push((ok(await h.call("add_rule", { ...(await source(h)), rule: { ...RULE, pattern: `p${i}` } }), ruleWriteOutput).backup?.name) as string)
-        assert.deepEqual(names, ["config.json.20261104T120000Z.bak", "config.json.20261104T120000Z-1.bak", "config.json.20261104T120000Z-2.bak"])
+    test("the rollback itself failing: reported as such, config.json left as written, the copy kept", async (t) => {
+        let s: Setup
+        let links = 0
+        const real = fs.linkSync
+        t.mock.method(fs, "linkSync", (from: fs.PathLike, to: fs.PathLike): void => {
+            // The publication of the restored file fails; putting this writer's file back (the next link to config.json) works.
+            if (path.basename(String(to)) === "config.json" && ++links === 1) throw Object.assign(new Error("disk full"), { code: "ENOSPC" })
+            real(from, to)
+        })
+        let written: bigint | undefined
+        s = await setup(settings(), { step: (step) => {
+            if (step === "after-rename") {
+                written = fs.statSync(s.p.configPath, { bigint: true }).ino
+                throw new Error("read failure")
+            }
+        } })
+        const before = bytes(s.p)
+        const outcome = await s.h.call("add_rule", { ...(await source(s.h)), rule: RULE })
+        refused(outcome, "RULE_WRITE_UNVERIFIED", "rollback-failed")
+        assert.equal(links, 2, "one refused publication, then this writer's file put back")
+        assert.equal(config(s.p).sourceRules["source:1"].length, 4, "the written file, intact and valid")
+        assert.equal(fs.statSync(s.p.configPath, { bigint: true }).ino, written, "the very same file, back under its name")
+        const copy = kept(s, outcome)
+        assert.deepEqual(fs.readFileSync(copy), before)
+        assert.equal(journalOf(copy).phase, "recovery-kept")
+        assert.deepEqual(profileFiles(s), ["config.json", "fluent-reader.db"])
     })
 
-    test("restoring a backup by hand brings back the previous rules", async () => {
+    test("the restored file not reading back as the original: rollback-failed, the copy kept", async () => {
+        let s: Setup
+        s = await setup(settings(), {
+            step: (step) => {
+                if (step === "after-rename") throw new Error("read failure")
+                if (step === "after-restore") fs.writeFileSync(s.p.configPath, JSON.stringify({ ...config(s.p), theme: "after the restore" }))
+            },
+        })
+        const before = bytes(s.p)
+        const outcome = await s.h.call("add_rule", { ...(await source(s.h)), rule: RULE })
+        refused(outcome, "RULE_WRITE_UNVERIFIED", "rollback-failed")
+        assert.deepEqual(fs.readFileSync(kept(s, outcome)), before)
+    })
+
+    describe("Codex reproduction: a replacement after the last check, before the destructive step", () => {
+        const asides = (s: Setup): string[] => fs.readdirSync(s.p.dir).filter((name) => name.endsWith(".aside"))
+        /** As another program saving: new file, rename over. Returns its file id. */
+        function foreignSave(s: Setup, text: string): bigint {
+            const temp = `${s.p.configPath}.tmp-other`
+            fs.writeFileSync(temp, text)
+            fs.renameSync(temp, s.p.configPath)
+            return fs.statSync(s.p.configPath, { bigint: true }).ino
+        }
+
+        test("replaced right before the move aside: the concurrent file stays, same file and bytes; no rollback claimed; the copy kept", async () => {
+            let s: Setup
+            let foreign = 0n
+            s = await setup(settings(), {
+                step: (step) => {
+                    if (step === "after-rename") throw new Error("read failure")
+                    // Interposition: every check of the rollback has passed; the target is about to be touched.
+                    if (step === "before-move-aside") foreign = foreignSave(s, '{"concurrent":"save"}')
+                },
+            })
+            const before = bytes(s.p)
+            const outcome = await s.h.call("add_rule", { ...(await source(s.h)), rule: RULE })
+            refused(outcome, "RULE_WRITE_UNVERIFIED", "rollback-unsafe-changed")
+            assert.equal(fs.readFileSync(s.p.configPath, "utf8"), '{"concurrent":"save"}', "the concurrent content is intact")
+            assert.equal(fs.statSync(s.p.configPath, { bigint: true }).ino, foreign, "and it is the very same file")
+            assert.deepEqual(fs.readFileSync(kept(s, outcome)), before)
+            assert.deepEqual(asides(s), [])
+            assert.deepEqual(profileFiles(s), ["config.json", "fluent-reader.db"])
+        })
+
+        test("a new file under the name right after the move aside: never overwritten; this writer's file not published again", async () => {
+            let s: Setup
+            let foreign = 0n
+            s = await setup(settings(), {
+                step: (step) => {
+                    if (step === "after-rename") throw new Error("read failure")
+                    if (step === "after-move-aside") foreign = foreignSave(s, '{"created":"meanwhile"}')
+                },
+            })
+            const before = bytes(s.p)
+            const outcome = await s.h.call("add_rule", { ...(await source(s.h)), rule: RULE })
+            refused(outcome, "RULE_WRITE_UNVERIFIED", "rollback-unsafe-changed")
+            assert.equal(fs.readFileSync(s.p.configPath, "utf8"), '{"created":"meanwhile"}')
+            assert.equal(fs.statSync(s.p.configPath, { bigint: true }).ino, foreign)
+            assert.deepEqual(fs.readFileSync(kept(s, outcome)), before)
+            assert.deepEqual(asides(s), [])
+            assert.deepEqual(profileFiles(s), ["config.json", "fluent-reader.db"])
+        })
+
+        test("a concurrent file that cannot be put back stays under a private .aside name: never deleted", async (t) => {
+            let s: Setup
+            s = await setup(settings(), {
+                step: (step) => {
+                    if (step === "after-rename") throw new Error("read failure")
+                    if (step === "before-move-aside") foreignSave(s, '{"concurrent":"keep me"}')
+                },
+            })
+            const real = fs.linkSync
+            t.mock.method(fs, "linkSync", (from: fs.PathLike, to: fs.PathLike): void => {
+                if (String(from).endsWith(".aside")) throw Object.assign(new Error("denied"), { code: "EACCES" })
+                real(from, to)
+            })
+            const outcome = await s.h.call("add_rule", { ...(await source(s.h)), rule: RULE })
+            refused(outcome, "RULE_WRITE_UNVERIFIED", "rollback-unsafe-changed")
+            const left = asides(s)
+            assert.equal(left.length, 1)
+            assert.equal(fs.readFileSync(path.join(s.p.dir, left[0] as string), "utf8"), '{"concurrent":"keep me"}')
+            assert.match(outcome.error?.hint ?? "", /\.aside/)
+            assert.equal(outcome.error?.recovery?.copy, "verified")
+        })
+    })
+
+    test("the error says what is left of the copy: missing (no name), or unverifiable; never a promise of a restorable copy", async () => {
+        const copyIn = (s: Setup): string => {
+            const dir = keyDir(s)
+            return path.join(dir, fs.readdirSync(dir).find((name) => name.endsWith(".original")) as string)
+        }
+        let a: Setup
+        a = await setup(settings(), { step: (step) => { if (step === "after-rename") { fs.unlinkSync(copyIn(a)); throw new Error("read failure") } } })
+        const missing = await a.h.call("add_rule", { ...(await source(a.h)), rule: RULE })
+        refused(missing, "RULE_WRITE_UNVERIFIED", "rollback-failed")
+        assert.deepEqual([missing.error?.recovery?.copy, missing.error?.recovery?.name], ["missing", null])
+        assert.equal(config(a.p).sourceRules["source:1"].length, 4, "nothing to restore from: the written file stays")
+
+        let b: Setup
+        b = await setup(settings(), { step: (step) => { if (step === "after-rename") { const file = copyIn(b); fs.writeFileSync(`${file}.x`, "tampered"); fs.renameSync(`${file}.x`, file); throw new Error("read failure") } } })
+        const altered = await b.h.call("add_rule", { ...(await source(b.h)), rule: RULE })
+        refused(altered, "RULE_WRITE_UNVERIFIED", "rollback-failed")
+        assert.equal(altered.error?.recovery?.copy, "unverifiable")
+        assert.match(altered.error?.recovery?.name ?? "", /^tx-[0-9a-f]{16}\.original$/)
+        assert.equal(config(b.p).sourceRules["source:1"].length, 4, "a tampered copy is never published")
+        assert.equal(fs.readFileSync(copyIn(b), "utf8"), "tampered", "nor removed")
+    })
+
+    test("a cleanup that fails after a verified change: still a success, the copy named and kept, settled by the next write", async (t) => {
+        const real = fs.unlinkSync
+        let refuse = true
+        t.mock.method(fs, "unlinkSync", (target: fs.PathLike): void => {
+            if (refuse && /^tx-[0-9a-f]{16}\.original\.[0-9a-f]{16}\.removing$/.test(path.basename(String(target)))) throw Object.assign(new Error("held"), { code: "EBUSY" })
+            real(target)
+        })
         const s = await setup()
-        const first = bytes(s.p)
+        const before = bytes(s.p)
         const out = ok(await s.h.call("add_rule", { ...(await source(s.h)), rule: RULE }), ruleWriteOutput)
-        const key = fs.readdirSync(s.backupRoot)[0] as string
-        fs.copyFileSync(path.join(s.backupRoot, key, out.backup?.name as string), s.p.configPath)
-        assert.deepEqual(bytes(s.p), first)
-        assert.equal((await listed(s.h, { scope: "source", sourceId: 1 })).revision, out.previousRevision)
+        assert.equal(out.applied, true, "the change is not reported as failed")
+        assert.ok(out.warnings.includes("temporaryCopyKept"))
+        assert.ok(out.backup !== null)
+        assert.match(out.backup.location, /^%LOCALAPPDATA%\\FluentReaderMCP-Data\\rule-backups\\[0-9a-f]{32}$/)
+        assert.ok(out.backup.location.startsWith(BACKUP_LOCATION))
+        const copy = path.join(keyDir(s), out.backup.name)
+        assert.deepEqual(fs.readFileSync(copy), before)
+        assert.equal(journalOf(copy).phase, "verified")
+        assert.equal(config(s.p).sourceRules["source:1"].length, 4)
+
+        refuse = false
+        const next = ok(await s.h.call("add_rule", { ...(await source(s.h)), rule: { ...RULE, pattern: "^second" } }), ruleWriteOutput)
+        assert.deepEqual([next.applied, next.backup], [true, null])
+        assert.deepEqual(backups(s), [], "the verified transaction was finished by the next write")
     })
 
+    describe("an interrupted writer, settled by the next write under the guard", () => {
+        /** A setup whose private folder exists (one verified change already done). */
+        async function prepared(ruleWrites: Partial<RuleWriteSettings> = {}): Promise<{ s: Setup; dir: string }> {
+            const s = await setup(settings(), ruleWrites)
+            ok(await s.h.call("add_rule", { ...(await group(s.h)), rule: RULE }), ruleWriteOutput)
+            return { s, dir: keyDir(s) }
+        }
+        const changed = (p: ProfileFixture): Buffer => Buffer.from(JSON.stringify({ ...config(p), theme: "applied by the dead writer" }))
+
+        test("prepared, config.json still the original: never applied, the copy and journal removed", async () => {
+            const { s, dir } = await prepared()
+            beginTransaction(dir, "rules", bytes(s.p), changed(s.p))
+            assert.equal(backups(s).length, 2)
+            ok(await s.h.call("add_rule", { ...(await source(s.h)), rule: RULE }), ruleWriteOutput)
+            assert.deepEqual(backups(s), [])
+        })
+
+        test("prepared, config.json holding the new content: applied but never verified, kept for the user", async () => {
+            const { s, dir } = await prepared()
+            const original = bytes(s.p)
+            const next = changed(s.p)
+            const tx = beginTransaction(dir, "rules", original, next)
+            fs.writeFileSync(s.p.configPath, next)
+            ok(await s.h.call("add_rule", { ...(await source(s.h)), rule: RULE }), ruleWriteOutput)
+            const copy = path.join(dir, tx.copyName as string)
+            assert.deepEqual(fs.readFileSync(copy), original, "the copy of an uncertain outcome is never deleted")
+            assert.equal(journalOf(copy).phase, "recovery-kept")
+            assert.equal(backups(s).length, 2)
+            ok(await s.h.call("add_rule", { ...(await source(s.h)), rule: { ...RULE, pattern: "^again" } }), ruleWriteOutput)
+            assert.equal(backups(s).length, 2, "and left alone afterwards")
+        })
+
+        test("rolling-back, config.json back to the original: the rollback had finished, removed; verified: removed", async () => {
+            const { s, dir } = await prepared()
+            setPhase(beginTransaction(dir, "rules", bytes(s.p), changed(s.p)), "rolling-back")
+            setPhase(beginTransaction(dir, "rules", Buffer.from("an older content"), changed(s.p)), "verified")
+            assert.equal(backups(s).length, 4)
+            ok(await s.h.call("add_rule", { ...(await source(s.h)), rule: RULE }), ruleWriteOutput)
+            assert.deepEqual(backups(s), [])
+        })
+
+        test("rolling-back with config.json not the original, an unreadable journal, a copy without journal: all kept", async () => {
+            const { s, dir } = await prepared()
+            const incomplete = beginTransaction(dir, "rules", Buffer.from("previous"), changed(s.p))
+            setPhase(incomplete, "rolling-back")
+            fs.writeFileSync(path.join(dir, "tx-0123456789abcdef.journal"), "{not json")
+            fs.writeFileSync(path.join(dir, "tx-fedcba9876543210.original"), "a copy whose journal is gone")
+            const before = snapshotDir(dir)
+            ok(await s.h.call("add_rule", { ...(await source(s.h)), rule: RULE }), ruleWriteOutput)
+            const after = snapshotDir(dir)
+            assert.equal(journalOf(path.join(dir, incomplete.copyName as string)).phase, "recovery-kept", "an incomplete rollback is kept")
+            for (const name of ["tx-0123456789abcdef.journal", "tx-fedcba9876543210.original", incomplete.copyName as string]) assert.equal(after.get(name), before.get(name), name)
+        })
+
+        test("the permanent .bak copies of earlier versions are never touched: success, rollback, refused rollback, recovery", async () => {
+            let fault: "none" | "rollback" | "foreign" = "none"
+            let s: Setup | undefined
+            const r = await prepared({
+                step: (step) => {
+                    if (step !== "after-rename" || fault === "none") return
+                    if (fault === "foreign") fs.writeFileSync((s as Setup).p.configPath, JSON.stringify({ ...config((s as Setup).p), theme: "someone else" }))
+                    fault = "none"
+                    throw new Error("read failure")
+                },
+            })
+            s = r.s
+            const dir = r.dir
+            const legacy = { "config.json.20251101T090000Z.bak": "old backup A", "config.json.20251101T090000Z-1.bak": "old backup B" }
+            for (const [name, content] of Object.entries(legacy)) {
+                assert.match(name, BACKUP_NAME)
+                fs.writeFileSync(path.join(dir, name), content)
+            }
+            ok(await s.h.call("add_rule", { ...(await source(s.h)), rule: RULE }), ruleWriteOutput)
+            fault = "rollback"
+            refused(await s.h.call("delete_rule", { ...(await source(s.h)), index: 0 }), "RULE_WRITE_ROLLED_BACK")
+            assert.deepEqual(fs.readdirSync(dir).sort(), Object.keys(legacy).sort(), "only the old copies remain")
+            fault = "foreign"
+            refused(await s.h.call("delete_rule", { ...(await source(s.h)), index: 0 }), "RULE_WRITE_UNVERIFIED", "rollback-unsafe-changed")
+            ok(await s.h.call("add_rule", { ...(await source(s.h)), rule: { ...RULE, pattern: "^later" } }), ruleWriteOutput)
+            for (const [name, content] of Object.entries(legacy)) assert.equal(fs.readFileSync(path.join(dir, name), "utf8"), content, name)
+            assert.equal(fs.readdirSync(dir).filter((name) => BACKUP_NAME.test(name)).length, 2)
+        })
+    })
+})
+
+describe("private backups", () => {
     test("no usable private folder: nothing is written, nothing is saved elsewhere", async () => {
         const home = storage()
         const inside = path.join(home.localAppData, BACKUP_ROOT)

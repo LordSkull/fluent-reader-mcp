@@ -501,8 +501,9 @@ riservate a una VM o a un ambiente sacrificabile) è in [WINDOWS-SMOKE-TEST.md](
 Il wizard dichiara che il server legge il profilo senza modificarlo salvo una richiesta esplicita di cambiare le regole RSS,
 che il database resta sempre in sola lettura, che il server non fa richieste di rete proprie, che i risultati possono essere
 inviati da Claude Desktop al servizio Anthropic, che i sedici strumenti sono disponibili senza attivazioni (tre possono
-cambiare le regole RSS, con Fluent Reader chiuso e dopo un backup; uno salva le preferenze in un file privato fuori dal
-profilo), e che non viene installato alcun servizio. Il setup non scrive file di log; i
+cambiare le regole RSS, con Fluent Reader chiuso; uno salva le preferenze in un file privato fuori dal profilo; le
+modifiche vengono verificate automaticamente e le copie temporanee vengono eliminate dopo il successo e conservate
+soltanto quando è necessario un recupero), e che non viene installato alcun servizio. Il setup non scrive file di log; i
 messaggi e i file di risultato non contengono contenuti della configurazione Claude, del
 database, URL dei feed, titoli o token. Il registro di installazione e i backup restano sulla macchina dell'utente.
 

@@ -69,11 +69,13 @@ async function add(s: Session, rule: object = RULE): Promise<ToolOutcome> {
 const previewOutcome = (s: Session): Promise<ToolOutcome> => s.h.call("preview_rule_change", { operation: "add", scope: "group", groupId: 0, rule: RULE })
 
 const partials = (s: Session): string[] => fs.readdirSync(s.dir).filter((name) => name.endsWith(".partial"))
-const backups = (s: Session): number => {
+/** Every file in the private folders: temporary copies, journals and old .bak copies alike. */
+const backupFiles = (s: Session): string[] => {
     const base = path.join(s.store.localAppData, "FluentReaderMCP-Data", "rule-backups")
-    if (!fs.existsSync(base)) return 0
-    return fs.readdirSync(base).flatMap((key) => fs.readdirSync(path.join(base, key))).filter((name) => name.endsWith(".bak")).length
+    if (!fs.existsSync(base)) return []
+    return fs.readdirSync(base).flatMap((key) => fs.readdirSync(path.join(base, key)))
 }
+const backups = (s: Session): number => backupFiles(s).length
 const ageGuard = (s: Session): void => {
     const old = new Date(Date.now() - GUARD_STALE_MS - 60_000)
     fs.utimesSync(s.guard, old, old)
@@ -358,7 +360,7 @@ describe("the rename", () => {
         assert.deepEqual(guardHeld, [true, true, true])
         assert.equal(fs.existsSync(s.guard), false)
         assert.deepEqual(partials(s), [])
-        assert.equal(backups(s), 1)
+        assert.equal(backups(s), 0, "the temporary copy and its journal are removed once verified")
     })
 
     test("config.json changing during a retry is never overwritten", async () => {
@@ -410,7 +412,7 @@ describe("the rename", () => {
         assert.deepEqual(partials(s), [])
     })
 
-    test("a read-back problem after the rename is UNVERIFIED, and the guard is released", async () => {
+    test("a read-back problem after the rename, with the file still this writer's: rolled back byte for byte, guard released", async () => {
         let armed = false
         const s = await session({ step: (name) => {
             if (armed && name === "after-rename") {
@@ -418,10 +420,39 @@ describe("the rename", () => {
                 throw new Error("read failure")
             }
         } })
+        const config = fs.readFileSync(s.config)
         armed = true
-        refused(await add(s), "RULE_WRITE_UNVERIFIED", "read-back-failed")
+        refused(await add(s), "RULE_WRITE_ROLLED_BACK", "read-back-failed")
         assert.equal(fs.existsSync(s.guard), false)
-        assert.match(fs.readFileSync(s.config, "utf8"), /\^nuova\$/, "the file was in fact replaced")
+        assert.ok(fs.readFileSync(s.config).equals(config), "the previous bytes are back")
+        assert.deepEqual(partials(s), [])
+        assert.equal(backups(s), 0, "nothing kept: the restoration was verified")
+    })
+
+    test("the guard lost after the rename: no rollback, config.json not touched again, the copy kept and named", async () => {
+        let armed = false
+        let s: Session | undefined
+        const realUnlink = fs.unlinkSync
+        s = await session({ step: (name) => {
+            if (armed && name === "after-rename") {
+                armed = false
+                handOver(s as Session, realUnlink)
+                throw new Error("read failure")
+            }
+        } })
+        const config = fs.readFileSync(s.config)
+        armed = true
+        const outcome = await add(s)
+        refused(outcome, "RULE_WRITE_UNVERIFIED", "rollback-unsafe-lock-lost")
+        assert.match(fs.readFileSync(s.config, "utf8"), /\^nuova\$/, "the written file stays: restoring without the guard could overwrite a new owner's change")
+        assert.equal(fs.readFileSync(s.guard, "utf8"), NEW_OWNER, "the new owner's guard is untouched")
+        const name = outcome.error?.recovery?.name as string
+        assert.match(name, /^tx-[0-9a-f]{16}\.original$/)
+        assert.match(outcome.error?.recovery?.location ?? "", /^%LOCALAPPDATA%\\FluentReaderMCP-Data\\rule-backups\\[0-9a-f]{32}$/)
+        const base = path.join(s.store.localAppData, "FluentReaderMCP-Data", "rule-backups")
+        const key = fs.readdirSync(base)[0] as string
+        assert.ok(fs.readFileSync(path.join(base, key, name)).equals(config), "the kept copy is the previous content")
+        assert.equal(JSON.parse(fs.readFileSync(path.join(base, key, name.replace(/\.original$/, ".journal")), "utf8")).phase, "recovery-kept")
     })
 })
 
@@ -438,9 +469,9 @@ describe("the ordinary release", () => {
         const before = fs.readdirSync(s.dir).sort()
         const saved = ok(await add(s))
         assert.equal(saved.applied, true)
-        assert.ok(saved.backup?.name)
+        assert.equal(saved.backup, null, "no permanent backup")
         assert.deepEqual(fs.readdirSync(s.dir).sort(), before)
-        assert.equal(backups(s), 1)
+        assert.equal(backups(s), 0)
         assert.match(observed?.guard ?? "", /^[0-9a-f]{32}$/, "the guard holds only an owner token")
         assert.equal(observed?.partials, 1)
     })
@@ -497,7 +528,7 @@ describe("the ordinary release", () => {
 
 describe("real processes", { timeout: 120_000 }, () => {
     interface Run {
-        readonly mode: "edit" | "crash" | "hold"
+        readonly mode: "edit" | "crash" | "crash-applied" | "hold"
         readonly id: string
         readonly s: Session
         readonly until: number
@@ -538,8 +569,8 @@ describe("real processes", { timeout: 120_000 }, () => {
             assert.deepEqual(JSON.parse(fs.readFileSync(s.config, "utf8")).serviceConfigs, syntheticSettings().serviceConfigs, "the other settings are intact")
             assert.equal(fs.existsSync(s.guard), false)
             assert.deepEqual(partials(s), [])
-            // A writer that read before another one's commit takes a backup, finds config.json changed and gives up: an extra copy, no write.
-            assert.ok(backups(s) >= commits.length, "every commit has its backup")
+            // A writer that read before another one's commit takes a copy, finds config.json changed and gives up: it removes its own copy.
+            assert.deepEqual(backupFiles(s), [], "no temporary copy or journal left by any writer")
         })
 
         test(`${count} writers facing an old guard: none removes it, none writes`, async () => {
@@ -589,10 +620,31 @@ describe("real processes", { timeout: 120_000 }, () => {
         assertUntouched(s, config, afterCrash)
         assert.ok(fs.existsSync(path.join(s.dir, dead[0] as string)), "a writer without the guard removes nothing")
 
+        assert.equal(afterCrash, 2, "the crash left its copy and its journal (prepared)")
+
         fs.unlinkSync(s.guard) // The documented recovery.
         assert.equal(ok(await add(s)).applied, true)
         assert.deepEqual(groupRules(s).map((rule) => rule.search), ["^nuova$"])
         assert.equal(fs.existsSync(s.guard), false)
         assert.deepEqual(partials(s), [], "the next real owner cleans up")
+        assert.deepEqual(backupFiles(s), [], "config.json was still the original: the dead writer's copy and journal were settled")
+    })
+
+    test("a real crash right after the rename: applied but never verified, so its copy is kept, never deleted", async () => {
+        const s = await session()
+        const config = fs.readFileSync(s.config)
+        await assert.rejects(worker({ mode: "crash-applied", id: "Applied", s, until: Date.now() + 30_000 }), /worker exit 9/)
+        assert.deepEqual(groupRules(s).map((rule) => rule.search), ["^Applied$"], "the change was applied")
+        assert.equal(backups(s), 2, "its copy and its journal (prepared)")
+        fs.unlinkSync(s.guard) // The documented recovery.
+        assert.equal(ok(await add(s)).applied, true)
+        assert.deepEqual(groupRules(s).map((rule) => rule.search), ["^Applied$", "^nuova$"])
+        const files = backupFiles(s).sort()
+        assert.equal(files.length, 2, "the dead writer's copy and journal stay")
+        const base = path.join(s.store.localAppData, "FluentReaderMCP-Data", "rule-backups")
+        const dir = path.join(base, fs.readdirSync(base)[0] as string)
+        const copy = files.find((name) => name.endsWith(".original")) as string
+        assert.ok(fs.readFileSync(path.join(dir, copy)).equals(config), "the copy is config.json before the interrupted change")
+        assert.equal(JSON.parse(fs.readFileSync(path.join(dir, copy.replace(/\.original$/, ".journal")), "utf8")).phase, "recovery-kept")
     })
 })

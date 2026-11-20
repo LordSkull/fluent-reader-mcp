@@ -685,24 +685,29 @@ export async function applyNewsPreferencesChange(context: ToolContext, args: unk
             if (digestOf(plan.entries) !== digestOf(planBefore.entries)) throw new FrMcpError("PREFERENCES_REVISION_CONFLICT", "catalog-changed")
         }
 
+        // Content, structure, revision and profile binding are verified inside the transaction, before its copy is removed.
         const committed = await commitPreferences(settings, context.profileDir, input.expectedRevision, plan.next, context.now())
         settings.usedTokens.add(input.previewToken)
-        let verified = false
-        try {
-            verified = readPreferenceState(settings, context.profileDir).profileBinding === "verified"
-        } catch {
-            verified = false
+        if (!committed.applied) {
+            // Nothing was written: the binding is the one observed under the lock, read again here as before.
+            let verified = false
+            try {
+                verified = readPreferenceState(settings, context.profileDir).profileBinding === "verified"
+            } catch {
+                verified = false
+            }
+            if (!verified) throw new FrMcpError("PROFILE_BINDING_REQUIRED", "profile-binding")
         }
-        if (!verified) throw new FrMcpError("PREFERENCES_WRITE_UNVERIFIED", "profile-binding")
         return successResult({
             operation: changes.operation,
             applied: committed.applied,
             previousRevision: committed.previousRevision,
             revision: committed.revision,
             profileBinding: "verified",
-            backup: committed.backup === null ? null : { location: `${storageLocation(context.profileDir)}\\backups`, name: committed.backup },
+            // null after a verified change and when nothing changed; set only when the change is saved but its temporary copy could not be removed.
+            backup: committed.keptCopy,
             sectionsChanged: [...new Set(plan.entries.map((entry) => [entry.sectionId ?? entry.scope, entry.field].filter((part) => part !== null).join(":")))],
-            warnings: changeWarnings(changes),
+            warnings: [...changeWarnings(changes), ...(committed.keptCopy !== null ? ["temporaryCopyKept"] : []), ...(committed.cleanupPending ? ["transactionCleanupPending"] : [])],
             consentLimitation: CONSENT_LIMITATION,
         }).result
     })

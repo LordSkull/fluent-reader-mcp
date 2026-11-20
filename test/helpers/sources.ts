@@ -243,7 +243,7 @@ export interface ToolOutcome {
     /** |S(R)| of { content, structuredContent } as sent by the server. */
     readonly length: number
     readonly payload: any
-    readonly error: { code: string; message: string; hint: string; reason?: string } | undefined
+    readonly error: { code: string; message: string; hint: string; reason?: string; recovery?: { location: string; name: string | null; copy: string } } | undefined
 }
 
 export interface HarnessOptions {

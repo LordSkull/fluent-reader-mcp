@@ -144,8 +144,10 @@ categoria 1 si fermano con **Annulla** prima della pagina di installazione.
 **N-02 — Informativa sui sedici strumenti e sulle modifiche** (cat. 1)
 - Preparazione: wizard aperto.
 - Azione: leggi benvenuto e pagina di riepilogo/informativa.
-- Atteso: sedici strumenti senza attivazioni; tre possono cambiare le regole RSS, con Fluent Reader chiuso e dopo un backup,
-  e uno salva le preferenze in un file privato fuori dal profilo, soltanto su richiesta esplicita; il database resta in sola
+- Atteso: sedici strumenti senza attivazioni; tre possono cambiare le regole RSS, con Fluent Reader chiuso, e uno salva le
+  preferenze in un file privato fuori dal profilo, soltanto su richiesta esplicita; le modifiche vengono verificate
+  automaticamente e le copie temporanee vengono eliminate dopo il successo e conservate soltanto quando è necessario un
+  recupero (i backup di `claude_desktop_config.json` del wizard sono un'altra cosa e restano); il database resta in sola
   lettura; la ricerca degli articoli lavora solo sui dati già salvati;
   nessun servizio Windows; il server non fa richieste di rete proprie; i risultati possono essere inviati da Claude
   Desktop al servizio Anthropic.

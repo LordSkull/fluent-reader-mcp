@@ -845,12 +845,16 @@ const RULE_CHANGE_WARNINGS = [
     "groupHasNoEffectiveMembers",
     "expectedRevisionStale",
     "fluentReaderOpen",
+    /** The change is saved and verified, but its temporary private copy could not be removed: backup names it, and it is still the exact copy. */
+    "temporaryCopyKept",
+    /** The change is saved and verified, but part of its transaction (its journal, or a file that is no longer provably its copy) was left for the next write or the user. */
+    "transactionCleanupPending",
 ] as const
 export type RuleChangeWarning = (typeof RULE_CHANGE_WARNINGS)[number]
 
 export const ruleWriteOutput = z.strictObject({
     operation: z.enum(["add", "update", "delete"]),
-    /** false only for an update identical to the stored rule: nothing was written and no backup taken. */
+    /** false only for an update identical to the stored rule: nothing was written and no copy taken. */
     applied: z.boolean(),
     target: z.strictObject(ruleChangeTarget),
     index: count,
@@ -860,6 +864,10 @@ export const ruleWriteOutput = z.strictObject({
     revision: z.string(),
     ruleCount: count,
     keyRemoved: z.boolean(),
+    /**
+     * null after a verified change (its temporary copy was removed) and when nothing changed.
+     * Set only when the change is saved but its temporary copy of the previous config.json could not be removed (warning temporaryCopyKept).
+     */
     backup: z.strictObject({ location: z.string(), name: z.string() }).nullable(),
     warnings: z.array(z.enum(RULE_CHANGE_WARNINGS)).max(RULE_CHANGE_WARNINGS.length),
     effect: z.literal(RULE_CHANGE_EFFECT),

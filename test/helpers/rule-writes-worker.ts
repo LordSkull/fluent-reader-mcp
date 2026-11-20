@@ -6,6 +6,8 @@
  *        pattern; print every commit as JSON.
  * crash: add one rule and die at the moment config.json would be replaced,
  *        leaving behind what a real crash leaves.
+ * crash-applied: add one rule and die right after config.json was replaced,
+ *        before its verification: the change is applied, its copy and journal left.
  * hold:  add one rule, stopping while it holds the guard until told to go on.
  */
 
@@ -15,7 +17,7 @@ import type { RuleWriteStep } from "../../src/settings/rule-store.js"
 import { harness } from "./sources.js"
 
 interface WorkerInput {
-    readonly mode: "edit" | "crash" | "hold"
+    readonly mode: "edit" | "crash" | "crash-applied" | "hold"
     readonly id: string
     readonly dir: string
     readonly localAppData: string
@@ -38,7 +40,8 @@ function blockUntil(file: string): void {
 
 let armed = false
 function step(name: RuleWriteStep): void {
-    if (!armed || name !== "before-rename") return
+    if (armed && input.mode === "crash-applied" && name === "after-rename") process.exit(9)
+    if (!armed || name !== "before-rename" || input.mode === "crash-applied") return
     armed = false
     if (input.mode === "crash") process.exit(9)
     if (input.mode === "hold") {

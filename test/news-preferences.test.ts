@@ -13,11 +13,13 @@ import {
     newsPreferenceSettingsFromEnv,
     preferencePaths,
     PREFERENCES_LOCK,
+    readCurrentDocument,
     type NewsPreferenceSettings,
     type PreferenceStep,
 } from "../src/preferences/store.js"
 import { headingText, sanitizeForRead } from "../src/preferences/text-policy.js"
 import { RESP_MAX } from "../src/tools/result.js"
+import { beginTransaction } from "../src/write-transaction.js"
 import { createTempRoot, removeTempRoot, snapshotDir, syntheticSettings, writeSettings } from "./helpers/fixtures.js"
 import { childEnv, request, startServer } from "./helpers/process.js"
 import { createSourcesProfile, harness, mutate, type Harness, type ToolOutcome } from "./helpers/sources.js"
@@ -758,7 +760,8 @@ describe("M5: orphans can be rebound or removed", () => {
         const p = await preview(s, revision, changes)
         assert.equal(p.plan[0].before, "- Da rimuovere")
         const done = ok(await applyOutcome(s, p.previewToken, revision, changes))
-        assert.ok(done.backup?.name)
+        assert.equal(done.backup, null, "verified: no permanent copy")
+        assert.deepEqual(fs.readdirSync(s.backups), [], "the temporary copy and its journal are removed")
         const text = fileText(s)
         assert.equal(text.includes("Da rimuovere"), false)
         assert.equal(text.includes(id), false)
@@ -1345,34 +1348,39 @@ describe("M9: failures around the rename", () => {
 
     const residue = (s: Session): string[] => fs.readdirSync(s.dir).filter((name) => name.endsWith(".partial") || name === PREFERENCES_LOCK)
 
-    test("an error after the rename is UNVERIFIED, never 'not replaced'", async () => {
+    test("an error after the rename, with the document still this writer's: rolled back byte for byte, never 'not replaced'", async () => {
         let armed = false
         const s = await session({ step: (step) => { if (step === "after-rename" && armed) throw new Error("read failure") } })
         await initialize(s, ["Prima"])
+        const before = fileBytes(s)
         const revision = await revisionOf(s)
         const changes = { operation: "set_general", interests: ["Dopo"] }
         const p = await preview(s, revision, changes)
         armed = true
         const outcome = await applyOutcome(s, p.previewToken, revision, changes)
         armed = false
-        refused(outcome, "PREFERENCES_WRITE_UNVERIFIED", "read-back-failed")
-        assert.match(fileText(s), /- Dopo/, "the file was in fact replaced")
+        refused(outcome, "PREFERENCES_WRITE_ROLLED_BACK", "read-back-failed")
+        assert.equal(outcome.error?.recovery, undefined)
+        assert.ok(fileBytes(s).equals(before), "the previous bytes are back")
+        assert.equal(await revisionOf(s), revision)
         assert.deepEqual(residue(s), [])
+        assert.deepEqual(fs.readdirSync(s.backups), [])
     })
 
-    test("a read-back I/O error after the rename is UNVERIFIED too", async () => {
+    test("a read-back I/O error after the rename: the rollback cannot prove the file is still this writer's, so the copy is kept", async () => {
         const s = await session()
         await initialize(s, ["Prima"])
         const revision = await revisionOf(s)
         const changes = { operation: "set_general", interests: ["Dopo"] }
         const p = await preview(s, revision, changes)
         const rename = fs.renameSync
-        const read2 = fs.readFileSync
+        const open2 = fs.openSync
         let renamed = false
         const m1 = mock.method(fs, "renameSync", (from: any, to: any) => { const out = (rename as any).call(fs, from, to); if (to === s.doc) renamed = true; return out })
-        const m2 = mock.method(fs, "readFileSync", (target: any, ...rest: any[]) => {
+        // Every read of preferences.md opens a descriptor first: after the rename, that open keeps failing.
+        const m2 = mock.method(fs, "openSync", (target: any, ...rest: any[]) => {
             if (renamed && target === s.doc) throw Object.assign(new Error("sharing"), { code: "EBUSY" })
-            return (read2 as any).call(fs, target, ...rest)
+            return (open2 as any).call(fs, target, ...rest)
         })
         let outcome: ToolOutcome
         try {
@@ -1381,8 +1389,13 @@ describe("M9: failures around the rename", () => {
             m1.mock.restore()
             m2.mock.restore()
         }
-        refused(outcome, "PREFERENCES_WRITE_UNVERIFIED", "read-back-failed")
-        assert.match(fileText(s), /- Dopo/)
+        refused(outcome, "PREFERENCES_WRITE_UNVERIFIED", "rollback-unsafe-changed")
+        assert.match(fileText(s), /- Dopo/, "not touched again")
+        const recovery = outcome.error?.recovery
+        assert.ok(recovery !== undefined)
+        assert.match(recovery.location, /^%LOCALAPPDATA%\\FluentReaderMCP-Data\\news-preferences\\[0-9a-f]{32}\\backups$/)
+        assert.equal(recovery.copy, "verified")
+        assert.match(fs.readFileSync(path.join(s.backups, recovery.name as string), "utf8"), /- Prima/, "the kept copy is the previous document")
     })
 
     test("a permanent rename failure keeps the document, retries five times and cleans up", async () => {
@@ -1403,6 +1416,7 @@ describe("M9: failures around the rename", () => {
         assert.equal(fault.attempts(), 5)
         assert.ok(fileBytes(s).equals(before))
         assert.deepEqual(residue(s), [])
+        assert.deepEqual(fs.readdirSync(s.backups), [], "never replaced: no restoration, only this writer's copy and journal removed")
     })
 
     test("a non-retryable rename error stops at the first attempt", async () => {
@@ -1454,17 +1468,28 @@ describe("M9: failures around the rename", () => {
         assert.equal(fileText(s), external)
     })
 
-    test("a backup is taken before the replacement; without one nothing is written", async () => {
-        const s = await session()
+    test("a temporary copy exists during the replacement and is removed once verified; without one nothing is written", async () => {
+        let during: string[] = []
+        let seen: Buffer | null = null
+        let s: Session | undefined
+        s = await session({ step: (step) => {
+            if (step !== "before-rename" || s === undefined || !fs.existsSync(s.backups)) return
+            during = fs.readdirSync(s.backups).sort()
+            const copy = during.find((name) => name.endsWith(".original"))
+            seen = copy === undefined ? null : fs.readFileSync(path.join(s.backups, copy))
+        } })
         await initialize(s, ["Prima"])
         const original = fileBytes(s)
         const saved = await change(s, { operation: "set_general", interests: ["Dopo"] })
-        assert.ok(fs.readFileSync(path.join(s.backups, saved.backup.name)).equals(original))
-        assert.match(saved.backup.location, /^%LOCALAPPDATA%\\FluentReaderMCP-Data\\news-preferences\\[0-9a-f]{32}\\backups$/)
+        assert.equal(saved.backup, null)
+        assert.deepEqual(during.map((name) => name.replace(/[0-9a-f]{16}/, "<id>")), ["tx-<id>.journal", "tx-<id>.original"])
+        assert.ok(seen !== null && (seen as Buffer).equals(original), "exactly the previous bytes")
+        assert.deepEqual(fs.readdirSync(s.backups), [], "removed after the verification")
 
         const t = await session()
         await initialize(t, ["Prima"])
         const before = fileBytes(t)
+        fs.rmdirSync(t.backups)
         fs.writeFileSync(t.backups, "not a directory")
         const revision = await revisionOf(t)
         const changes = { operation: "set_general", interests: ["Dopo"] }
@@ -1474,9 +1499,382 @@ describe("M9: failures around the rename", () => {
     })
 })
 
+describe("apply_news_preferences_change: temporary copy, verification and rollback", () => {
+    const txFiles = (s: Session): string[] => (fs.existsSync(s.backups) ? fs.readdirSync(s.backups).filter((name) => name.startsWith("tx-")).sort() : [])
+    const residue = (s: Session): string[] => fs.readdirSync(s.dir).filter((name) => name.endsWith(".partial") || name === PREFERENCES_LOCK)
+    const journalOf = (s: Session, copyName: string): { phase: string } => JSON.parse(fs.readFileSync(path.join(s.backups, copyName.replace(/\.original$/, ".journal")), "utf8"))
+    const editGeneral = { operation: "set_general", interests: ["Dopo"] }
+
+    async function ready(step?: (step: PreferenceStep) => void): Promise<{ s: Session; before: Buffer; apply: () => Promise<ToolOutcome> }> {
+        const s = await session(step === undefined ? {} : { step })
+        await initialize(s, ["Prima"])
+        const before = fileBytes(s)
+        const revision = await revisionOf(s)
+        const p = await preview(s, revision, editGeneral)
+        return { s, before, apply: () => applyOutcome(s, p.previewToken, revision, editGeneral) }
+    }
+
+    test("first save: the absence of preferences.md is recorded, the document created and verified, nothing kept", async () => {
+        let during: { journal: unknown; files: string[] } | null = null
+        let s: Session | undefined
+        s = await session({ step: (step) => {
+            if (step !== "before-rename" || s === undefined || during !== null) return
+            const files = txFiles(s)
+            during = { files, journal: JSON.parse(fs.readFileSync(path.join(s.backups, files[0] as string), "utf8")) }
+        } })
+        const saved = await initialize(s, ["Prima"])
+        assert.deepEqual([saved.applied, saved.backup, saved.profileBinding], [true, null, "verified"])
+        const seen = during as { journal: { phase: string; original: unknown }; files: string[] } | null
+        assert.ok(seen !== null)
+        assert.equal(seen.files.length, 1, "a journal and no copy: there was no previous document")
+        assert.deepEqual([seen.journal.phase, seen.journal.original], ["prepared", { absent: true }])
+        assert.deepEqual(txFiles(s), [])
+        assert.equal((await read(s)).documentStatus, "ready")
+    })
+
+    test("first save failing after the rename: the new document, provably this writer's, is removed; identity.key stays", async () => {
+        const s = await session({ step: (step) => { if (step === "after-rename") throw new Error("read failure") } })
+        const changes = { operation: "initialize", interests: ["Prima"] }
+        const p = await preview(s, "absent", changes)
+        const outcome = await applyOutcome(s, p.previewToken, "absent", changes)
+        refused(outcome, "PREFERENCES_WRITE_ROLLED_BACK", "read-back-failed")
+        assert.equal(fs.existsSync(s.doc), false, "back to no document")
+        assert.equal(fs.existsSync(s.key), true, "identity.key is not removed: it holds no preference")
+        assert.deepEqual(txFiles(s), [])
+        assert.deepEqual(residue(s), [])
+        assert.equal((await read(s)).documentStatus, "absent")
+    })
+
+    test("first save: a document replaced by someone else before the removal is not removed", async () => {
+        let s: Session | undefined
+        s = await session({ step: (step) => {
+            if (step === "after-rename") throw new Error("read failure")
+            if (step === "before-restore") replaceAtomically((s as Session).doc, Buffer.from("written by someone else\n"))
+        } })
+        const changes = { operation: "initialize", interests: ["Prima"] }
+        const p = await preview(s, "absent", changes)
+        const outcome = await applyOutcome(s, p.previewToken, "absent", changes)
+        refused(outcome, "PREFERENCES_WRITE_UNVERIFIED", "rollback-unsafe-changed")
+        assert.deepEqual([outcome.error?.recovery?.copy, outcome.error?.recovery?.name], ["none", null], "there was no previous document: no file is referenced")
+        assert.equal(fileText(s), "written by someone else\n")
+    })
+
+    test("the profile binding failing its final check inside the transaction: rolled back before the copy is removed", async () => {
+        let armed = false
+        let s: Session | undefined
+        const r = await ready((step) => {
+            if (step === "after-rename" && armed) {
+                armed = false
+                // Another identity key appears: the document written no longer verifies against the key on disk.
+                replaceAtomically((s as Session).key, crypto.randomBytes(32))
+            }
+        })
+        s = r.s
+        const key = fs.readFileSync(s.key)
+        armed = true
+        const outcome = await r.apply()
+        refused(outcome, "PREFERENCES_WRITE_ROLLED_BACK", "profile-binding")
+        assert.ok(fileBytes(s).equals(r.before), "the previous document, byte for byte")
+        assert.equal(fs.readFileSync(s.key).equals(key), false, "the key is not touched by the rollback")
+        assert.deepEqual(txFiles(s), [])
+    })
+
+    test("the first save failing its binding check: the new document is removed", async () => {
+        let s: Session | undefined
+        s = await session({ step: (step) => { if (step === "after-rename") replaceAtomically((s as Session).key, crypto.randomBytes(32)) } })
+        const changes = { operation: "initialize", interests: ["Prima"] }
+        const p = await preview(s, "absent", changes)
+        refused(await applyOutcome(s, p.previewToken, "absent", changes), "PREFERENCES_WRITE_ROLLED_BACK", "profile-binding")
+        assert.equal(fs.existsSync(s.doc), false)
+    })
+
+    test("a concurrent replacement right before the restoring rename is never overwritten; the copy is kept", async () => {
+        let s: Session | undefined
+        let armed = false
+        const r = await ready((step) => {
+            if (!armed) return
+            if (step === "after-rename") throw new Error("read failure")
+            if (step === "before-restore") replaceAtomically((s as Session).doc, Buffer.from("someone else's document\n"))
+        })
+        s = r.s
+        armed = true
+        const outcome = await r.apply()
+        armed = false
+        refused(outcome, "PREFERENCES_WRITE_UNVERIFIED", "rollback-unsafe-changed")
+        assert.equal(fileText(s), "someone else's document\n")
+        const name = outcome.error?.recovery?.name as string
+        assert.ok(fs.readFileSync(path.join(s.backups, name)).equals(r.before))
+        assert.equal(journalOf(s, name).phase, "recovery-kept")
+        assert.deepEqual(residue(s), [], "the restoring temporary file is gone")
+    })
+
+    test("the lock lost after the rename: no rollback, the new owner's lock untouched, the copy kept", async () => {
+        let s: Session | undefined
+        let armed = false
+        const r = await ready((step) => {
+            if (step === "after-rename" && armed) {
+                armed = false
+                fs.unlinkSync((s as Session).lock)
+                fs.writeFileSync((s as Session).lock, "a new owner")
+                throw new Error("read failure")
+            }
+        })
+        s = r.s
+        armed = true
+        const outcome = await r.apply()
+        refused(outcome, "PREFERENCES_WRITE_UNVERIFIED", "rollback-unsafe-lock-lost")
+        assert.match(fileText(s), /- Dopo/, "not touched again")
+        assert.equal(fs.readFileSync(s.lock, "utf8"), "a new owner")
+        assert.ok(fs.readFileSync(path.join(s.backups, outcome.error?.recovery?.name as string)).equals(r.before))
+        fs.unlinkSync(s.lock)
+    })
+
+    test("the rollback itself failing: reported as such, the written document intact, the copy kept", async (t) => {
+        let armed = false
+        const r = await ready((step) => { if (step === "after-rename" && armed) { armed = false; throw new Error("read failure") } })
+        let links = 0
+        const real = fs.linkSync
+        t.mock.method(fs, "linkSync", (from: fs.PathLike, to: fs.PathLike): void => {
+            if (to === r.s.doc && ++links === 1) throw Object.assign(new Error("disk full"), { code: "ENOSPC" })
+            real(from, to)
+        })
+        armed = true
+        const outcome = await r.apply()
+        refused(outcome, "PREFERENCES_WRITE_UNVERIFIED", "rollback-failed")
+        assert.equal(links, 2, "one refused publication, then this writer's document put back")
+        assert.equal(outcome.error?.recovery?.copy, "verified")
+        assert.doesNotThrow(() => parsePreferences(fileBytes(r.s)), "the written document is still a valid document")
+        assert.ok(fs.readFileSync(path.join(r.s.backups, outcome.error?.recovery?.name as string)).equals(r.before))
+        assert.deepEqual(residue(r.s), [])
+    })
+
+    describe("Codex reproduction: a replacement after the last check, before the destructive step", () => {
+        const asides = (s: Session): string[] => fs.readdirSync(s.dir).filter((name) => name.endsWith(".aside"))
+        const inode = (file: string): bigint => fs.statSync(file, { bigint: true }).ino
+
+        test("replaced right before the move aside: the concurrent document stays, same file and bytes; the copy kept", async () => {
+            let s: Session | undefined
+            let armed = false
+            let foreign = 0n
+            const r = await ready((step) => {
+                if (!armed) return
+                if (step === "after-rename") throw new Error("read failure")
+                if (step === "before-move-aside") {
+                    replaceAtomically((s as Session).doc, Buffer.from("concurrent document\n"))
+                    foreign = inode((s as Session).doc)
+                }
+            })
+            s = r.s
+            armed = true
+            const outcome = await r.apply()
+            armed = false
+            refused(outcome, "PREFERENCES_WRITE_UNVERIFIED", "rollback-unsafe-changed")
+            assert.equal(fileText(s), "concurrent document\n")
+            assert.equal(inode(s.doc), foreign, "the very same file")
+            assert.equal(outcome.error?.recovery?.copy, "verified")
+            assert.ok(fs.readFileSync(path.join(s.backups, outcome.error?.recovery?.name as string)).equals(r.before))
+            assert.deepEqual(asides(s), [])
+            assert.deepEqual(residue(s), [])
+        })
+
+        test("a document created right after the move aside is never overwritten", async () => {
+            let s: Session | undefined
+            let armed = false
+            const r = await ready((step) => {
+                if (!armed) return
+                if (step === "after-rename") throw new Error("read failure")
+                if (step === "after-move-aside") fs.writeFileSync((s as Session).doc, "created meanwhile\n", { flag: "wx" })
+            })
+            s = r.s
+            armed = true
+            const outcome = await r.apply()
+            armed = false
+            refused(outcome, "PREFERENCES_WRITE_UNVERIFIED", "rollback-unsafe-changed")
+            assert.equal(fileText(s), "created meanwhile\n")
+            assert.deepEqual(asides(s), [])
+        })
+
+        test("first save: a document created right after this writer's was moved aside is not removed", async () => {
+            let s: Session | undefined
+            s = await session({ step: (step) => {
+                if (step === "after-rename") throw new Error("read failure")
+                if (step === "after-move-aside") fs.writeFileSync((s as Session).doc, "created meanwhile\n", { flag: "wx" })
+            } })
+            const changes = { operation: "initialize", interests: ["Prima"] }
+            const p = await preview(s, "absent", changes)
+            const outcome = await applyOutcome(s, p.previewToken, "absent", changes)
+            refused(outcome, "PREFERENCES_WRITE_UNVERIFIED", "rollback-unsafe-changed")
+            assert.equal(fileText(s), "created meanwhile\n")
+            assert.equal(outcome.error?.recovery?.copy, "none")
+            assert.deepEqual(asides(s), [])
+        })
+
+        test("first save: replaced right before the move aside: the concurrent document is put back, not removed", async () => {
+            let s: Session | undefined
+            let foreign = 0n
+            s = await session({ step: (step) => {
+                if (step === "after-rename") throw new Error("read failure")
+                if (step === "before-move-aside") {
+                    replaceAtomically((s as Session).doc, Buffer.from("concurrent first document\n"))
+                    foreign = inode((s as Session).doc)
+                }
+            } })
+            const changes = { operation: "initialize", interests: ["Prima"] }
+            const p = await preview(s, "absent", changes)
+            refused(await applyOutcome(s, p.previewToken, "absent", changes), "PREFERENCES_WRITE_UNVERIFIED", "rollback-unsafe-changed")
+            assert.equal(fileText(s), "concurrent first document\n")
+            assert.equal(inode(s.doc), foreign)
+        })
+    })
+
+    describe("readCurrentDocument: one descriptor, bounded, and aware of a concurrent replacement", () => {
+        async function stored(): Promise<{ s: Session; paths: ReturnType<typeof preferencePaths> }> {
+            const s = await session()
+            await initialize(s, ["Prima"])
+            return { s, paths: preferencePaths(s.settings, s.p.dir) }
+        }
+
+        test("the normal case: the bytes and the id of the file read; absent is null", async () => {
+            const { s, paths } = await stored()
+            const read = readCurrentDocument(paths)
+            assert.ok(read !== null && read.bytes.equals(fileBytes(s)))
+            assert.equal(read.identity, `${fs.statSync(s.doc, { bigint: true }).dev}:${fs.statSync(s.doc, { bigint: true }).ino}`)
+            fs.unlinkSync(s.doc)
+            assert.equal(readCurrentDocument(paths), null)
+        })
+
+        test("a document over PREFERENCES_BYTES_MAX is refused before any byte is read", async (t) => {
+            const { s, paths } = await stored()
+            fs.writeFileSync(s.doc, Buffer.alloc(PREFERENCES_BYTES_MAX + 1, 0x61))
+            let reads = 0
+            const real = fs.readSync
+            t.mock.method(fs, "readSync", (...args: Parameters<typeof fs.readSync>): number => { reads++; return real(...args) })
+            assert.throws(() => readCurrentDocument(paths), (error: unknown) => (error as { code?: string; reason?: string }).code === "PREFERENCES_INVALID" && (error as { reason?: string }).reason === "file-too-large")
+            assert.equal(reads, 0, "nothing of it loaded into memory")
+        })
+
+        // While the descriptor is open, Windows refuses to replace the file (EPERM): a replacement can only land
+        // between the checks of the name and the open, or between the close and the last check. Both are placed exactly.
+        test("a document replaced between the check of its name and the open: refused, the other file not taken for it", async (t) => {
+            const { s, paths } = await stored()
+            const real = fs.openSync
+            let swapped = false
+            t.mock.method(fs, "openSync", (file: fs.PathLike, ...rest: unknown[]): number => {
+                if (!swapped && String(file) === s.doc) { swapped = true; replaceAtomically(s.doc, Buffer.from("another document\n")) }
+                return (real as (...a: unknown[]) => number)(file, ...rest)
+            })
+            assert.throws(() => readCurrentDocument(paths), (error: unknown) => (error as { code?: string }).code === "PREFERENCES_REVISION_CONFLICT")
+            assert.equal(swapped, true)
+            assert.equal(fileText(s), "another document\n", "the read changed nothing")
+        })
+
+        test("a document replaced right after it was read: refused, the bytes read are not reported as the current file", async (t) => {
+            const { s, paths } = await stored()
+            const realOpen = fs.openSync
+            const realClose = fs.closeSync
+            let fd: number | null = null
+            let swapped = false
+            t.mock.method(fs, "openSync", (file: fs.PathLike, ...rest: unknown[]): number => {
+                const opened = (realOpen as (...a: unknown[]) => number)(file, ...rest)
+                if (String(file) === s.doc) fd = opened
+                return opened
+            })
+            t.mock.method(fs, "closeSync", (descriptor: number): void => {
+                realClose(descriptor)
+                if (!swapped && descriptor === fd) { swapped = true; replaceAtomically(s.doc, Buffer.from("another document\n")) }
+            })
+            assert.throws(() => readCurrentDocument(paths), (error: unknown) => (error as { code?: string }).code === "PREFERENCES_REVISION_CONFLICT")
+            assert.equal(swapped, true)
+        })
+
+        test("a document that grows while it is read: refused", async (t) => {
+            const { s, paths } = await stored()
+            const real = fs.readSync
+            let grown = false
+            t.mock.method(fs, "readSync", (...args: Parameters<typeof fs.readSync>): number => {
+                if (!grown) { grown = true; fs.appendFileSync(s.doc, "more\n") }
+                return real(...args)
+            })
+            assert.throws(() => readCurrentDocument(paths), (error: unknown) => (error as { code?: string }).code === "PREFERENCES_REVISION_CONFLICT")
+        })
+
+        test("a directory, a junction or a second hard link under the name: refused as unsafe storage", async () => {
+            const a = await stored()
+            fs.unlinkSync(a.s.doc)
+            fs.mkdirSync(a.s.doc)
+            assert.throws(() => readCurrentDocument(a.paths), (error: unknown) => (error as { reason?: string }).reason === "unsafe-storage")
+
+            const b = await stored()
+            fs.unlinkSync(b.s.doc)
+            const outside = path.join(root, `outside-doc-${++counter}`)
+            fs.mkdirSync(outside)
+            fs.symlinkSync(outside, b.s.doc, "junction")
+            assert.throws(() => readCurrentDocument(b.paths), (error: unknown) => (error as { reason?: string }).reason === "unsafe-storage")
+
+            const c = await stored()
+            fs.linkSync(c.s.doc, path.join(root, `second-name-${++counter}`))
+            assert.throws(() => readCurrentDocument(c.paths), (error: unknown) => (error as { reason?: string }).reason === "unsafe-storage")
+        })
+    })
+
+    test("a cleanup failing after a verified change: still applied, the copy named and kept, finished by the next write", async (t) => {
+        const r = await ready()
+        const real = fs.unlinkSync
+        let refuse = true
+        t.mock.method(fs, "unlinkSync", (target: fs.PathLike): void => {
+            if (refuse && /^tx-[0-9a-f]{16}\.original\.[0-9a-f]{16}\.removing$/.test(path.basename(String(target)))) throw Object.assign(new Error("held"), { code: "EBUSY" })
+            real(target)
+        })
+        const done = ok(await r.apply())
+        assert.equal(done.applied, true)
+        assert.ok(done.warnings.includes("temporaryCopyKept"))
+        assert.match(done.backup.location, /^%LOCALAPPDATA%\\FluentReaderMCP-Data\\news-preferences\\[0-9a-f]{32}\\backups$/)
+        assert.ok(fs.readFileSync(path.join(r.s.backups, done.backup.name)).equals(r.before))
+        assert.equal(journalOf(r.s, done.backup.name).phase, "verified")
+        refuse = false
+        const next = await change(r.s, { operation: "set_general", interests: ["Ancora"] })
+        assert.deepEqual([next.applied, next.backup], [true, null])
+        assert.deepEqual(txFiles(r.s), [])
+    })
+
+    test("an interrupted first save whose document is the requested one: the journal is settled, the document kept", async () => {
+        const s = await session()
+        await initialize(s, ["Prima"])
+        const tx = beginTransaction(s.backups, "preferences", null, fileBytes(s))
+        assert.deepEqual(txFiles(s), [tx.journalName])
+        await change(s, editGeneral)
+        assert.deepEqual(txFiles(s), [])
+        assert.match(fileText(s), /- Dopo/)
+    })
+
+    test("the permanent .bak copies of earlier versions are kept through success, rollback and refusal", async () => {
+        let fault: "none" | "rollback" | "foreign" = "none"
+        let s: Session | undefined
+        s = await session({ step: (step) => {
+            if (step !== "after-rename" || fault === "none") return
+            if (fault === "foreign") replaceAtomically((s as Session).doc, Buffer.from("foreign\n"))
+            fault = "none"
+            throw new Error("read failure")
+        } })
+        await initialize(s, ["Prima"])
+        const legacy = { "preferences.md.20251101T090000Z.bak": "old copy A", "preferences.md.20251101T090000Z-1.bak": "old copy B" }
+        for (const [name, content] of Object.entries(legacy)) fs.writeFileSync(path.join(s.backups, name), content)
+        await change(s, { operation: "set_general", interests: ["Uno"] })
+        fault = "rollback"
+        const revision = await revisionOf(s)
+        const p = await preview(s, revision, editGeneral)
+        refused(await applyOutcome(s, p.previewToken, revision, editGeneral), "PREFERENCES_WRITE_ROLLED_BACK")
+        fault = "foreign"
+        const q = await preview(s, revision, editGeneral)
+        refused(await applyOutcome(s, q.previewToken, revision, editGeneral), "PREFERENCES_WRITE_UNVERIFIED", "rollback-unsafe-changed")
+        for (const [name, content] of Object.entries(legacy)) assert.equal(fs.readFileSync(path.join(s.backups, name), "utf8"), content, name)
+        assert.equal(txFiles(s).length, 2, "and the copy of the refused rollback, with its journal")
+    })
+})
+
 describe("concurrency", () => {
     interface WorkerRun {
-        readonly mode: "edit" | "crash" | "hold"
+        readonly mode: "edit" | "crash" | "crash-applied" | "hold"
         readonly id: string
         readonly s: Session
         readonly until: number
@@ -1694,7 +2092,23 @@ describe("concurrency", () => {
         assert.equal(ok(await applyOutcome(s, p.previewToken, revision, changes)).applied, true, "the pending preview is still valid")
         assert.match(fileText(s), /Dopo il crash/)
         assert.deepEqual(residue(s), [], "the next real owner cleans up")
-        assert.equal(backupCount(s) >= 1, true)
+        assert.equal(backupCount(s), 0, "the document was still the original: the dead writer's copy and journal were settled")
+    })
+
+    test("a real crash right after the rename: applied but never verified, so the copy is kept, never deleted", async () => {
+        const { s } = await sharedStore()
+        const before = fileBytes(s)
+        await assert.rejects(workerResult({ mode: "crash-applied", id: "Applicato", s, until: Date.now() + 30_000 }), /worker exit 9/)
+        assert.match(fileText(s), /Applicato tenuto/, "the change was applied")
+        assert.equal(backupCount(s), 2, "its copy and its journal (prepared)")
+        fs.unlinkSync(s.lock) // The documented recovery.
+        const done = await change(s, { operation: "set_general", interests: ["Dopo il crash"] })
+        assert.equal(done.backup, null, "the new change itself is verified and leaves nothing")
+        const files = fs.readdirSync(s.backups).sort()
+        assert.equal(files.length, 2, "the dead writer's copy and journal are kept")
+        const copy = files.find((name) => name.endsWith(".original")) as string
+        assert.ok(fs.readFileSync(path.join(s.backups, copy)).equals(before), "the copy is the document before the interrupted change")
+        assert.equal(JSON.parse(fs.readFileSync(path.join(s.backups, copy.replace(/\.original$/, ".journal")), "utf8")).phase, "recovery-kept")
     })
 
     test("a lock present during the first initialization blocks it without creating a key", async () => {
@@ -1900,6 +2314,8 @@ describe("storage safety", () => {
         await initialize(backups)
         const backupTarget = path.join(outside, "backups")
         fs.mkdirSync(backupTarget)
+        assert.deepEqual(fs.readdirSync(backups.backups), [], "the first save left nothing in it")
+        fs.rmdirSync(backups.backups)
         fs.symlinkSync(backupTarget, backups.backups, "junction")
         const revision = await revisionOf(backups)
         const changes = { operation: "set_general", interests: ["x"] }

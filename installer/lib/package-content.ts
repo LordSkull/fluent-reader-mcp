@@ -312,7 +312,7 @@ export function packagingInfo(version: string, lock: RuntimeLock): string {
         `Tools that change nothing (${READ_ONLY_TOOLS.length}): ${READ_ONLY_TOOLS.join(", ")}.`,
         `Tools that can write, only on the user's explicit request (${WRITE_TOOLS.length}): ${WRITE_TOOLS.join(", ")}.`,
         "",
-        "Available does not mean automatic: add_rule, update_rule and delete_rule change source or group rules in config.json only with Fluent Reader closed, a current revision and a private backup; apply_news_preferences_change writes only a private file outside the profile, after a preview. Keep the generated backups.",
+        "Available does not mean automatic: add_rule, update_rule and delete_rule change source or group rules in config.json only with Fluent Reader closed and a current revision; apply_news_preferences_change writes only a private file outside the profile, after a preview. Changes are verified automatically: their temporary private copies are removed after success and kept only when a recovery is needed.",
         `Client entries that still set ${LEGACY_ACTIVATION_ENV_VARS.join(" or ")} keep working: those variables are ignored.`,
         "It is not an installer: nothing is registered, no service or network port is created.",
         "",

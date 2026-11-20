@@ -26,11 +26,13 @@
  * before the rename, within a window of milliseconds; the check repeated after
  * the rename reports that case as RULE_WRITE_UNVERIFIED.
  *
- * Commit sequence:
+ * Commit sequence (one transaction, see ../write-transaction.ts):
  *   1. lockfile absent, profile directory still canonical (not re-routed);
  *   2. the guard, created exclusively at a fixed name, holding only a random
  *      owner token (see below);
- *   3. the private backup, exactly the bytes the change starts from;
+ *   3. the transactions an interrupted writer left are settled conservatively;
+ *      then the temporary private copy of exactly the bytes the change starts
+ *      from, read back, and its journal ("prepared"), both durable;
  *   4. new content written to a temporary file with a unique name and flushed;
  *   5. lockfile still absent and config.json still byte for byte the same;
  *   6. the guard still holds this writer's token, then rename of the temporary
@@ -38,11 +40,25 @@
  *      retry after a brief refusal repeats step 5 and this check first, after
  *      its pause: the refusal may be the app saving, and that save must not be
  *      overwritten;
- *   7. read back and compared; lockfile absent;
- *   8. the guard released.
- * A failure up to step 6 leaves config.json untouched and removes the temporary
- * file. After step 6 nothing is restored automatically: the file may hold
- * someone else's change, and a backup is the user's to restore.
+ *   7. verification: config.json read back is this write's file (same file id)
+ *      with exactly the new bytes; parsed, it is the document the tool meant
+ *      (valid sections, the requested change present, every other setting kept);
+ *      lockfile still absent;
+ *   8. verified: the journal says so, then the copy and the journal are removed.
+ *      If they cannot be, the change is still reported as saved, with a warning
+ *      and the name of the copy kept;
+ *   9. the guard released.
+ * A failure up to step 6 leaves config.json untouched and removes only this
+ * writer's temporary file, copy and journal. A failed verification after step 6
+ * restores the previous bytes automatically only when that is provably safe:
+ * guard still held, Fluent Reader closed, profile and backup paths still pass
+ * their checks, hard links available, the copy still the recorded one. Even
+ * then config.json is never overwritten or deleted by name: it is moved to a
+ * new private name and THAT file is checked to be this write's; the previous
+ * bytes are published with a hard link that fails if anything took the name
+ * meanwhile, then read back (see ../write-transaction.ts). Otherwise nothing
+ * of anyone else is overwritten or removed, the copy is kept, and the error
+ * says whether it is still the verified copy.
  *
  * The guard keeps two copies of this server from writing at once, until the
  * result has been read back. Only the exclusive create takes it, and nothing
@@ -63,19 +79,32 @@
  * the guard of a writer still alive and a new writer takes it in those few
  * microseconds, which step 1 of the recovery excludes.
  *
- * Backups hold the whole configuration, credentials included. They are kept
- * only in %LOCALAPPDATA%\FluentReaderMCP-Data\rule-backups\<profile key>\, the
- * per-user storage the setup already uses for its copies, made of real
+ * The temporary copies hold the whole configuration, credentials included. They
+ * exist only in %LOCALAPPDATA%\FluentReaderMCP-Data\rule-backups\<profile key>\,
+ * the per-user storage the setup already uses for its copies, made of real
  * directories (no link or junction); if it is not usable nothing is written.
- * They are never deleted automatically and never returned: results carry the
- * file name only. No permission is read or changed.
+ * Their content is never returned: results carry the folder and file name only.
+ * The permanent config.json.<time>.bak copies of earlier versions are left
+ * exactly as they are. No permission is read or changed.
  */
 
 import crypto from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
-import { FrMcpError, isFrMcpError, systemErrorCode } from "../errors.js"
+import { FrMcpError, isFrMcpError, systemErrorCode, type ErrorReason, type RecoveryCopy } from "../errors.js"
+import { logEvent } from "../log.js"
+import {
+    abandonTransaction,
+    beginTransaction,
+    completeTransaction,
+    copyStatus,
+    fileIdentity,
+    recoverTransactions,
+    rollBack,
+    type CurrentTarget,
+    type Transaction,
+} from "../write-transaction.js"
 import { readConfigBytes, samePath } from "./read-settings.js"
 
 export const APP_LOCK_FILE = "lockfile"
@@ -84,6 +113,7 @@ const WRITE_TEMP_PREFIX = "config.json.frmcp-write."
 const WRITE_TEMP = /^config\.json\.frmcp-write\.[0-9a-f]{16}\.partial$/
 export const BACKUP_ROOT = "FluentReaderMCP-Data"
 export const BACKUP_KIND = "rule-backups"
+/** The permanent copies of versions up to 0.1.4: never created, changed or removed any more. */
 export const BACKUP_NAME = /^config\.json\.\d{8}T\d{6}Z(?:-\d+)?\.bak$/
 /** Beyond this age a guard is reported as possibly orphaned. It decides nothing about the guard. */
 export const GUARD_STALE_MS = 60_000
@@ -93,7 +123,18 @@ export const RENAME_PAUSE_MS = 50
 export const BACKUP_LOCATION = `%LOCALAPPDATA%\\${BACKUP_ROOT}\\${BACKUP_KIND}`
 
 /** Test-only seams: called at each step, and may change the file or throw. */
-export type RuleWriteStep = "after-guard" | "after-backup" | "after-temp" | "before-rename" | "before-retry" | "after-rename"
+export type RuleWriteStep =
+    | "after-guard"
+    | "after-backup"
+    | "after-temp"
+    | "before-rename"
+    | "before-retry"
+    | "after-rename"
+    | "before-restore"
+    | "before-move-aside"
+    | "after-move-aside"
+    | "after-restore"
+    | "before-cleanup"
 
 export interface RuleWriteSettings {
     readonly localAppData?: string | undefined
@@ -207,14 +248,20 @@ function removeDeadTemps(profileDir: string, guard: HeldGuard): void {
     }
 }
 
-function writeTemp(file: string, bytes: Buffer): void {
+/** Written and flushed under a name nobody else knows; returns the file's identity, to recognize it after the rename. */
+function writeTemp(file: string, bytes: Buffer): string {
     const fd = fs.openSync(file, "wx", 0o666)
     try {
         fs.writeFileSync(fd, bytes)
         fs.fsyncSync(fd)
+        return fileIdentity(fs.fstatSync(fd, { bigint: true }))
     } finally {
         fs.closeSync(fd)
     }
+}
+
+function tempPath(profileDir: string): string {
+    return path.join(profileDir, `${WRITE_TEMP_PREFIX}${crypto.randomBytes(8).toString("hex")}.partial`)
 }
 
 function backupUnavailable(reason: "backup-location" | "backup-failed"): FrMcpError {
@@ -226,8 +273,14 @@ function isRealDirectory(dir: string): boolean {
     return stats !== undefined && stats.isDirectory() && !stats.isSymbolicLink() && samePath(fs.realpathSync.native(dir), dir)
 }
 
+interface BackupStore {
+    readonly dir: string
+    /** The folder as results may show it: %LOCALAPPDATA%\..., no user name. */
+    readonly location: string
+}
+
 /** The profile's backup directory, created one level at a time; every level a real directory, inside the user profile. */
-function backupDirectory(settings: RuleWriteSettings, profileDir: string): string {
+function backupDirectory(settings: RuleWriteSettings, profileDir: string): BackupStore {
     const { localAppData, userProfile } = settings
     if (localAppData === undefined || userProfile === undefined || !/^[A-Za-z]:[\\/]/.test(localAppData) || !/^[A-Za-z]:[\\/]/.test(userProfile)) throw backupUnavailable("backup-location")
     let base: string
@@ -250,34 +303,7 @@ function backupDirectory(settings: RuleWriteSettings, profileDir: string): strin
             throw isFrMcpError(error) ? error : backupUnavailable("backup-location")
         }
     }
-    return dir
-}
-
-/** Written to a temporary name, flushed, read back, then published under a new name; an existing copy is never replaced. */
-function writeBackup(settings: RuleWriteSettings, profileDir: string, bytes: Buffer, now: number): string {
-    const dir = backupDirectory(settings, profileDir)
-    const stamp = new Date(now).toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")
-    const temp = path.join(dir, `.config.json.${crypto.randomBytes(8).toString("hex")}.partial`)
-    try {
-        const fd = fs.openSync(temp, "wx", 0o600)
-        try {
-            fs.writeFileSync(fd, bytes)
-            fs.fsyncSync(fd)
-        } finally {
-            fs.closeSync(fd)
-        }
-        if (!fs.readFileSync(temp).equals(bytes)) throw backupUnavailable("backup-failed")
-        for (let i = 0; ; i++) {
-            const name = `config.json.${stamp}${i === 0 ? "" : `-${i}`}.bak`
-            const target = path.join(dir, name)
-            if (fs.lstatSync(target, { throwIfNoEntry: false }) !== undefined) continue
-            fs.renameSync(temp, target)
-            return name
-        }
-    } catch (error) {
-        fs.rmSync(temp, { force: true })
-        throw isFrMcpError(error) ? error : backupUnavailable("backup-failed")
-    }
+    return { dir, location: `${BACKUP_LOCATION}\\${key}` }
 }
 
 /**
@@ -308,6 +334,35 @@ async function requireUntouched(configPath: string, profileDir: string, original
     requireClosed(profileDir)
 }
 
+/** config.json as it is now, with the identity of the file read. */
+async function readCurrent(configPath: string, profileDir: string): Promise<CurrentTarget> {
+    const { bytes } = await readConfigBytes(configPath, profileDir, undefined)
+    const stats = fs.lstatSync(configPath, { bigint: true })
+    return { bytes, identity: fileIdentity(stats) }
+}
+
+/** Step 7. Returns why the result is not verified, or null. */
+async function verifySaved(input: CommitInput, written: CurrentTarget): Promise<ErrorReason | null> {
+    const { configPath, profileDir, settings, verify } = input
+    try {
+        settings.step?.("after-rename")
+        const saved = await readCurrent(configPath, profileDir)
+        try {
+            if (saved.identity !== written.identity || !saved.bytes.equals(written.bytes)) return "read-back-failed"
+            try {
+                verify(saved.bytes)
+            } catch {
+                return "verification-failed"
+            }
+        } finally {
+            saved.bytes.fill(0)
+        }
+    } catch {
+        return "read-back-failed"
+    }
+    return fluentReaderOpen(profileDir) ? "app-started" : null
+}
+
 export interface CommitInput {
     readonly configPath: string
     readonly profileDir: string
@@ -316,24 +371,46 @@ export interface CommitInput {
     readonly original: Buffer
     readonly next: Buffer
     readonly now: number
+    /**
+     * Checks the bytes read back after the rename: valid configuration, the
+     * requested change present, every other setting kept. Throws if not.
+     */
+    readonly verify: (saved: Buffer) => void
 }
 
-/** Runs the sequence above; returns the backup's file name. */
-export async function commitConfig(input: CommitInput): Promise<string> {
+export interface CommitOutcome {
+    /** The verified temporary copy that could not be removed after a verified change, or null (the normal case). */
+    readonly keptCopy: { readonly location: string; readonly name: string } | null
+    /** Something of the finished transaction could not be removed and is not a verified copy (its journal, or a file that is not provably the copy). */
+    readonly cleanupPending: boolean
+}
+
+/** Runs the sequence above. */
+export async function commitConfig(input: CommitInput): Promise<CommitOutcome> {
     const { configPath, profileDir, settings, original, next, now } = input
     requireClosed(profileDir)
     requireCanonicalProfile(profileDir)
     const guard = acquireGuard(profileDir, now)
     // Nobody else knows this name, so what is renamed over config.json, or removed after a failure, is always this writer's own file.
-    const temp = path.join(profileDir, `${WRITE_TEMP_PREFIX}${crypto.randomBytes(8).toString("hex")}.partial`)
+    const temp = tempPath(profileDir)
     try {
-        let backup: string
+        let store: BackupStore
+        let tx: Transaction | null = null
+        let identity: string
         try {
             removeDeadTemps(profileDir, guard)
             settings.step?.("after-guard")
-            backup = writeBackup(settings, profileDir, original, now)
+            store = backupDirectory(settings, profileDir)
+            // Under the guard: whoever holds it is the only live writer, so what a dead one left can be settled.
+            const recovered = await recoverTransactions(store.dir, "rules", async () => (await readConfigBytes(configPath, profileDir, undefined)).bytes)
+            if (recovered.cleaned + recovered.kept > 0) logEvent("write_transactions_settled", { store: "rules", cleaned: recovered.cleaned, kept: recovered.kept })
+            try {
+                tx = beginTransaction(store.dir, "rules", original, next)
+            } catch {
+                throw backupUnavailable("backup-failed")
+            }
             settings.step?.("after-backup")
-            writeTemp(temp, next)
+            identity = writeTemp(temp, next)
             settings.step?.("after-temp")
             await requireUntouched(configPath, profileDir, original)
             settings.step?.("before-rename")
@@ -349,20 +426,46 @@ export async function commitConfig(input: CommitInput): Promise<string> {
             } catch {
                 // Removed by the next writer that holds the guard; config.json was not touched.
             }
+            // config.json was not replaced: there is nothing to restore, only this writer's own copy and journal to remove.
+            if (tx !== null) abandonTransaction(tx)
             throw isFrMcpError(error) ? error : new FrMcpError("RULE_WRITE_FAILED", "write-failed")
         }
-        try {
-            settings.step?.("after-rename")
-            const saved = await readConfigBytes(configPath, profileDir, undefined)
-            const same = saved.bytes.equals(next)
-            saved.bytes.fill(0)
-            if (!same) throw new FrMcpError("RULE_WRITE_UNVERIFIED", "read-back-failed")
-        } catch {
-            throw new FrMcpError("RULE_WRITE_UNVERIFIED", "read-back-failed")
+
+        // From here config.json is this writer's file, until proven otherwise.
+        const written: CurrentTarget = { bytes: next, identity }
+        const failure = await verifySaved(input, written)
+        if (failure === null) {
+            const completion = completeTransaction(tx, () => settings.step?.("before-cleanup"))
+            return {
+                keptCopy: completion === "copy-kept" && tx.copyName !== null ? { location: store.location, name: tx.copyName } : null,
+                cleanupPending: completion === "pending",
+            }
         }
-        if (fluentReaderOpen(profileDir)) throw new FrMcpError("RULE_WRITE_UNVERIFIED", "app-started")
-        return backup
+        const outcome = await rollBack(tx, written, {
+            target: configPath,
+            tempPath: () => tempPath(profileDir),
+            // Not of the kind removeDeadTemps removes: a concurrent file that could not be put back stays for the user.
+            asidePath: () => path.join(profileDir, `config.json.frmcp-${crypto.randomBytes(8).toString("hex")}.aside`),
+            holdsLock: () => ownsGuard(guard),
+            blocked: () => fluentReaderOpen(profileDir),
+            locationSafe: () => {
+                requireCanonicalProfile(profileDir)
+                requireSingleLink(configPath)
+                return isRealDirectory(store.dir)
+            },
+            readCurrent: () => readCurrent(configPath, profileDir),
+            step: (step) => settings.step?.(step),
+        })
+        if (outcome.restored) throw new FrMcpError("RULE_WRITE_ROLLED_BACK", failure)
+        if (outcome.stranded) logEvent("write_concurrent_file_aside", { store: "rules" })
+        throw new FrMcpError("RULE_WRITE_UNVERIFIED", outcome.reason, recoveryOf(store, tx))
     } finally {
         await releaseGuard(guard)
     }
+}
+
+/** What is left of the previous content, checked now: a name is given only for a file that is there. */
+function recoveryOf(store: BackupStore, tx: Transaction): RecoveryCopy {
+    const copy = copyStatus(tx)
+    return { location: store.location, name: copy === "verified" || copy === "unverifiable" ? tx.copyName : null, copy }
 }

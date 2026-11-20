@@ -6,6 +6,8 @@
  *        print every commit as JSON.
  * crash: apply one edit and die at the moment the document would be replaced,
  *        leaving the lock and the temporary file as a real crash does.
+ * crash-applied: apply one edit and die right after the document was replaced,
+ *        before its verification: the change is applied, its copy and journal left.
  * hold:  apply one edit, stop while holding the lock until told to go on.
  */
 
@@ -16,7 +18,7 @@ import type { PreferenceStep } from "../../src/preferences/store.js"
 import { harness } from "./sources.js"
 
 interface WorkerInput {
-    readonly mode: "edit" | "crash" | "hold"
+    readonly mode: "edit" | "crash" | "crash-applied" | "hold"
     readonly id: string
     readonly dir: string
     readonly localAppData: string
@@ -35,7 +37,8 @@ function blockUntil(file: string): void {
 
 let armed = false
 function step(name: PreferenceStep): void {
-    if (!armed || name !== "before-rename") return
+    if (armed && input.mode === "crash-applied" && name === "after-rename") process.exit(9)
+    if (!armed || name !== "before-rename" || input.mode === "crash-applied") return
     armed = false
     if (input.mode === "crash") process.exit(9)
     if (input.mode === "hold") {

@@ -39,6 +39,7 @@ export const ERROR_CODES = [
     "RULE_BACKUP_UNAVAILABLE",
     "RULE_WRITE_FAILED",
     "RULE_WRITE_UNVERIFIED",
+    "RULE_WRITE_ROLLED_BACK",
     "PREFERENCES_UNAVAILABLE",
     "PREFERENCES_INVALID",
     "PROFILE_BINDING_REQUIRED",
@@ -49,6 +50,7 @@ export const ERROR_CODES = [
     "PREFERENCES_BACKUP_UNAVAILABLE",
     "PREFERENCES_WRITE_FAILED",
     "PREFERENCES_WRITE_UNVERIFIED",
+    "PREFERENCES_WRITE_ROLLED_BACK",
     "PREFERENCE_TEXT_REJECTED",
     "PREFERENCE_BINDING_REVIEW_REQUIRED",
     "INTERNAL_ERROR",
@@ -151,6 +153,14 @@ export type ErrorReason =
     | "write-failed"
     | "replace-failed"
     | "read-back-failed"
+    // write transactions: why a verification failed, why a rollback was refused or failed
+    | "verification-failed"
+    | "rollback-unsafe-changed"
+    | "rollback-unsafe-lock-lost"
+    | "rollback-unsafe-app-open"
+    | "rollback-unsafe-location"
+    | "rollback-unsupported"
+    | "rollback-failed"
     // news preferences
     | "storage-location"
     | "unsafe-storage"
@@ -299,16 +309,20 @@ const TEXT: Readonly<Record<ErrorCode, { message: string; hint: string }>> = {
         hint: "Retry shortly; another copy of this server may be saving a change. A guard left by a crash is never removed automatically: if this persists, close Fluent Reader and every MCP client using this profile, then delete config.json.frmcp-write.tmp from the profile folder. config.json was not touched.",
     },
     RULE_BACKUP_UNAVAILABLE: {
-        message: "The private backup of config.json could not be created, so no change was made.",
-        hint: "Backups are kept only in %LOCALAPPDATA%\\FluentReaderMCP-Data\\rule-backups, which must be made of regular local folders inside the user profile, with free space; they are never saved elsewhere.",
+        message: "The temporary private copy of config.json could not be created, so no change was made.",
+        hint: "The copy is kept during the change only in %LOCALAPPDATA%\\FluentReaderMCP-Data\\rule-backups, which must be made of regular local folders inside the user profile, with free space; it is never saved elsewhere.",
     },
     RULE_WRITE_FAILED: {
         message: "The change could not be saved; config.json was not replaced.",
         hint: "Retry later: another program may be holding the file, or the disk may be full or read-only.",
     },
     RULE_WRITE_UNVERIFIED: {
-        message: "config.json was replaced, but the saved result could not be verified; nothing was restored automatically.",
-        hint: "Do not retry blindly. Call list_rules to check the rules. A private copy taken before the change is in %LOCALAPPDATA%\\FluentReaderMCP-Data\\rule-backups; it holds the whole configuration, credentials included.",
+        message: "config.json was replaced, but the saved result could not be verified, and the previous content was not restored automatically: restoring was refused because it could not be proven safe (reason rollback-unsafe-* or rollback-unsupported), or it was attempted and did not complete (rollback-failed). config.json was not overwritten with anything else.",
+        hint: "Do not retry blindly. Call list_rules to check the rules. recovery.copy tells what is left of the previous content: verified (recovery.name, in the recovery.location folder under %LOCALAPPDATA%, is the exact previous config.json; it holds the whole configuration, credentials included), unverifiable (a file is there but it is not provably the copy taken), or missing. Restore by hand only with Fluent Reader closed, after checking that nobody else changed config.json. A file ending in .aside next to config.json holds a version of config.json that could not be put back without overwriting anything: check it by hand.",
+    },
+    RULE_WRITE_ROLLED_BACK: {
+        message: "The change was written but could not be verified, so config.json was restored to its previous content and the restored bytes were verified; the rules are as before.",
+        hint: "Call list_rules to confirm, then retry from a current revision if the change is still wanted.",
     },
     PREFERENCES_UNAVAILABLE: {
         message: "The private personal-preferences storage is unavailable or unsafe.",
@@ -339,7 +353,7 @@ const TEXT: Readonly<Record<ErrorCode, { message: string; hint: string }>> = {
         hint: "Retry after the other MCP client finishes, starting with a new read and preview. A lock left by a crash is never removed automatically: if get_news_preferences keeps warning writeLockMayBeOrphaned, close every MCP client using this profile, then delete preferences.lock from its storageLocation.",
     },
     PREFERENCES_BACKUP_UNAVAILABLE: {
-        message: "The previous preferences.md could not be backed up, so no change was made.",
+        message: "The temporary private copy of the previous preferences.md, or the record of the change, could not be created, so no change was made.",
         hint: "Check the private news-preferences backup directory and available disk space, then obtain a new preview.",
     },
     PREFERENCES_WRITE_FAILED: {
@@ -347,8 +361,12 @@ const TEXT: Readonly<Record<ErrorCode, { message: string; hint: string }>> = {
         hint: "Check the private storage and retry from a new read and preview. preferences.md was not touched.",
     },
     PREFERENCES_WRITE_UNVERIFIED: {
-        message: "preferences.md was written but the result or profile binding could not be verified; nothing was restored automatically.",
-        hint: "Do not retry blindly. Read the preferences state and inspect a private backup before deciding whether to restore it.",
+        message: "preferences.md was written but the result or profile binding could not be verified, and the previous state was not restored automatically: restoring was refused because it could not be proven safe (reason rollback-unsafe-* or rollback-unsupported), or it was attempted and did not complete (rollback-failed). preferences.md was not overwritten with anything else.",
+        hint: "Do not retry blindly. Read the preferences state. recovery.copy tells what is left of the previous document: verified (recovery.name, in the recovery.location folder under %LOCALAPPDATA%, is its exact copy), unverifiable (a file is there but it is not provably the copy taken), missing, or none (there was no previous document). Inspect a copy before deciding whether to restore it by hand. A file ending in .aside in the same folder as preferences.md holds a version of the document that could not be put back without overwriting anything.",
+    },
+    PREFERENCES_WRITE_ROLLED_BACK: {
+        message: "The change was written but could not be verified, so preferences.md was restored to its previous state (or removed again, if it did not exist) and the restoration was verified; the preferences are as before.",
+        hint: "Read the preferences again and obtain a new preview if the change is still wanted. identity.key, if it was created by this attempt, is kept: it holds no preference.",
     },
     PREFERENCE_TEXT_REJECTED: {
         message: "The preference text contains markup, addresses, credentials or control characters that are not stored; nothing was written.",
@@ -364,25 +382,44 @@ const TEXT: Readonly<Record<ErrorCode, { message: string; hint: string }>> = {
     },
 }
 
+/**
+ * What is left of the previous content after a write that could not be
+ * verified nor safely undone. `copy` is checked when the error is built:
+ *   verified      `name` is the exact copy recorded (file id, size, SHA-256);
+ *   unverifiable  a file is under `name`, but it is not provably that copy;
+ *   missing       the copy is gone (`name` is null: no file is referenced);
+ *   none          there was no previous content (a first save; `name` null).
+ * The folder is given as %LOCALAPPDATA%\... (no user name) and the name is a
+ * random one generated by this server. The content is never returned.
+ */
+export interface RecoveryCopy {
+    readonly location: string
+    readonly name: string | null
+    readonly copy: "verified" | "unverifiable" | "missing" | "none"
+}
+
 export class FrMcpError extends Error {
     override readonly name = "FrMcpError"
     readonly code: ErrorCode
     readonly reason: ErrorReason | undefined
     readonly hint: string
+    readonly recovery: RecoveryCopy | undefined
 
-    constructor(code: ErrorCode, reason?: ErrorReason) {
+    constructor(code: ErrorCode, reason?: ErrorReason, recovery?: RecoveryCopy) {
         super(TEXT[code].message)
         this.code = code
         this.reason = reason
         this.hint = TEXT[code].hint
+        this.recovery = recovery === undefined ? undefined : { location: recovery.location, name: recovery.name, copy: recovery.copy }
     }
 
-    toJSON(): { code: ErrorCode; message: string; hint: string; reason?: ErrorReason } {
+    toJSON(): { code: ErrorCode; message: string; hint: string; reason?: ErrorReason; recovery?: RecoveryCopy } {
         return {
             code: this.code,
             message: this.message,
             hint: this.hint,
             ...(this.reason !== undefined && { reason: this.reason }),
+            ...(this.recovery !== undefined && { recovery: this.recovery }),
         }
     }
 }

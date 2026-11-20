@@ -18,6 +18,8 @@ export type LogEvent =
     | "transport_error"
     | "tool_error"
     | "rule_write_committed"
+    | "write_transactions_settled"
+    | "write_concurrent_file_aside"
     | "shutdown"
     | "fatal"
 

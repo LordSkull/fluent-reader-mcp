@@ -42,7 +42,7 @@ import { FrMcpError } from "../errors.js"
 import { logEvent } from "../log.js"
 import { spliceRuleTarget } from "../settings/json-splice.js"
 import { CFG_MAX, LIMITS, readSettingsDocument, snapshotOf, type SettingsDocument, type SettingsSnapshot, type StoredRuleEntry } from "../settings/read-settings.js"
-import { BACKUP_LOCATION, commitConfig, fluentReaderOpen, requireSingleLink } from "../settings/rule-store.js"
+import { commitConfig, fluentReaderOpen, requireSingleLink } from "../settings/rule-store.js"
 import type { ToolContext } from "./context.js"
 import { parseArgs } from "./input.js"
 import { successResult } from "./result.js"
@@ -258,7 +258,7 @@ function impactOf(target: Target, change: Change, storedAfter: readonly StoredRu
  * current document with this one target changed, within the structural limits.
  * Also returns the target's list and revision as they will be read.
  */
-function nextDocument(document: SettingsDocument, target: Target, change: Change): { text: string; revision: string; storedAfter: readonly StoredRuleEntry[] } {
+function nextDocument(document: SettingsDocument, target: Target, change: Change): { text: string; revision: string; storedAfter: readonly StoredRuleEntry[]; expected: Record<string, unknown> } {
     const text = spliceRuleTarget(document.text, target.key, change.rawAfter)
     if (Buffer.byteLength(text) > CFG_MAX) throw new FrMcpError("SETTINGS_TOO_LARGE", "file-too-large")
     const expected = JSON.parse(document.text) as Record<string, unknown>
@@ -272,7 +272,21 @@ function nextDocument(document: SettingsDocument, target: Target, change: Change
     requireValidSections(snapshot)
     const rules = snapshot.sourceRules as { value: ReadonlyMap<string, readonly StoredRuleEntry[]> }
     const storedAfter = rules.value.get(target.key) ?? []
-    return { text, revision: rulesRevision(target.key, storedAfter), storedAfter }
+    return { text, revision: rulesRevision(target.key, storedAfter), storedAfter, expected }
+}
+
+/**
+ * The check of what was read back after the rename, on the same terms as
+ * before it: valid sections, the target's rules (hence the requested change)
+ * with the expected revision, and every other setting as stored. Throws if not.
+ */
+function verifySaved(saved: Buffer, target: Target, built: ReturnType<typeof nextDocument>): void {
+    const parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(saved)) as Record<string, unknown>
+    if (!isDeepStrictEqual(parsed, built.expected)) throw new FrMcpError("INTERNAL_ERROR", "unexpected")
+    const snapshot = snapshotOf(parsed, 1)
+    requireValidSections(snapshot)
+    const rules = snapshot.sourceRules as { value: ReadonlyMap<string, readonly StoredRuleEntry[]> }
+    if (rulesRevision(target.key, rules.value.get(target.key) ?? []) !== built.revision) throw new FrMcpError("INTERNAL_ERROR", "unexpected")
 }
 
 interface WriteArgs extends TargetArgs {
@@ -296,23 +310,27 @@ async function write(context: ToolContext, tool: string, operation: Operation, a
             const built = nextDocument(document, target, change)
             const impact = impactOf(target, change, built.storedAfter)
 
+            // No change, no write and no copy. A verified change leaves no copy behind: backup is set only when its removal failed.
             let backup: RuleWriteOutput["backup"] = null
+            let cleanupPending = false
             if (change.changed) {
                 const bytes = Buffer.from(built.text, "utf8")
                 try {
-                    const name = await commitConfig({
+                    const committed = await commitConfig({
                         configPath: context.configPath,
                         profileDir: context.profileDir,
                         settings: context.ruleWrites,
                         original: document.bytes,
                         next: bytes,
                         now: context.now(),
+                        verify: (saved) => verifySaved(saved, target, built),
                     })
-                    backup = { location: BACKUP_LOCATION, name }
+                    backup = committed.keptCopy
+                    cleanupPending = committed.cleanupPending
                 } finally {
                     bytes.fill(0)
                 }
-                logEvent("rule_write_committed", { tool, scope: target.output.scope })
+                logEvent("rule_write_committed", { tool, scope: target.output.scope, ...(backup !== null && { temporaryCopyKept: true }), ...(cleanupPending && { transactionCleanupPending: true }) })
             }
             const payload: RuleWriteOutput = {
                 operation,
@@ -326,7 +344,7 @@ async function write(context: ToolContext, tool: string, operation: Operation, a
                 ruleCount: built.storedAfter.length,
                 keyRemoved: change.rawAfter === null,
                 backup,
-                warnings: impact.warnings,
+                warnings: [...impact.warnings, ...(backup !== null ? (["temporaryCopyKept"] as const) : []), ...(cleanupPending ? (["transactionCleanupPending"] as const) : [])],
                 effect: RULE_CHANGE_EFFECT,
                 meta: { generatedAt: new Date(context.now()).toISOString(), schemaVersion: RESULT_SCHEMA_VERSION },
             }

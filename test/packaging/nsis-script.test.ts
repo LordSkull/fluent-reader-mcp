@@ -287,7 +287,7 @@ describe("NSIS script", () => {
     })
 
     test("the wizard states the privacy facts and that writes happen only on request, with their protections", () => {
-        for (const fact of ["Il database resta sempre in sola lettura", "non effettua richieste di rete proprie", "servizio Anthropic", "sedici strumenti", "senza attivazioni", "richiesta esplicita", "con Fluent Reader chiuso e dopo un backup", "file privato fuori dal profilo", "La ricerca usa solo dati già salvati", "Nessun servizio Windows"]) {
+        for (const fact of ["Il database resta sempre in sola lettura", "non effettua richieste di rete proprie", "servizio Anthropic", "sedici strumenti", "senza attivazioni", "richiesta esplicita", "con Fluent Reader chiuso", "Le modifiche vengono verificate automaticamente", "conservate soltanto quando è necessario un recupero", "file privato fuori dal profilo", "La ricerca usa solo dati già salvati", "Nessun servizio Windows"]) {
             assert.ok(SCRIPT.includes(fact), fact)
         }
         assert.match(SCRIPT, /non cerca profili da solo/)

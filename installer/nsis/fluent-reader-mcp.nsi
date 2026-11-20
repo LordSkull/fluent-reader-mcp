@@ -70,7 +70,7 @@ Var PreviewText
 
 !define MUI_ABORTWARNING
 !define MUI_WELCOMEPAGE_TITLE "${PRODUCT_NAME} ${PRODUCT_VERSION} (beta privata)"
-!define MUI_WELCOMEPAGE_TEXT "Questo programma installa Fluent Reader MCP, un server MCP che permette a Claude Desktop di consultare un tuo profilo locale di Fluent Reader e, soltanto su tua richiesta esplicita, di modificare regole RSS e preferenze editoriali.$\r$\n$\r$\nLa beta offre sedici strumenti, tutti disponibili automaticamente: dodici non modificano nulla e quattro possono scrivere, con i controlli e i backup previsti.$\r$\n$\r$\nNon vengono installati servizi, porte di rete o processi residenti. Puoi scegliere se registrare il server in Claude Desktop: prima vedrai il file e la voce esatti da modificare."
+!define MUI_WELCOMEPAGE_TEXT "Questo programma installa Fluent Reader MCP, un server MCP che permette a Claude Desktop di consultare un tuo profilo locale di Fluent Reader e, soltanto su tua richiesta esplicita, di modificare regole RSS e preferenze editoriali.$\r$\n$\r$\nLa beta offre sedici strumenti, tutti disponibili automaticamente: dodici non modificano nulla e quattro possono scrivere, con i controlli previsti. Le modifiche vengono verificate automaticamente; le copie temporanee vengono eliminate dopo il successo e conservate soltanto quando è necessario un recupero.$\r$\n$\r$\nNon vengono installati servizi, porte di rete o processi residenti. Puoi scegliere se registrare il server in Claude Desktop: prima vedrai il file e la voce esatti da modificare."
 !insertmacro MUI_PAGE_WELCOME
 !define MUI_DIRECTORYPAGE_TEXT_TOP "Cartella proposta: %LOCALAPPDATA%\FluentReaderMCP. Puoi sceglierne un'altra su qualsiasi unità locale dove il tuo utente può scrivere: il setup non chiede privilegi di amministratore. Se la cartella scelta non può essere usata così com'è (radice di un'unità, altri file già presenti), il campo qui sotto mostrerà la sottocartella FluentReaderMCP prima di continuare."
 !define MUI_PAGE_CUSTOMFUNCTION_LEAVE DirectoryLeave
@@ -410,7 +410,7 @@ Function PrivacyPageShow
   !insertmacro BoxLine "- Fluent Reader MCP legge il profilo senza modificarlo, salvo una tua richiesta esplicita di cambiare le regole RSS. Il database resta sempre in sola lettura."
   !insertmacro BoxLine "- Il server non effettua richieste di rete proprie e non resta in esecuzione: lo avvia Claude Desktop quando serve."
   !insertmacro BoxLine "- I risultati degli strumenti (per esempio titoli e testi degli articoli richiesti) possono essere inviati da Claude Desktop al servizio Anthropic come parte della conversazione."
-  !insertmacro BoxLine "- Il server espone sedici strumenti, senza attivazioni. Tre possono cambiare le regole RSS, con Fluent Reader chiuso e dopo un backup; uno salva le preferenze editoriali in un file privato fuori dal profilo. Gli altri non modificano nulla. La ricerca usa solo dati già salvati."
+  !insertmacro BoxLine "- Il server espone sedici strumenti, senza attivazioni. Tre possono cambiare le regole RSS, con Fluent Reader chiuso; uno salva le preferenze editoriali in un file privato fuori dal profilo. Le modifiche vengono verificate automaticamente: le copie temporanee vengono eliminate dopo il successo e conservate soltanto quando è necessario un recupero. Gli altri non modificano nulla. La ricerca usa solo dati già salvati."
   !insertmacro BoxLine "- Nessun servizio Windows viene installato."
   SendMessage $PreviewText ${EM_SETSEL} 0 0
   ${NSD_CreateCheckbox} 0 116u 100% 12u "Confermo destinazione e profilo e ho letto l'informativa"

@@ -328,6 +328,13 @@ const ERROR_REASONS: Readonly<Record<ErrorReason, true>> = {
     "write-failed": true,
     "replace-failed": true,
     "read-back-failed": true,
+    "verification-failed": true,
+    "rollback-unsafe-changed": true,
+    "rollback-unsafe-lock-lost": true,
+    "rollback-unsafe-app-open": true,
+    "rollback-unsafe-location": true,
+    "rollback-unsupported": true,
+    "rollback-failed": true,
     // news preferences
     "storage-location": true,
     "unsafe-storage": true,
