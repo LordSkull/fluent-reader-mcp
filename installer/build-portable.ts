@@ -1,19 +1,20 @@
 /**
  * FR-MCP-04-BETA-01 — Windows x64 portable package builder (owner-run).
  *
- *   npm.cmd run package:win -- --out <absolute dir> [--dry-run] [--runtime-cache <absolute dir>] [--allow-dirty] [--keep-work]
+ *   npm.cmd run package:win [-- [--out <absolute dir>] [--dry-run] [--runtime-cache <absolute dir>] [--allow-dirty] [--keep-work]]
  *
+ * Without --out the output is <repoRoot>\build (ignored by Git).
  * See installer/PACKAGING.md. Compiled with the tests (tsconfig.test.json)
  * and run from dist-test/installer/build-portable.js.
  */
 
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { BuildError, execFile } from "./lib/common.js"
+import { BuildError, defaultOutDir, execFile } from "./lib/common.js"
 import { buildPortable, type BuildOptions } from "./lib/pipeline.js"
 import { runSelfTest } from "./lib/selftest.js"
 
-const USAGE = "usage: npm.cmd run package:win -- --out <absolute dir> [--dry-run] [--runtime-cache <absolute dir>] [--allow-dirty] [--keep-work]"
+const USAGE = "usage: npm.cmd run package:win -- [--out <absolute dir, default <repository>\\build>] [--dry-run] [--runtime-cache <absolute dir>] [--allow-dirty] [--keep-work]"
 
 /** dist-test/installer/build-portable.js → repository root. */
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..")
@@ -35,8 +36,7 @@ export function parseArgs(argv: readonly string[], repoRoot: string): BuildOptio
             throw new BuildError(`unknown argument ${JSON.stringify(arg)}\n${USAGE}`)
         }
     }
-    if (outDir === undefined) throw new BuildError(`--out is required (choose a directory outside the repository)\n${USAGE}`)
-    return { repoRoot, outDir, runtimeCache, dryRun: flags.has("--dry-run"), allowDirty: flags.has("--allow-dirty"), keepWork: flags.has("--keep-work") }
+    return { repoRoot, outDir: outDir ?? defaultOutDir(repoRoot), runtimeCache, dryRun: flags.has("--dry-run"), allowDirty: flags.has("--allow-dirty"), keepWork: flags.has("--keep-work") }
 }
 
 async function main(): Promise<void> {

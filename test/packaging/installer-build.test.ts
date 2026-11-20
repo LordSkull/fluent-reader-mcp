@@ -12,7 +12,7 @@ import path from "node:path"
 import { after, before, describe, test } from "node:test"
 import { fileURLToPath } from "node:url"
 import { parseInstallerArgs } from "../../installer/build-installer.js"
-import { BuildError, canonicalPath, sha256Bytes, type ExecFn } from "../../installer/lib/common.js"
+import { BuildError, canonicalPath, defaultOutDir, sha256Bytes, type ExecFn } from "../../installer/lib/common.js"
 import { buildInstaller, helperCopyNsh, installerName, NSIS_REQUIREMENTS, nsisString, SETUP_ENTRY, setupClosure, type InstallerDeps, type InstallerOptions } from "../../installer/lib/installer-build.js"
 import { helperCopyEntries } from "../../installer/setup/uninstall.js"
 import { artifactName, buildManifest, KOFFI_NATIVE, MANIFEST, PROJECT_LICENSE, type Manifest } from "../../installer/lib/package-content.js"
@@ -103,7 +103,7 @@ interface Fakes {
     seen: { defines: string; nsi: string; helperFiles: string; payload: string[] } | null
 }
 
-function fakes(fx: Fixture, behaviour: { version?: string; compileFails?: boolean; dirty?: boolean } = {}): Fakes {
+function fakes(fx: Fixture, behaviour: { version?: string; compileFails?: boolean; dirty?: boolean; notIgnored?: boolean } = {}): Fakes {
     const calls: Fakes["calls"] = []
     const lines: string[] = []
     const state: Fakes = { deps: undefined as unknown as InstallerDeps, calls, lines, seen: null }
@@ -112,6 +112,7 @@ function fakes(fx: Fixture, behaviour: { version?: string; compileFails?: boolea
         if (file === "git") {
             if (args.includes("rev-parse")) return { status: 0, stdout: `${COMMIT}\n`, stderr: "" }
             if (args.includes("status")) return { status: 0, stdout: behaviour.dirty === true ? " M x\n" : "", stderr: "" }
+            if (args.includes("check-ignore")) return { status: behaviour.notIgnored === true ? 1 : 0, stdout: "", stderr: "" }
         }
         if (file === fx.makensis && args[0] === "/VERSION") return { status: 0, stdout: `${behaviour.version ?? "v3.13"}\n`, stderr: "" }
         if (file === fx.makensis) {
@@ -296,12 +297,93 @@ describe("installer builder: NSIS, outputs and publication", { timeout: 60_000 }
         for (const bad of ["a$b", "a\"b", "a`b", "a\nb"]) assert.throws(() => nsisString(bad), BuildError)
     })
 
-    test("command line: --bundle, --bundle-sha256 and --out are required; unknown options refused", () => {
+    test("command line: --bundle and --bundle-sha256 are required, --out defaults to <repoRoot>\\build; unknown options refused", () => {
         assert.throws(() => parseInstallerArgs(["--bundle", "C:\\b.zip", "--out", "C:\\o"], "C:\\r"), /--bundle-sha256 is required/)
+        assert.throws(() => parseInstallerArgs(["--bundle", "C:\\b.zip"], "C:\\r"), /--bundle-sha256 is required/)
+        assert.throws(() => parseInstallerArgs(["--bundle-sha256", "ab"], "C:\\r"), /--bundle is required/)
         assert.throws(() => parseInstallerArgs(["--bundle", "C:\\b.zip", "--bundle-sha256", "x", "--out", "C:\\o", "--yes"], "C:\\r"), /unknown argument/)
+        assert.throws(() => parseInstallerArgs(["--bundle", "C:\\b.zip", "--bundle-sha256", "x", "--out", "C:\\o", "--out", "C:\\p"], "C:\\r"), /--out given twice/)
         const parsed = parseInstallerArgs(["--bundle", "C:\\b c.zip", "--bundle-sha256", "ab", "--out", "C:\\o é", "--dry-run"], "C:\\r")
         assert.equal(parsed.bundle, "C:\\b c.zip")
+        assert.equal(parsed.outDir, "C:\\o é")
         assert.equal(parsed.dryRun, true)
         assert.equal(parsed.makensis, undefined)
+        assert.equal(parseInstallerArgs(["--bundle", "C:\\b.zip", "--bundle-sha256", "ab"], "C:\\r").outDir, path.join("C:\\r", "build"))
+        assert.equal(parseInstallerArgs(["--bundle", "C:\\b.zip", "--bundle-sha256", "ab"], "C:\\r").outDir, defaultOutDir("C:\\r"))
+    })
+})
+
+describe("installer builder: the dedicated <repo>\\build folder (default output)", { timeout: 60_000 }, () => {
+    /** The fixture's bundle and its .sha256 copied into <repo>\build, as package:win leaves them. */
+    function bundleInBuild(fx: Fixture): string {
+        const target = path.join(fx.repo, "build", path.basename(fx.bundle))
+        fs.mkdirSync(path.dirname(target), { recursive: true })
+        fs.copyFileSync(fx.bundle, target)
+        fs.copyFileSync(`${fx.bundle}.sha256`, `${target}.sha256`)
+        return target
+    }
+    function defaults(fx: Fixture, bundle: string, extra: string[] = []): InstallerOptions {
+        return parseInstallerArgs(["--bundle", bundle, "--bundle-sha256", fx.sha, "--makensis", fx.makensis, ...extra], fx.repo)
+    }
+
+    test("no --out: the installer, its .sha256 and report land in <repo>\\build next to the ZIP, which is untouched", async () => {
+        const fx = fixture()
+        const bundle = bundleInBuild(fx)
+        const zipBefore = fs.readFileSync(bundle)
+        const f = fakes(fx)
+        const opts = defaults(fx, bundle)
+        assert.equal(opts.outDir, path.join(fx.repo, "build"))
+        const result = await buildInstaller(opts, f.deps)
+        const build = path.join(canonicalPath(fx.repo), "build")
+        assert.equal(result.exePath, path.join(build, EXE))
+        const zip = artifactName(VERSION)
+        assert.deepEqual(fs.readdirSync(build).sort(), [EXE, `${EXE}.build-report.json`, `${EXE}.sha256`, zip, `${zip}.sha256`].sort())
+        assert.deepEqual(fs.readFileSync(bundle), zipBefore)
+        assert.ok(f.calls.some((c) => c.file === "git" && c.args.includes("check-ignore") && c.args.at(-1) === `build/${EXE}`), "build\\ checked as ignored by Git")
+    })
+
+    for (const name of [EXE, `${EXE}.sha256`, `${EXE}.build-report.json`, `${EXE}.partial`, `work-installer-${VERSION}`]) {
+        test(`an existing ${name} in <repo>\\build: refused before writing, kept as it is`, async () => {
+            const fx = fixture()
+            const bundle = bundleInBuild(fx)
+            const target = path.join(fx.repo, "build", name)
+            if (name.startsWith("work-")) fs.mkdirSync(target)
+            else fs.writeFileSync(target, `OWNER ${name}`)
+            const before = snapshotDir(path.join(fx.repo, "build"))
+            await refused(fx, defaults(fx, bundle), /already exists, nothing is overwritten/)
+            assert.deepEqual(snapshotDir(path.join(fx.repo, "build")), before)
+        })
+    }
+
+    test("--out elsewhere in the repository (root, src, installer, build\\<sub>, traversal): refused", async () => {
+        const fx = fixture()
+        fs.mkdirSync(path.join(fx.repo, "src"))
+        for (const out of [fx.repo, path.join(fx.repo, "src"), path.join(fx.repo, "installer"), path.join(fx.repo, "installer", "nsis"), path.join(fx.repo, "build", "sub"), `${fx.repo}\\build\\..\\installer`]) {
+            await refused(fx, options(fx, { outDir: out }), /must be outside the repository \(or exactly its build folder/)
+        }
+    })
+
+    test("<repo>\\build redirected by a junction, or not ignored by Git: refused before writing", async () => {
+        const fx = fixture()
+        counter++
+        const target = path.join(root, `redirected installer build ${counter}`)
+        fs.mkdirSync(target)
+        fs.symlinkSync(target, path.join(fx.repo, "build"), "junction")
+        await refused(fx, options(fx, { outDir: path.join(fx.repo, "build") }), /--out goes through a link or junction inside the repository/)
+        assert.deepEqual(fs.readdirSync(target), [])
+
+        const other = fixture()
+        const bundle = bundleInBuild(other)
+        const before = snapshotDir(path.join(other.repo, "build"))
+        await refused(other, defaults(other, bundle), /build\/FluentReaderMCP-Setup-v0\.1\.0-beta-win-x64\.exe is not ignored by Git/, fakes(other, { notIgnored: true }))
+        assert.deepEqual(snapshotDir(path.join(other.repo, "build")), before)
+    })
+
+    test("a fault during publication in <repo>\\build: rolled back, only the ZIP and its .sha256 remain", async () => {
+        const fx = fixture()
+        const bundle = bundleInBuild(fx)
+        const f = fakes(fx)
+        await assert.rejects(buildInstaller(defaults(fx, bundle), { ...f.deps, checkpoint: (s) => { if (s === "promote:sha256") throw new Error("injected") } }), /publication failed .*every artifact published by this run was removed/)
+        assert.deepEqual(fs.readdirSync(path.join(fx.repo, "build")).sort(), [path.basename(bundle), `${path.basename(bundle)}.sha256`].sort())
     })
 })

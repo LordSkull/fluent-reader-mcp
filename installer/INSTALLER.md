@@ -39,22 +39,36 @@ Code e chiede conferma della cartella con una finestra.
 ## Comando
 
 ```powershell
-# 1. Prova a secco: verifica bundle, checksum, manifest, NSIS e percorsi; non scrive nulla e non avvia makensis
-npm.cmd run installer:win -- --bundle "D:\FluentReaderMCP-build\fluent-reader-mcp-v0.1.4-beta-win-x64.zip" --bundle-sha256 <sha256 del bundle> --out "D:\FluentReaderMCP-build" --dry-run
+# 0. Pacchetto portatile (se non c'è già): ZIP e .sha256 in D:\fluent-reader-mcp\build\
+npm.cmd run package:win
 
-# 2. Installer
-npm.cmd run installer:win -- --bundle "D:\FluentReaderMCP-build\fluent-reader-mcp-v0.1.4-beta-win-x64.zip" --bundle-sha256 <sha256 del bundle> --out "D:\FluentReaderMCP-build"
+# SHA-256 del bundle, dal suo file .sha256 (o dall'output della build)
+$zip = "D:\fluent-reader-mcp\build\fluent-reader-mcp-v0.1.4-beta-win-x64.zip"
+$sha = (Get-Content -LiteralPath "$zip.sha256").Split(" ")[0]
+
+# 1. Prova a secco: verifica bundle, checksum, manifest, NSIS e percorsi; non scrive nulla e non avvia makensis
+npm.cmd run installer:win -- --bundle $zip --bundle-sha256 $sha --dry-run
+
+# 2. Installer: .exe, .sha256 e report nella stessa cartella D:\fluent-reader-mcp\build\
+npm.cmd run installer:win -- --bundle $zip --bundle-sha256 $sha
 ```
 
 Come per il builder portatile, il comando npm compila prima con TypeScript (rigenera `dist-test\`, già ignorata da
-Git); il builder poi scrive solo in `--out`, che deve stare fuori dalla repository. Lo SHA-256 del bundle **non** è
-fissato negli script: va passato ogni volta con `--bundle-sha256`.
+Git); il builder poi scrive solo in `--out`, che di default è la cartella dedicata `<repository>\build` (ignorata da
+Git con `/build/`, verificato con `git check-ignore`), accanto allo ZIP. Un `--out` esplicito deve stare fuori dalla
+repository oppure essere esattamente `<repository>\build`. Lo SHA-256 del bundle **non** è fissato negli script e non
+è dedotto dal file `.sha256`: va passato ogni volta con `--bundle-sha256`, e deve coincidere sia con il file
+`.sha256` sia con l'hash del bundle.
+
+Il builder **non sovrascrive mai** un installer della stessa versione: se in `build\` esistono già l'`.exe`, il suo
+`.sha256`, il report, un loro `.partial` o la cartella `work-installer-<versione>`, si ferma senza toccarli. Per
+ricostruirlo si spostano o cancellano a mano quei file.
 
 | Opzione | Significato |
 |---|---|
 | `--bundle <zip>` | Pacchetto portatile (obbligatorio); il nome deve corrispondere alla versione di `package.json` |
 | `--bundle-sha256 <hex>` | SHA-256 atteso del pacchetto (obbligatorio); deve coincidere con il file `.sha256` e con il file |
-| `--out <dir>` | Cartella di output (obbligatoria), fuori dalla repository; può essere quella del pacchetto |
+| `--out <dir>` | Cartella di output (default `<repository>\build`, la stessa del pacchetto); fuori dalla repository oppure esattamente `<repository>\build` |
 | `--makensis <exe>` | Percorso di `makensis.exe`, se non è in `Program Files (x86)\NSIS` o `Program Files\NSIS` |
 | `--dry-run` | Solo verifiche: niente cartelle, niente makensis |
 | `--allow-dirty` | Consente un albero Git con modifiche (annotato nel report) |
@@ -69,8 +83,9 @@ fissato negli script: va passato ogni volta con `--bundle-sha256`.
    nel manifest e auto-test senza attivazioni;
    presenti `runtime\node.exe`, `server\dist\main.js`, il modulo Koffi win32-x64, le licenze; nessun contenuto
    vietato. Un pacchetto incompleto, alterato o di un'altra versione viene rifiutato prima di scrivere qualsiasi file.
-3. Percorsi canonici (collegamenti e junction risolti); `--out` fuori dalla repository; nessun artefatto o cartella
-   di lavoro già esistente; i percorsi che finiscono nello script NSIS non possono contenere `$`, virgolette o
+3. Percorsi canonici (collegamenti e junction risolti); `--out` fuori dalla repository o esattamente
+   `<repository>\build` (cartella reale, non una junction o un collegamento simbolico, ignorata da Git); nessuna
+   junction o collegamento dentro la repository lungo il percorso; nessun artefatto o cartella di lavoro già esistente; i percorsi che finiscono nello script NSIS non possono contenere `$`, virgolette o
    backtick (rifiutati, non "escapati"); il volume deve supportare gli hard link (NTFS).
 4. Payload in `<out>\work-installer-<versione>\payload\current`: il pacchetto estratto in `app\` e verificato di
    nuovo sul disco contro il manifest, il programma di supporto in `setup\` (solo i moduli JavaScript compilati che
@@ -83,7 +98,10 @@ fissato negli script: va passato ogni volta con `--bundle-sha256`.
 Output:
 
 ```text
-D:\FluentReaderMCP-build\
+D:\fluent-reader-mcp\build\
+  fluent-reader-mcp-v0.1.4-beta-win-x64.zip                      (pacchetto portatile, invariato)
+  fluent-reader-mcp-v0.1.4-beta-win-x64.zip.sha256
+  fluent-reader-mcp-v0.1.4-beta-win-x64.zip.build-report.json
   FluentReaderMCP-Setup-v0.1.4-beta-win-x64.exe
   FluentReaderMCP-Setup-v0.1.4-beta-win-x64.exe.sha256
   FluentReaderMCP-Setup-v0.1.4-beta-win-x64.exe.build-report.json

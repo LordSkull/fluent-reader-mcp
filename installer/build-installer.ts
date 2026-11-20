@@ -1,19 +1,21 @@
 /**
  * FR-MCP-04-BETA-02 — Windows x64 NSIS installer builder (owner-run).
  *
- *   npm.cmd run installer:win -- --bundle <portable ZIP> --bundle-sha256 <hex> --out <absolute dir>
+ *   npm.cmd run installer:win -- --bundle <portable ZIP> --bundle-sha256 <hex> [--out <absolute dir>]
  *       [--makensis <absolute path>] [--dry-run] [--allow-dirty] [--keep-work]
  *
+ * Without --out the output is <repoRoot>\build (ignored by Git), next to the
+ * portable ZIP built there. --bundle and --bundle-sha256 stay required.
  * See installer/INSTALLER.md. Compiled with the tests (tsconfig.test.json)
  * and run from dist-test/installer/build-installer.js.
  */
 
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { BuildError, execFile } from "./lib/common.js"
+import { BuildError, defaultOutDir, execFile } from "./lib/common.js"
 import { buildInstaller, type InstallerOptions } from "./lib/installer-build.js"
 
-const USAGE = "usage: npm.cmd run installer:win -- --bundle <portable ZIP> --bundle-sha256 <hex> --out <absolute dir> [--makensis <absolute path>] [--dry-run] [--allow-dirty] [--keep-work]"
+const USAGE = "usage: npm.cmd run installer:win -- --bundle <portable ZIP> --bundle-sha256 <hex> [--out <absolute dir, default <repository>\\build>] [--makensis <absolute path>] [--dry-run] [--allow-dirty] [--keep-work]"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 /** dist-test/installer/build-installer.js → repository root and compiled root. */
@@ -36,12 +38,12 @@ export function parseInstallerArgs(argv: readonly string[], repoRoot: string): I
             throw new BuildError(`unknown argument ${JSON.stringify(arg)}\n${USAGE}`)
         }
     }
-    for (const required of ["--bundle", "--bundle-sha256", "--out"]) if (!values.has(required)) throw new BuildError(`${required} is required\n${USAGE}`)
+    for (const required of ["--bundle", "--bundle-sha256"]) if (!values.has(required)) throw new BuildError(`${required} is required\n${USAGE}`)
     return {
         repoRoot,
         bundle: values.get("--bundle") as string,
         bundleSha256: values.get("--bundle-sha256") as string,
-        outDir: values.get("--out") as string,
+        outDir: values.get("--out") ?? defaultOutDir(repoRoot),
         makensis: values.get("--makensis"),
         dryRun: flags.has("--dry-run"),
         allowDirty: flags.has("--allow-dirty"),

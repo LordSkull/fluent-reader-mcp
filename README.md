@@ -65,7 +65,23 @@ npm.cmd run build
 npm.cmd test
 ```
 
-Il server compilato è `dist/main.js` e comunica attraverso MCP su **stdio**, senza server HTTP. Per creare ZIP e installer Windows consulta [la guida al packaging](installer/PACKAGING.md).
+Il server compilato è `dist/main.js` e comunica attraverso MCP su **stdio**, senza server HTTP.
+
+### Pacchetto ZIP e installer Windows
+
+Da PowerShell, nella repository con il working tree pulito (l'installer richiede inoltre NSIS 3):
+
+```powershell
+# Pacchetto portatile ZIP, con il suo .sha256 e il report
+npm.cmd run package:win
+
+# Installer NSIS a partire dallo ZIP appena creato (lo SHA-256 resta obbligatorio)
+$zip = "$PWD\build\fluent-reader-mcp-v0.1.4-beta-win-x64.zip"
+$sha = (Get-Content -LiteralPath "$zip.sha256").Split(" ")[0]
+npm.cmd run installer:win -- --bundle $zip --bundle-sha256 $sha
+```
+
+Entrambi i builder scrivono di default in **`build\`** alla radice della repository (`D:\fluent-reader-mcp\build\`), ignorata da Git: ZIP, installer, file `.sha256`, report e `runtime-cache\`. Non sovrascrivono mai i pacchetti di una versione già presente: per ricostruirla si spostano o cancellano prima a mano i file in `build\`. Dettagli e opzioni (`--out`, `--dry-run`, `--runtime-cache`) in [la guida al packaging](installer/PACKAGING.md) e [la guida installer](installer/INSTALLER.md).
 
 ## Sicurezza e limiti
 

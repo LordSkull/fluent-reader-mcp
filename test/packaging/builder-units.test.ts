@@ -9,7 +9,21 @@ import fs from "node:fs"
 import path from "node:path"
 import { after, before, describe, test } from "node:test"
 import { parseArgs } from "../../installer/build-portable.js"
-import { assertRelativePath, BuildError, canonicalPath, childEnv, listFiles, overlaps, safeJoin, sha256Bytes } from "../../installer/lib/common.js"
+import {
+    assertGitIgnored,
+    assertRelativePath,
+    BuildError,
+    canonicalPath,
+    childEnv,
+    defaultOutDir,
+    execFile,
+    listFiles,
+    overlaps,
+    resolveOutputRoot,
+    safeJoin,
+    sha256Bytes,
+    type ExecFn,
+} from "../../installer/lib/common.js"
 import {
     artifactName,
     assertProductionSet,
@@ -182,13 +196,141 @@ describe("paths, inventory and environment", () => {
         assert.equal(steps.at(-1), "node dist-test/installer/build-portable.js", "user arguments reach the builder")
     })
 
-    test("command line options: --out is required, unknown options refused", () => {
-        assert.throws(() => parseArgs([], PROJECT_ROOT), /--out is required/)
+    test("command line options: --out defaults to <repoRoot>\\build, unknown options refused", () => {
+        assert.deepEqual(parseArgs([], PROJECT_ROOT), {
+            repoRoot: PROJECT_ROOT, outDir: path.join(PROJECT_ROOT, "build"), runtimeCache: undefined, dryRun: false, allowDirty: false, keepWork: false,
+        })
+        assert.equal(parseArgs(["--dry-run"], PROJECT_ROOT).outDir, defaultOutDir(PROJECT_ROOT))
         assert.throws(() => parseArgs(["--out"], PROJECT_ROOT), /needs a value/)
         assert.throws(() => parseArgs(["--out", "C:\\x", "--force"], PROJECT_ROOT), /unknown argument/)
         assert.deepEqual(parseArgs(["--out", "C:\\out dir é", "--dry-run", "--runtime-cache", "C:\\cache"], PROJECT_ROOT), {
             repoRoot: PROJECT_ROOT, outDir: "C:\\out dir é", runtimeCache: "C:\\cache", dryRun: true, allowDirty: false, keepWork: false,
         })
+    })
+})
+
+describe("output root: outside the repository or exactly <repo>\\build", () => {
+    /** A synthetic repository with a few project folders (nothing is built). */
+    function repo(): string {
+        const r = path.join(dir("repo"), "repo é")
+        for (const d of ["src", "installer", "test"]) fs.mkdirSync(path.join(r, d), { recursive: true })
+        return r
+    }
+    function junction(target: string): string {
+        const link = path.join(dir("links"), "link é")
+        fs.symlinkSync(target, link, "junction")
+        return link
+    }
+
+    test("the dedicated build folder is accepted, missing or as a real directory, in any letter case or alias of the repository", () => {
+        const r = repo()
+        const real = canonicalPath(r)
+        const missing = resolveOutputRoot(defaultOutDir(r), r)
+        assert.deepEqual(missing, { repo: real, out: path.join(real, "build"), repoBuild: path.join(real, "build"), inRepoBuild: true })
+        assert.equal(fs.existsSync(path.join(r, "build")), false, "nothing created by the check")
+        fs.mkdirSync(path.join(r, "build"))
+        assert.equal(resolveOutputRoot(path.join(r, "build"), r).inRepoBuild, true)
+        assert.equal(resolveOutputRoot(path.join(r.toUpperCase(), "BUILD"), r).inRepoBuild, true)
+        assert.equal(resolveOutputRoot(path.join(junction(r), "build"), r).inRepoBuild, true, "an alias of the repository above it is resolved")
+        const outside = dir("outside out")
+        assert.deepEqual(resolveOutputRoot(outside, r), { repo: real, out: canonicalPath(outside), repoBuild: path.join(real, "build"), inRepoBuild: false })
+    })
+
+    test("any other place in the repository is refused: root, src, installer, test, build\\<sub>, traversal, a parent of the repository", () => {
+        const r = repo()
+        fs.mkdirSync(path.join(r, "build"))
+        for (const out of [r, path.join(r, "src"), path.join(r, "installer"), path.join(r, "installer", "out"), path.join(r, "test"), path.join(r, "build", "sub"), path.join(r, "build", "runtime-cache"), `${r}\\build\\..\\src`, `${r}\\build\\.\\..\\installer`, path.join(r, "dist"), path.dirname(r)]) {
+            assert.throws(() => resolveOutputRoot(out, r), (error: unknown) => error instanceof BuildError && /must be outside the repository \(or exactly its build folder .*\) and must not contain it/.test(error.message), out)
+        }
+        assert.throws(() => resolveOutputRoot("build", r), /absolute path/)
+    })
+
+    test("<repo>\\build redirected by a junction (outside, or into the sources) or that is a file: refused", () => {
+        const r = repo()
+        const external = dir("external target")
+        fs.symlinkSync(external, path.join(r, "build"), "junction")
+        assert.throws(() => resolveOutputRoot(path.join(r, "build"), r), /--out goes through a link or junction inside the repository, refused/)
+        assert.throws(() => resolveOutputRoot(path.join(r, "build", "sub"), r), /link or junction inside the repository/)
+        assert.deepEqual(fs.readdirSync(external), [], "nothing written at the junction's target")
+
+        const s = repo()
+        fs.symlinkSync(path.join(s, "src"), path.join(s, "build"), "junction")
+        assert.throws(() => resolveOutputRoot(path.join(s, "build"), s), /must be outside the repository/)
+
+        const f = repo()
+        fs.writeFileSync(path.join(f, "build"), "a file")
+        assert.throws(() => resolveOutputRoot(path.join(f, "build"), f), /exists and is not a directory/)
+
+        const deep = repo()
+        fs.symlinkSync(dir("external deep"), path.join(deep, "src", "out link"), "junction")
+        assert.throws(() => resolveOutputRoot(path.join(deep, "src", "out link"), deep), /link or junction inside the repository/)
+    })
+
+    test("<repo>\\build as a directory symbolic link: refused (skipped without the symlink privilege)", (t) => {
+        const r = repo()
+        try {
+            fs.symlinkSync(dir("symlink target"), path.join(r, "build"), "dir")
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "EPERM") return t.skip("this account cannot create directory symlinks")
+            throw error
+        }
+        assert.throws(() => resolveOutputRoot(path.join(r, "build"), r), /link or junction inside the repository/)
+    })
+
+    test("assertGitIgnored: only patterns are checked; not ignored or a git failure stops the build", () => {
+        const seen: (readonly string[])[] = []
+        const fake = (status: number): ExecFn => (file, args) => {
+            seen.push([file, ...args])
+            return { status, stdout: "", stderr: status === 128 ? "fatal: not a git repository" : "" }
+        }
+        assertGitIgnored("C:\\r", "build/x.zip", fake(0), {})
+        assert.deepEqual(seen[0], ["git", "-C", "C:\\r", "check-ignore", "-q", "--no-index", "--", "build/x.zip"])
+        assert.throws(() => assertGitIgnored("C:\\r", "build/x.zip", fake(1), {}), /build\/x\.zip is not ignored by Git: add "\/build\/" to \.gitignore/)
+        assert.throws(() => assertGitIgnored("C:\\r", "build/x.zip", fake(128), {}), /git check-ignore failed \(exit 128\): fatal/)
+    })
+})
+
+describe("the repository's .gitignore and the build folder (real git, synthetic repository)", () => {
+    const gitignore = fs.readFileSync(path.join(PROJECT_ROOT, ".gitignore"), "utf8")
+    const ARTIFACTS = [
+        "fluent-reader-mcp-v0.1.4-beta-win-x64.zip", "fluent-reader-mcp-v0.1.4-beta-win-x64.zip.sha256", "fluent-reader-mcp-v0.1.4-beta-win-x64.zip.build-report.json",
+        "FluentReaderMCP-Setup-v0.1.4-beta-win-x64.exe", "FluentReaderMCP-Setup-v0.1.4-beta-win-x64.exe.sha256", "FluentReaderMCP-Setup-v0.1.4-beta-win-x64.exe.build-report.json",
+        "fluent-reader-mcp-v0.1.4-beta-win-x64.zip.partial", "runtime-cache/node-v24.22.1-win-x64.zip", "work-0.1.4/stage/x.js", "work-installer-0.1.4/payload/y.js",
+    ]
+
+    function git(cwd: string, args: string[]): { status: number | null; stdout: string } {
+        const empty = path.join(root, "empty-gitconfig")
+        if (!fs.existsSync(empty)) fs.writeFileSync(empty, "")
+        const r = execFile("git", ["-C", cwd, ...args], { cwd, env: { ...childEnv(process.env), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: empty } })
+        assert.equal(r.error, undefined)
+        return { status: r.status, stdout: r.stdout }
+    }
+
+    test("/build/ is ignored at the root only", () => {
+        assert.ok(gitignore.split(/\r?\n/).includes("/build/"))
+        for (const ignored of ARTIFACTS.map((a) => `build/${a}`)) assert.equal(git(PROJECT_ROOT, ["check-ignore", "-q", "--no-index", "--", ignored]).status, 0, ignored)
+        for (const kept of ["installer/build-portable.ts", "installer/build-installer.ts", "src/main.ts", "installer/lib/pipeline.ts", "src/build/x.ts", "test/build/x.ts", "installer/build/x.ts", "build.ts"]) {
+            assert.equal(git(PROJECT_ROOT, ["check-ignore", "-q", "--no-index", "--", kept]).status, 1, `${kept} not ignored`)
+        }
+    })
+
+    test("artifacts in build\\ leave the working tree clean (no --allow-dirty needed); a source change still shows", () => {
+        const r = path.join(dir("git repo"), "repo")
+        fs.mkdirSync(r, { recursive: true })
+        assert.equal(git(r, ["init", "-q"]).status, 0)
+        fs.writeFileSync(path.join(r, ".gitignore"), gitignore)
+        fs.mkdirSync(path.join(r, "src"))
+        fs.writeFileSync(path.join(r, "src", "main.ts"), "export {}\n")
+        assert.equal(git(r, ["add", "--", ".gitignore", "src/main.ts"]).status, 0)
+        const before = git(r, ["status", "--porcelain=v1", "--untracked-files=all"]).stdout
+        for (const a of ARTIFACTS) {
+            fs.mkdirSync(path.dirname(path.join(r, "build", ...a.split("/"))), { recursive: true })
+            fs.writeFileSync(path.join(r, "build", ...a.split("/")), a)
+        }
+        assert.equal(git(r, ["status", "--porcelain=v1", "--untracked-files=all"]).stdout, before, "the artifacts are invisible to git status")
+        assert.equal(git(r, ["status", "--porcelain=v1", "--untracked-files=all", "--ignored"]).stdout.includes("!! build/"), true)
+        fs.writeFileSync(path.join(r, "src", "new.ts"), "export {}\n")
+        assert.match(git(r, ["status", "--porcelain=v1", "--untracked-files=all"]).stdout, /\?\? src\/new\.ts/)
     })
 })
 

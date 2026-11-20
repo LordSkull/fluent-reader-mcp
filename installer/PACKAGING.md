@@ -50,15 +50,26 @@ npm.cmd run typecheck
 npm.cmd test
 
 # 1. Prova a secco (vedi sotto che cosa scrive e che cosa no)
-npm.cmd run package:win -- --out "D:\FluentReaderMCP-build" --dry-run
+npm.cmd run package:win -- --dry-run
 
-# 2. Build reale
-npm.cmd run package:win -- --out "D:\FluentReaderMCP-build"
+# 2. Build reale: ZIP, .sha256 e report in D:\fluent-reader-mcp\build\
+npm.cmd run package:win
 ```
 
-`--out` è obbligatorio: deve essere un percorso assoluto **fuori** dalla repository, anche dopo aver risolto
-collegamenti e junction. Spazi e caratteri Unicode sono ammessi (gli argomenti non passano mai per una shell; lo
-script npm invoca solo `node`).
+Senza `--out` l'output è la cartella dedicata **`<repository>\build`** (qui `D:\fluent-reader-mcp\build\`), ignorata
+da Git con la regola `/build/` di `.gitignore`: gli artefatti non sporcano il working tree e la build successiva
+dell'installer non richiede `--allow-dirty`. Il builder lo verifica con `git check-ignore` prima di scrivere e si
+ferma se la regola manca. `build` deve essere una cartella reale: se è una junction, un collegamento simbolico o un
+file, la build è rifiutata.
+
+`--out <dir>` resta disponibile: un percorso assoluto **fuori** dalla repository (anche dopo aver risolto
+collegamenti e junction), oppure esattamente `<repository>\build`. Qualsiasi altra cartella della repository
+(`src\`, `installer\`, `build\<sottocartella>`, la radice...) è rifiutata. Spazi e caratteri Unicode sono ammessi
+(gli argomenti non passano mai per una shell; lo script npm invoca solo `node`).
+
+Il builder **non sovrascrive mai** un pacchetto della stessa versione: se in `build\` esistono già lo ZIP, il suo
+`.sha256`, il report, un loro `.partial` o la cartella `work-<versione>`, la build si ferma senza toccarli. Per
+ricostruire la stessa versione si spostano o cancellano a mano quei file (il builder non lo fa mai da solo).
 
 ### Che cosa scrive il dry-run
 
@@ -74,7 +85,8 @@ Opzioni:
 | Opzione | Effetto |
 | --- | --- |
 | `--dry-run` | Il builder esegue i controlli e verifica l'eventuale runtime in cache; non scarica e non crea file (la compilazione npm che lo precede aggiorna `dist-test/`) |
-| `--runtime-cache <dir>` | Cache del runtime (default `<out>\runtime-cache`); riusabile fra build; deve essere disgiunta da repository, cartella di lavoro, staging, verifica e artefatti |
+| `--out <dir>` | Cartella di output (default `<repository>\build`); fuori dalla repository oppure esattamente `<repository>\build` |
+| `--runtime-cache <dir>` | Cache del runtime (default `<out>\runtime-cache`, quindi `build\runtime-cache`); riusabile fra build; deve essere disgiunta da cartella di lavoro, staging, verifica e artefatti, e dalla repository salvo `<repository>\build\runtime-cache` |
 | `--allow-dirty` | Consente modifiche non committate; registrato come `gitDirty: true` nel manifest |
 | `--keep-work` | Conserva `<out>\work-<versione>` (staging e verifica) per ispezione |
 
@@ -85,10 +97,13 @@ Opzioni:
    pulito; output **mai sovrascritto** (ZIP, `.sha256`, report, i loro `.partial` o la cartella di lavoro già
    esistenti fermano la build). I percorsi sono controllati nella forma **canonica**: per `--out` e
    `--runtime-cache` l'antenato esistente è risolto con `realpath` (collegamenti, junction, nomi 8.3, maiuscole) e i
-   segmenti mancanti sono aggiunti. `--out` non può stare dentro la repository né contenerla; la cache non può
-   sovrapporsi (in nessuno dei due sensi) a repository, `work-<versione>`, `stage\FluentReaderMCP`, `verify` o agli
-   artefatti finali o ai loro nomi temporanei `.partial`; un collegamento pendente sul percorso è rifiutato. Tutte le scritture usano poi il percorso
-   canonico. Questi controlli avvengono prima di qualsiasi download, `npm ci` o scrittura; non proteggono da un
+   segmenti mancanti sono aggiunti. `--out` non può contenere la repository né stare al suo interno, con l'unica
+   eccezione della cartella dedicata `<repository>\build` (cartella reale, ignorata da Git); la cache non può
+   sovrapporsi (in nessuno dei due sensi) alla repository, salvo `<repository>\build\runtime-cache`, né a
+   `work-<versione>`, `stage\FluentReaderMCP`, `verify` o agli artefatti finali o ai loro nomi temporanei
+   `.partial`; un collegamento pendente sul percorso è rifiutato, e così una junction o un collegamento simbolico
+   **dentro** la repository lungo il percorso di `--out` o della cache (per esempio `build` o `build\runtime-cache`
+   che rimandano altrove). Tutte le scritture usano poi il percorso canonico. Questi controlli avvengono prima di qualsiasi download, `npm ci` o scrittura; non proteggono da un
    processo locale che modifichi le junction durante la build.
 2. **Runtime:** usa `runtime-cache\node-v24.22.1-win-x64.zip` solo se il suo SHA-256 è quello fissato (un file in
    cache diverso viene segnalato e lasciato dov'è); altrimenti lo scarica dall'URL ufficiale in un file `.partial`,
@@ -160,12 +175,15 @@ va cancellata prima della build successiva.
 ## Output
 
 ```text
-D:\FluentReaderMCP-build\
+D:\fluent-reader-mcp\build\
   fluent-reader-mcp-v0.1.4-beta-win-x64.zip
   fluent-reader-mcp-v0.1.4-beta-win-x64.zip.sha256
   fluent-reader-mcp-v0.1.4-beta-win-x64.zip.build-report.json
   runtime-cache\node-v24.22.1-win-x64.zip
 ```
+
+Nella stessa cartella l'installer (`npm.cmd run installer:win`, vedi [INSTALLER.md](INSTALLER.md)) aggiunge
+`FluentReaderMCP-Setup-v0.1.4-beta-win-x64.exe` con il suo `.sha256` e il suo report.
 
 Il nome deriva da `package.json` (`0.1.4`) più l'etichetta di canale `beta` e la piattaforma `win-x64`.
 Una nuova beta ha una nuova versione in `package.json` (decisione del proprietario: 0.1.0 → 0.1.1 → 0.1.2 → 0.1.3 → 0.1.4, suffisso `-beta`
@@ -191,7 +209,7 @@ FluentReaderMCP/
 ## Verifica manuale
 
 ```powershell
-$zip = "D:\FluentReaderMCP-build\fluent-reader-mcp-v0.1.4-beta-win-x64.zip"
+$zip = "D:\fluent-reader-mcp\build\fluent-reader-mcp-v0.1.4-beta-win-x64.zip"
 (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLower()
 Get-Content -LiteralPath "$zip.sha256"
 ```
@@ -212,8 +230,11 @@ Avvio manuale del pacchetto estratto (il server parla MCP su stdin/stdout; si us
   esempio dopo un'interruzione del processo, o se il log "Cleanup: …" li elenca), vanno controllati e cancellati a
   mano: la build successiva si ferma finché esistono.
 - `<out>\runtime-cache`: si può conservare per le build successive (viene riverificata ogni volta) o cancellare.
-- Per rimuovere tutto: cancellare la cartella `--out`. Il builder non scrive altrove, salvo una cartella
-  temporanea `frmcp-package-selftest-*` in `%TEMP%`, rimossa al termine dell'auto-test.
+- Per rimuovere tutto: cancellare la cartella `--out` (di default `<repository>\build`, ignorata da Git: non
+  contiene sorgenti). Il builder non scrive altrove, salvo una cartella temporanea `frmcp-package-selftest-*` in
+  `%TEMP%`, rimossa al termine dell'auto-test.
+- Cartelle di output di build precedenti fuori dalla repository (per esempio `D:\FluentReaderMCP-build-0.1.4`) non
+  sono più necessarie: il builder non le usa, non le sposta e non le cancella; si possono archiviare o rimuovere a mano.
 
 ## Runtime Node.js fissato
 

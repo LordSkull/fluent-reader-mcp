@@ -8,7 +8,8 @@
  *     to the bundle's hash; every ZIP entry read back (CRC, safe names);
  *     the manifest complete and equal to the entries (size, SHA-256), the
  *     runtime the pinned Node.js, the server entrypoint, the Koffi module,
- *     no forbidden content; output paths canonical, outside the repository;
+ *     no forbidden content; output paths canonical, outside the repository
+ *     or exactly <repo>/build (the default, a real directory ignored by Git);
  *     makensis.exe (NSIS 3, already installed by the owner: never
  *     downloaded) with the headers and plugins the script uses;
  *  2. payload in <out>\work-installer-<version>: the package extracted to
@@ -27,7 +28,7 @@ import { isDeepStrictEqual } from "node:util"
 import { INVENTORY, buildInventory } from "../setup/app.js"
 import { LAYOUT } from "../setup/checks.js"
 import { helperCopyEntries } from "../setup/uninstall.js"
-import { assertRelativePath, BuildError, canonicalPath, childEnv, compareOrdinal, listFiles, overlaps, pathExists, safeJoin, sha256Bytes, sha256File, type ExecFn } from "./common.js"
+import { assertGitIgnored, assertRelativePath, BUILD_DIR, BuildError, canonicalPath, childEnv, compareOrdinal, listFiles, overlaps, pathExists, resolveOutputRoot, safeJoin, sha256Bytes, sha256File, type ExecFn } from "./common.js"
 import { artifactName, ENTRYPOINT, forbiddenFiles, INFO, KOFFI_NATIVE, MANIFEST, PACKAGE_ROOT, PRODUCT_ID, PRODUCT_NAME, RUNTIME_EXE, TOOLS, verifyManifest, type Manifest } from "./package-content.js"
 import { assertHardLinks, OwnedFiles, preparedName, promoteArtifacts, type CheckpointStep } from "./pipeline.js"
 import { parseRuntimeLock } from "./runtime-lock.js"
@@ -219,11 +220,8 @@ export async function buildInstaller(options: InstallerOptions, deps: InstallerD
     const { manifest, files } = checkBundleEntries(readZip(bundleBytes), { version, runtimeVersion: lock.version, runtimeSha256: lock.sha256 })
     log(`Bundle: ${path.basename(bundle)} sha256 ${actualSha}, ${manifest.files.length} files, commit ${manifest.source.gitCommit.slice(0, 12)}${manifest.source.gitDirty ? " (dirty)" : ""}, Node.js ${manifest.runtime.version}`)
 
-    // 1c. outputs
-    if (!path.isAbsolute(options.outDir)) throw new BuildError("--out must be an absolute path")
-    const repo = canonicalPath(options.repoRoot)
-    const out = canonicalPath(options.outDir)
-    if (overlaps(out, repo)) throw new BuildError(`--out must be outside the repository and must not contain it (links and junctions resolved: ${out})`)
+    // 1c. outputs: outside the repository, or exactly <repo>/build (the default)
+    const { out, inRepoBuild } = resolveOutputRoot(options.outDir, options.repoRoot)
     const work = path.join(out, `work-installer-${version}`)
     const exePath = path.join(out, installerName(version))
     const shaPath = `${exePath}.sha256`
@@ -235,6 +233,8 @@ export async function buildInstaller(options: InstallerOptions, deps: InstallerD
     for (const existing of [exePath, shaPath, reportPath, preparedName(exePath), preparedName(shaPath), preparedName(reportPath), work]) {
         if (pathExists(existing)) throw new BuildError(`already exists, nothing is overwritten: ${existing}`)
     }
+    // Artifacts in <repo>/build must never make the working tree dirty.
+    if (inRepoBuild) assertGitIgnored(options.repoRoot, `${BUILD_DIR}/${path.basename(exePath)}`, deps.exec, deps.env)
     const closure = setupClosure(deps.compiledRoot)
     const template = path.join(options.repoRoot, "installer", "nsis", "fluent-reader-mcp.nsi")
     if (!fs.existsSync(template)) throw new BuildError("installer/nsis/fluent-reader-mcp.nsi not found")

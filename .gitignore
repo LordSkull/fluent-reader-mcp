@@ -2,6 +2,8 @@ node_modules/
 dist/
 dist-test/
 docs/
+# Output of package:win and installer:win (ZIP, installer, checksums, reports, runtime cache).
+/build/
 *.tsbuildinfo
 *.log
 

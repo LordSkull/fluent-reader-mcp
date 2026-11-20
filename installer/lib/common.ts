@@ -89,6 +89,78 @@ export function canonicalPath(p: string): string {
     return path.join(real, ...missing)
 }
 
+/** The only folder inside the repository where the builders may write (ignored by Git as "/build/"). */
+export const BUILD_DIR = "build"
+
+/** Default --out of both builders: <repoRoot>\build. */
+export function defaultOutDir(repoRoot: string): string {
+    return path.join(repoRoot, BUILD_DIR)
+}
+
+/**
+ * Refuses a link or junction INSIDE the repository on the way to `p`, at any
+ * level (for example <repo>\build or <repo>\build\runtime-cache redirected
+ * elsewhere): the canonical form alone would accept such a path as external.
+ * Links above the repository (or outside it) are resolved as before.
+ */
+export function assertNoLinkInRepository(p: string, repo: string, what: string): void {
+    let current = path.resolve(p)
+    for (;;) {
+        const parent = path.dirname(current)
+        if (parent === current) return
+        if (pathExists(current) && fs.lstatSync(current).isSymbolicLink() && isInside(canonicalPath(parent), repo)) {
+            throw new BuildError(`${what} goes through a link or junction inside the repository, refused: ${current}`)
+        }
+        current = parent
+    }
+}
+
+export interface OutputRoot {
+    /** Canonical repository root. */
+    readonly repo: string
+    /** Canonical --out. */
+    readonly out: string
+    /** Canonical <repo>\build. */
+    readonly repoBuild: string
+    /** Whether --out is the repository's dedicated build folder. */
+    readonly inRepoBuild: boolean
+}
+
+/**
+ * --out on its CANONICAL form (links, junctions, 8.3 names, letter case
+ * resolved): either outside the repository and not containing it, or exactly
+ * the dedicated <repo>\build folder, which must be a real directory (not a
+ * link or junction, not a file). Any other place in the repository (src,
+ * installer, build\<sub>, the root...) is refused, and so is any link or
+ * junction inside the repository on the way to --out.
+ */
+export function resolveOutputRoot(outDir: string, repoRoot: string): OutputRoot {
+    if (!path.isAbsolute(outDir)) throw new BuildError("--out must be an absolute path")
+    const repo = canonicalPath(repoRoot)
+    const out = canonicalPath(outDir)
+    const repoBuild = path.join(repo, BUILD_DIR)
+    const inRepoBuild = samePath(out, repoBuild)
+    if (!inRepoBuild && overlaps(out, repo)) {
+        throw new BuildError(`--out must be outside the repository (or exactly its build folder ${repoBuild}) and must not contain it (links and junctions resolved: ${out})`)
+    }
+    assertNoLinkInRepository(outDir, repo, "--out")
+    if (inRepoBuild && pathExists(repoBuild) && !fs.lstatSync(repoBuild).isDirectory()) throw new BuildError(`${repoBuild} exists and is not a directory`)
+    return { repo, out, repoBuild, inRepoBuild }
+}
+
+/**
+ * Checks with Git that `relative` (a "/"-separated path under the repository)
+ * is ignored, so the artifacts written in <repo>\build never make the working
+ * tree dirty. Only patterns are consulted (--no-index); nothing is written.
+ */
+export function assertGitIgnored(repoRoot: string, relative: string, exec: ExecFn, env: NodeJS.ProcessEnv): void {
+    const result = exec("git", ["-C", repoRoot, "check-ignore", "-q", "--no-index", "--", relative], { cwd: repoRoot, env: childEnv(env) })
+    if (result.error !== undefined) throw new BuildError(`git check-ignore: could not start git (${result.error.message})`)
+    if (result.status === 0) return
+    if (result.status === 1) throw new BuildError(`${relative} is not ignored by Git: add "/${BUILD_DIR}/" to .gitignore, or the artifacts would make the working tree dirty`)
+    throw new BuildError(`git check-ignore failed (exit ${String(result.status)}): ${result.stderr.trim()}`)
+}
+
 /**
  * Validates a package-relative path written with "/" separators: no empty,
  * "." or ".." segment, no backslash, drive, colon, NUL or leading slash.

@@ -15,7 +15,11 @@ import fs from "node:fs"
 import path from "node:path"
 import { after, before, describe, test } from "node:test"
 import { isDeepStrictEqual } from "node:util"
-import { BuildError, canonicalPath, isInside, sha256Bytes, type ExecFn } from "../../installer/lib/common.js"
+import { fileURLToPath } from "node:url"
+import { parseInstallerArgs } from "../../installer/build-installer.js"
+import { parseArgs } from "../../installer/build-portable.js"
+import { BuildError, canonicalPath, defaultOutDir, isInside, sha256Bytes, type ExecFn } from "../../installer/lib/common.js"
+import { buildInstaller, installerName, NSIS_REQUIREMENTS } from "../../installer/lib/installer-build.js"
 import { LEGACY_ACTIVATION_ENV_VARS, PROJECT_LICENSE, SUPPLIED_LICENSES } from "../../installer/lib/package-content.js"
 import { assertHardLinks, buildPortable, NPM_REGISTRY, OwnedFiles, promoteArtifacts, type BuildDeps, type BuildOptions, type CheckpointStep } from "../../installer/lib/pipeline.js"
 import type { FetchFn } from "../../installer/lib/runtime.js"
@@ -122,6 +126,8 @@ interface Fakes {
     readonly selfTests: string[]
     readonly npmCalls: NpmCall[]
     readonly lines: string[]
+    /** Paths given to `git check-ignore`. */
+    readonly checkIgnored: string[]
 }
 
 interface FakeOptions {
@@ -135,6 +141,8 @@ interface FakeOptions {
     readonly platform?: string
     readonly npmFails?: boolean
     readonly checkpoint?: BuildDeps["checkpoint"]
+    /** The fake git reports <repo>/build as NOT ignored. */
+    readonly notIgnored?: boolean
 }
 
 /** What the fake npm saw: arguments, environment, and the content of the config files it resolved. */
@@ -155,6 +163,7 @@ function fakes(fx: Fixture, options: FakeOptions = {}): Fakes {
     const selfTests: string[] = []
     const npmCalls: NpmCall[] = []
     const lines: string[] = []
+    const checkIgnored: string[] = []
     const ok = (stdout = ""): ReturnType<ExecFn> => ({ status: 0, stdout, stderr: "" })
     const exec: ExecFn = (file, args, opts) => {
         calls.push(`${path.basename(file)} ${args[0] === undefined ? "" : path.basename(args[0])}`)
@@ -164,6 +173,10 @@ function fakes(fx: Fixture, options: FakeOptions = {}): Fakes {
             if (args.includes("rev-parse")) return ok(`${COMMIT}\n`)
             if (args.includes("status")) return ok(options.dirty === true ? " M src/x.ts\n" : "")
             if (args.includes("log")) return ok(`${EPOCH}\n`)
+            if (args.includes("check-ignore")) {
+                checkIgnored.push(args[args.length - 1] as string)
+                return options.notIgnored === true ? { status: 1, stdout: "", stderr: "" } : ok()
+            }
         }
         if (file.endsWith(path.join("runtime", "node.exe"))) {
             if (args[0] === "--version") return ok(`v${options.runtimeVersion ?? VERSION}\n`)
@@ -268,7 +281,7 @@ ${configs.includes("_authToken") ? configs : ""}`)
         log: (line) => lines.push(line),
         ...(options.checkpoint !== undefined && { checkpoint: options.checkpoint }),
     }
-    return { deps, calls, fetched, selfTests, npmCalls, lines }
+    return { deps, calls, fetched, selfTests, npmCalls, lines, checkIgnored }
 }
 
 function options(fx: Fixture, extra: Partial<BuildOptions> = {}): BuildOptions {
@@ -922,4 +935,171 @@ describe("ownership of the temporary files", { timeout: 120_000 }, () => {
         assert.equal(fs.existsSync(mine), false)
         assert.deepEqual(owned.list("temporary"), [])
     })
+})
+
+describe("the dedicated <repo>\\build folder (default output)", { timeout: 120_000 }, () => {
+    const COMPILED_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..")
+    const EXE = installerName("0.1.0")
+
+    /** The repository's content outside build\ (which the builders may write). */
+    function outsideBuild(repo: string): Map<string, string> {
+        return new Map([...snapshotDir(repo)].filter(([key]) => key !== "build" && !key.startsWith("build/")))
+    }
+
+    async function refusedBeforeWriting(fx: Fixture, opts: BuildOptions, message: RegExp, f = fakes(fx)): Promise<void> {
+        const repoBefore = snapshotDir(fx.repo)
+        await assert.rejects(buildPortable(opts, f.deps), (error: unknown) => error instanceof BuildError && message.test(error.message))
+        assert.deepEqual(f.fetched, [], "nothing downloaded")
+        assert.equal(f.npmCalls.length, 0, "npm not started")
+        assert.deepEqual(snapshotDir(fx.repo), repoBefore, "repository untouched, build\\ included")
+    }
+
+    function junction(target: string, link: string): void {
+        fs.symlinkSync(target, link, "junction")
+    }
+
+    function externalDir(label: string): string {
+        counter++
+        const d = path.join(root, `${label} ${counter} é`)
+        fs.mkdirSync(d)
+        return d
+    }
+
+    test("no --out: ZIP, .sha256, report and runtime cache in <repo>\\build; checked as ignored by Git; nothing else in the repository changes", async () => {
+        const fx = fixture()
+        const before = outsideBuild(fx.repo)
+        const f = fakes(fx)
+        const opts = parseArgs([], fx.repo)
+        assert.equal(opts.outDir, path.join(fx.repo, "build"))
+        const result = await buildPortable(opts, f.deps)
+        const build = path.join(canonicalPath(fx.repo), "build")
+        assert.equal(result.zipPath, path.join(build, ZIP_NAME))
+        assert.deepEqual(fs.readdirSync(build).sort(), [...FINALS, "runtime-cache"].sort(), "work directory removed, no partial file")
+        assert.deepEqual(fs.readdirSync(path.join(build, "runtime-cache")), [`${ARCHIVE_ROOT}.zip`], "default runtime cache in build\\runtime-cache")
+        assert.equal(fs.readFileSync(`${result.zipPath}.sha256`, "utf8"), `${result.sha256} *${ZIP_NAME}\n`)
+        assert.deepEqual(f.checkIgnored, [`build/${ZIP_NAME}`])
+        assert.deepEqual(outsideBuild(fx.repo), before, "sources, installer and tests untouched")
+    })
+
+    test("ZIP and installer built one after the other in the same <repo>\\build, both without --out; the bundle's hash stays required", async () => {
+        const fx = fixture()
+        const f = fakes(fx)
+        const portable = await buildPortable(parseArgs([], fx.repo), f.deps)
+        assert.ok(portable.sha256 !== null)
+        // NSIS is simulated: a makensis.exe that writes a small fake installer at OUTFILE.
+        const nsisDir = externalDir("NSIS")
+        for (const r of NSIS_REQUIREMENTS) write(path.join(nsisDir, ...r.split("/")), "synthetic")
+        const makensis = path.join(nsisDir, "makensis.exe")
+        write(makensis, "synthetic makensis")
+        write(path.join(fx.repo, "installer", "nsis", "fluent-reader-mcp.nsi"), "; synthetic script")
+        const exec: ExecFn = (file, args, opts) => {
+            if (file !== makensis) return f.deps.exec(file, args, opts)
+            if (args[0] === "/VERSION") return { status: 0, stdout: "v3.13\n", stderr: "" }
+            const defines = fs.readFileSync(path.join(opts.cwd, "defines.nsh"), "utf8")
+            write(/!define OUTFILE "([^"]*)"/.exec(defines)?.[1] as string, Buffer.from("MZ synthetic installer"))
+            return { status: 0, stdout: "", stderr: "" }
+        }
+        const installerDeps = { platform: "win32", arch: "x64", env: {}, exec, log: () => undefined, compiledRoot: COMPILED_ROOT }
+        assert.throws(() => parseInstallerArgs(["--bundle", portable.zipPath], fx.repo), /--bundle-sha256 is required/)
+        await assert.rejects(buildInstaller(parseInstallerArgs(["--bundle", portable.zipPath, "--bundle-sha256", "0".repeat(64), "--makensis", makensis], fx.repo), installerDeps), /does not match --bundle-sha256/)
+        const zipBefore = fs.readFileSync(portable.zipPath)
+        const opts = parseInstallerArgs(["--bundle", portable.zipPath, "--bundle-sha256", portable.sha256, "--makensis", makensis], fx.repo)
+        assert.equal(opts.outDir, defaultOutDir(fx.repo))
+        const installer = await buildInstaller(opts, installerDeps)
+        const build = path.join(canonicalPath(fx.repo), "build")
+        assert.equal(installer.exePath, path.join(build, EXE))
+        assert.deepEqual(fs.readdirSync(build).sort(), [...FINALS, EXE, `${EXE}.build-report.json`, `${EXE}.sha256`, "runtime-cache"].sort())
+        assert.deepEqual(fs.readFileSync(portable.zipPath), zipBefore, "the ZIP is not touched by the installer build")
+        assert.deepEqual(f.checkIgnored, [`build/${ZIP_NAME}`, `build/${EXE}`])
+    })
+
+    test("a second build of the same version in <repo>\\build is refused: ZIP, .sha256 and report kept byte for byte", async () => {
+        const fx = fixture()
+        await buildPortable(parseArgs([], fx.repo), fakes(fx).deps)
+        const build = path.join(fx.repo, "build")
+        const before = snapshotDir(build)
+        const f = fakes(fx)
+        await assert.rejects(buildPortable(parseArgs([], fx.repo), f.deps), /already exists, nothing is overwritten/)
+        assert.deepEqual(snapshotDir(build), before)
+        assert.deepEqual(f.fetched, [])
+    })
+
+    for (const name of [...FINALS, ...FINALS.map((n) => `${n}.partial`), "work-0.1.0"]) {
+        test(`an existing ${name} in <repo>\\build stops the build before anything is written`, async () => {
+            const fx = fixture()
+            const target = path.join(fx.repo, "build", name)
+            if (name.startsWith("work-")) fs.mkdirSync(target, { recursive: true })
+            else write(target, `OWNER ${name}`)
+            await refusedBeforeWriting(fx, parseArgs([], fx.repo), /already exists, nothing is overwritten/)
+            if (!name.startsWith("work-")) assert.equal(fs.readFileSync(target, "utf8"), `OWNER ${name}`)
+        })
+    }
+
+    test("--out anywhere else in the repository is refused before writing: root, src, installer, build\\<sub>, traversal", async () => {
+        const fx = fixture()
+        fs.mkdirSync(path.join(fx.repo, "src"))
+        for (const out of [fx.repo, path.join(fx.repo, "src"), path.join(fx.repo, "installer"), path.join(fx.repo, "installer", "out"), path.join(fx.repo, "node_modules"), path.join(fx.repo, "build", "sub"), `${fx.repo}\\build\\..\\src`]) {
+            await refusedBeforeWriting(fx, options(fx, { outDir: out }), /must be outside the repository \(or exactly its build folder/)
+        }
+    })
+
+    test("<repo>\\build or <repo>\\build\\runtime-cache redirected by a junction: refused before writing, the target untouched", async () => {
+        const fx = fixture()
+        const target = externalDir("redirected build")
+        junction(target, path.join(fx.repo, "build"))
+        await refusedBeforeWriting(fx, parseArgs([], fx.repo), /--out goes through a link or junction inside the repository/)
+        assert.deepEqual(fs.readdirSync(target), [])
+
+        const other = fixture()
+        const cacheTarget = externalDir("redirected cache")
+        fs.mkdirSync(path.join(other.repo, "build"))
+        junction(cacheTarget, path.join(other.repo, "build", "runtime-cache"))
+        await refusedBeforeWriting(other, parseArgs([], other.repo), /--runtime-cache goes through a link or junction inside the repository/)
+        assert.deepEqual(fs.readdirSync(cacheTarget), [])
+
+        const intoSources = fixture()
+        fs.mkdirSync(path.join(intoSources.repo, "src"))
+        junction(path.join(intoSources.repo, "src"), path.join(intoSources.repo, "build"))
+        await refusedBeforeWriting(intoSources, parseArgs([], intoSources.repo), /must be outside the repository/)
+    })
+
+    test("runtime cache: <repo>\\build\\runtime-cache is accepted (also with an external --out); elsewhere in the repository or in build\\ refused", async () => {
+        const fx = fixture()
+        const external = options(fx, { runtimeCache: path.join(fx.repo, "build", "runtime-cache") })
+        const result = await buildPortable(external, fakes(fx).deps)
+        assert.ok(result.sha256 !== null)
+        assert.deepEqual(fs.readdirSync(path.join(fx.repo, "build")), ["runtime-cache"])
+        assert.deepEqual(fs.readdirSync(path.join(fx.repo, "build", "runtime-cache")), [`${ARCHIVE_ROOT}.zip`])
+        const other = fixture()
+        const base = parseArgs([], other.repo)
+        for (const cache of [path.join(other.repo, "build"), path.join(other.repo, "build", "cache"), path.join(other.repo, "build", "work-0.1.0", "cache"), path.join(other.repo, "src", "cache"), other.repo]) {
+            await refusedBeforeWriting(other, { ...base, runtimeCache: cache }, /--runtime-cache must not overlap the repository except inside .*runtime-cache/)
+        }
+    })
+
+    test("<repo>\\build not ignored by Git: refused before writing (the artifacts would dirty the tree)", async () => {
+        const fx = fixture()
+        await refusedBeforeWriting(fx, parseArgs([], fx.repo), /build\/fluent-reader-mcp-v0\.1\.0-beta-win-x64\.zip is not ignored by Git/, fakes(fx, { notIgnored: true }))
+        assert.equal(fs.existsSync(path.join(fx.repo, "build")), false)
+    })
+
+    test("dry run with the default output: every check, nothing created, not even build\\", async () => {
+        const fx = fixture()
+        const f = fakes(fx)
+        const result = await buildPortable(parseArgs(["--dry-run"], fx.repo), f.deps)
+        assert.equal(result.dryRun, true)
+        assert.equal(fs.existsSync(path.join(fx.repo, "build")), false)
+        assert.deepEqual(f.checkIgnored, [`build/${ZIP_NAME}`])
+    })
+
+    for (const step of ["promote:zip", "promote:report"] as const) {
+        test(`a fault at ${step} in <repo>\\build: rolled back, nothing published, owner files kept`, async () => {
+            const fx = fixture()
+            write(path.join(fx.repo, "build", "owner notes.txt"), "owner")
+            const f = fakes(fx, { checkpoint: (s) => { if (s === step) throw new Error(`injected fault at ${s}`) } })
+            await assert.rejects(buildPortable(parseArgs([], fx.repo), f.deps), /publication failed .*every artifact published by this run was removed/)
+            assert.deepEqual(fs.readdirSync(path.join(fx.repo, "build")).sort(), ["owner notes.txt", "runtime-cache"])
+            assert.equal(fs.readFileSync(path.join(fx.repo, "build", "owner notes.txt"), "utf8"), "owner")
+        })
+    }
 })

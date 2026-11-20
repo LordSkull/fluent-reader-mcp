@@ -5,7 +5,8 @@
  *  1. checks: Windows x64, package.json/lock versions, pinned runtime lock,
  *     build-machine prerequisites (Node 24, git, npm CLI, TypeScript), clean
  *     git tree; output paths checked on their CANONICAL form (links and
- *     junctions resolved): outside the repository, runtime cache disjoint
+ *     junctions resolved): outside the repository or exactly <repo>/build
+ *     (the default, a real directory ignored by Git), runtime cache disjoint
  *     from work/staging/verification/artifacts, nothing already existing;
  *  2. runtime: the pinned official Node ZIP, from cache or nodejs.org, kept
  *     only if its SHA-256 equals the pin; node.exe and LICENSE extracted;
@@ -33,7 +34,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { isDeepStrictEqual } from "node:util"
-import { BuildError, canonicalPath, childEnv, copyFile, listFiles, overlaps, pathExists, safeJoin, samePath, sha256File, sha256FileSync, type ExecFn } from "./common.js"
+import { assertGitIgnored, assertNoLinkInRepository, BUILD_DIR, BuildError, canonicalPath, childEnv, copyFile, isInside, listFiles, overlaps, pathExists, resolveOutputRoot, safeJoin, samePath, sha256File, sha256FileSync, type ExecFn } from "./common.js"
 import {
     artifactName,
     assertProductionSet,
@@ -396,6 +397,8 @@ function gitState(repoRoot: string, deps: BuildDeps): GitState {
 interface Outputs {
     /** Canonical --out: every write goes through it. */
     readonly out: string
+    /** Whether --out is the repository's dedicated <repo>/build folder. */
+    readonly inRepoBuild: boolean
     readonly redirected: boolean
     readonly zipPath: string
     readonly shaPath: string
@@ -413,26 +416,31 @@ export function preparedName(final: string): string {
 
 /**
  * Output layout from CANONICAL paths (links and junctions resolved), checked
- * before anything is downloaded or written: --out neither inside nor
- * containing the repository; the runtime cache disjoint from the repository,
- * the work, staging and verification directories and the artifacts; no
- * final or prepared artifact and no work directory already present.
+ * before anything is downloaded or written: --out outside the repository and
+ * not containing it, or exactly the dedicated <repo>/build folder; the
+ * runtime cache disjoint from the repository (except under
+ * <repo>/build/runtime-cache), the work, staging and verification
+ * directories and the artifacts; no link or junction inside the repository on
+ * the way to either; no final or prepared artifact and no work directory
+ * already present.
  */
 function outputs(options: BuildOptions, version: string): Outputs {
-    if (!path.isAbsolute(options.outDir)) throw new BuildError("--out must be an absolute path")
     if (options.runtimeCache !== undefined && !path.isAbsolute(options.runtimeCache)) throw new BuildError("--runtime-cache must be an absolute path")
-    const repo = canonicalPath(options.repoRoot)
-    const out = canonicalPath(options.outDir)
-    if (overlaps(out, repo)) throw new BuildError(`--out must be outside the repository and must not contain it (links and junctions resolved: ${out})`)
+    const { repo, out, repoBuild, inRepoBuild } = resolveOutputRoot(options.outDir, options.repoRoot)
     const work = path.join(out, `work-${version}`)
     const stage = path.join(work, "stage", PACKAGE_ROOT)
     const verify = path.join(work, "verify")
     const zipPath = path.join(out, artifactName(version))
     const shaPath = `${zipPath}.sha256`
     const reportPath = `${zipPath}.build-report.json`
-    const cache = canonicalPath(options.runtimeCache ?? path.join(out, "runtime-cache"))
+    const cachePath = options.runtimeCache ?? path.join(out, "runtime-cache")
+    const cache = canonicalPath(cachePath)
+    const repoCache = path.join(repoBuild, "runtime-cache")
+    if (overlaps(cache, repo) && !isInside(cache, repoCache)) {
+        throw new BuildError(`--runtime-cache must not overlap the repository except inside ${repoCache} (links and junctions resolved: ${cache})`)
+    }
+    assertNoLinkInRepository(cachePath, repo, "--runtime-cache")
     const protectedPaths: [string, string][] = [
-        [repo, "the repository"],
         [work, "the work directory"],
         [stage, "the staging directory"],
         [verify, "the verification directory"],
@@ -449,7 +457,7 @@ function outputs(options: BuildOptions, version: string): Outputs {
     for (const existing of [zipPath, shaPath, reportPath, preparedName(zipPath), preparedName(shaPath), preparedName(reportPath), work]) {
         if (pathExists(existing)) throw new BuildError(`already exists, nothing is overwritten: ${existing}`)
     }
-    return { out, redirected: !samePath(out, options.outDir), zipPath, shaPath, reportPath, work, stage, verify, cache }
+    return { out, inRepoBuild, redirected: !samePath(out, options.outDir), zipPath, shaPath, reportPath, work, stage, verify, cache }
 }
 
 /** Copies a production node_modules tree, refusing links and leaving out .bin and the hidden lockfile. */
@@ -472,6 +480,8 @@ export async function buildPortable(options: BuildOptions, deps: BuildDeps): Pro
     const git = gitState(options.repoRoot, deps)
     if (git.dirty && !options.allowDirty) throw new BuildError("the git working tree has changes: commit them, or pass --allow-dirty (recorded in the manifest)")
     const out = outputs(options, pkg.version)
+    // Artifacts in <repo>/build must never make the working tree dirty.
+    if (out.inRepoBuild) assertGitIgnored(options.repoRoot, `${BUILD_DIR}/${path.basename(out.zipPath)}`, deps.exec, deps.env)
     const warnings: string[] = []
     if (git.dirty) warnings.push("built from a working tree with uncommitted changes (gitDirty: true)")
     if (pkg.license === undefined) warnings.push("package.json declares no license: decide the project licence (D-13) before any distribution")
