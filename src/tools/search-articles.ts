@@ -36,6 +36,10 @@
  * Cursors are bound to the normalized query, fields and the list_articles
  * filters; a cursor keeps the running incompleteness count. Nothing about
  * the query is logged.
+ *
+ * groupDuplicates works as in list_articles (scanPage): only articles that
+ * match the query and every filter are grouped, a copy is reported with its
+ * own matchedIn, and the search's completeness counters are unchanged.
  */
 
 import type { CallToolResult } from "@modelcontextprotocol/server"
@@ -44,6 +48,7 @@ import { SEARCH_COLUMNS, SEARCH_COLUMN_BYTES_MAX, type EvaluatedRow, type Search
 import { NORMALIZED_EXPANSION_MAX, normalizeForSearch, normalizeQuery } from "../domain/text-match.js"
 import { CURSOR_TOKEN_LENGTH, type CursorEntry } from "../scan/cursors.js"
 import { loadGroups, type ToolContext } from "./context.js"
+import { finishGrouping, GROUPING_SKELETON, NO_PAGE_GROUPING, startGrouping, successorOptions } from "./duplicate-grouping.js"
 import { parseArgs } from "./input.js"
 import {
     checkBinding,
@@ -67,6 +72,8 @@ import {
     type SearchArticlesOutput,
     type SearchedArticle,
 } from "./schemas.js"
+
+type SearchedEarlierCopy = NonNullable<SearchArticlesOutput["earlierCopies"]>[number]
 
 export const SEARCH_ARTICLES = "search_articles"
 
@@ -160,26 +167,30 @@ async function run(context: ToolContext, input: SearchArticlesInput, limits: Sca
         urlsRedacted: true,
     }
     const max = Number.MAX_SAFE_INTEGER
+    const grouped = binding.groupDuplicates
     // Every page-dependent field at its longest serialization.
     const skeleton: SearchArticlesOutput = {
         articles: [],
+        ...(grouped && { earlierCopies: [] }),
         sort: binding.sort,
         pageSize: binding.pageSize,
         hasMore: false,
         nextCursor: "x".repeat(CURSOR_TOKEN_LENGTH),
         scan: { examined: max, exhausted: false, stoppedBy: LONGEST_STOPPED_BY, oversizeSkipped: max, invalidDateExcluded: max },
         search: { fields: binding.fields, textBytesLoaded: max, notSearchedTooLarge: max, notSearchedUnexpectedType: max, incompleteSoFar: max, exhaustive: false },
+        ...(grouped && { grouping: GROUPING_SKELETON }),
         matching: SEARCH_MATCHING,
         consistency: ARTICLE_LIST_CONSISTENCY,
         meta,
     }
     const budget = new PageBudget(resultLength(skeleton))
     const search = { fields: binding.fields, match: matcher(binding.fields, binding.query) }
+    const grouping = grouped ? startGrouping(context, entry, limits) : undefined
 
     let page: PageResult
     try {
         page = await context.database.withReadConnection((db) =>
-            scanPage(db, { binding, entry, filterSids, groupRevision, limits, identity: context.identity, budget, search }),
+            scanPage(db, { binding, entry, filterSids, groupRevision, limits, identity: context.identity, budget, search, ...(grouping !== undefined && { grouping }) }),
         )
     } catch (error) {
         if (isFrMcpError(error) && error.code === "CURSOR_STALE" && input.cursor !== undefined) context.cursors.invalidate(input.cursor)
@@ -187,12 +198,21 @@ async function run(context: ToolContext, input: SearchArticlesInput, limits: Sca
     }
 
     const incomplete = (entry?.state.incomplete ?? 0) + page.notSearchedTooLarge + page.notSearchedUnexpectedType + page.oversizeSkipped
+    const pageGrouping = page.grouping ?? NO_PAGE_GROUPING
+    const finished = grouping === undefined ? undefined : finishGrouping(grouping, pageGrouping, entry, page.exhausted)
     const nextCursor =
         page.next === null
             ? null
-            : context.cursors.create<SearchState>(SEARCH_ARTICLES, binding, { ...page.next, incomplete }, entry?.scanStartedAt ?? context.now())
+            : context.cursors.create<SearchState>(
+                  SEARCH_ARTICLES,
+                  binding,
+                  finished === undefined ? { ...page.next, incomplete } : { ...page.next, incomplete, grouping: finished.state },
+                  entry?.scanStartedAt ?? context.now(),
+                  successorOptions(finished, entry),
+              )
     const payload: SearchArticlesOutput = {
         articles: page.articles as SearchedArticle[],
+        ...(finished !== undefined && { earlierCopies: pageGrouping.earlierCopies as SearchedEarlierCopy[] }),
         sort: binding.sort,
         pageSize: binding.pageSize,
         hasMore: nextCursor !== null,
@@ -212,6 +232,7 @@ async function run(context: ToolContext, input: SearchArticlesInput, limits: Sca
             incompleteSoFar: incomplete,
             exhaustive: page.exhausted && incomplete === 0,
         },
+        ...(finished !== undefined && { grouping: finished.output }),
         matching: SEARCH_MATCHING,
         consistency: ARTICLE_LIST_CONSISTENCY,
         meta,
@@ -223,6 +244,6 @@ async function run(context: ToolContext, input: SearchArticlesInput, limits: Sca
         if (nextCursor !== null) context.cursors.invalidate(nextCursor)
         throw error
     }
-    if (entry !== undefined) entry.response = built.serialized
+    if (entry !== undefined) context.cursors.publish(entry, built.serialized, nextCursor)
     return built.result
 }

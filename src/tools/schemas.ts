@@ -10,6 +10,7 @@ import { SAMPLE_MAX } from "../domain/group-catalog.js"
 import { NOTE_ORDERS_MAX, NOTES_PER_PAGE_MAX, REGEX_CHECK_MAX, RULE_DIAGNOSTICS } from "../domain/rules.js"
 import { OPEN_TARGETS, TEXT_DIRECTIONS } from "../domain/sources.js"
 import { normalizeQuery, QUERY_CODE_POINTS_MAX } from "../domain/text-match.js"
+import { CONTRACT_NAME, CONTRACT_VERSION } from "../domain/duplicates.js"
 
 export const LIST_LIMIT_MAX = 500
 export const LIST_LIMIT_DEFAULT = 200
@@ -413,6 +414,14 @@ export const listArticlesInput = z
             .max(EXCERPT_CHARS_MAX)
             .optional()
             .describe(`Maximum Unicode code points of the stored plain-text excerpt per article (default ${EXCERPT_CHARS_DEFAULT}, 0 for none).`),
+        groupDuplicates: z
+            .boolean()
+            .optional()
+            .describe(
+                "true: return each story once, grouping copies of the same article published by different sources (Fluent Reader's rule, see grouping.semantics in the result). " +
+                    "Copies are listed under the representative's duplicates.copies, or in earlierCopies when found on a later page, and do not count toward pageSize. " +
+                    "Default false: every article separately, exactly as without this argument. Bound to the cursor.",
+            ),
         cursor: z
             .string()
             .max(128)
@@ -448,6 +457,81 @@ const listedArticle = z.strictObject({
     fieldIssues: z.array(articleFieldIssue).optional(),
 })
 
+// ---- Cross-source duplicates (groupDuplicates) ----
+
+/** Copies reported by one page, at most (duplicates.copies and earlierCopies together); the response limit allows about this many of the smallest entries. */
+export const DUPLICATE_COPIES_PAGE_MAX = 300
+
+/** Fixed description of the grouping (returned with every page of a listing or search with groupDuplicates). */
+export const GROUPING_SEMANTICS =
+    "Copies of one article from different sources, by Fluent Reader's rule (cross-source-duplicates v1): same publisher (host of the article link), " +
+    "same normalized title and snippet (snippet of at least 60 code points and 8 words), dates at most 10 minutes apart; never by title, link or guid alone. " +
+    "In stored order the first article of a story is its representative and takes a position (pageSize counts these); a later copy joins the earliest remembered story " +
+    "it fits (one article per source, at most 10 minutes from earliest to latest date) and is listed in duplicates.copies on the same page or in earlierCopies on a later one. " +
+    "Copies meet the same filters. More copies can follow until grouping.complete is true."
+
+const articleIdValue = z.number().int().min(1).max(Number.MAX_SAFE_INTEGER)
+const copyShape = {
+    articleId: articleIdValue,
+    sourceId: sourceId.nullable(),
+    sourceName: z.string().nullable(),
+    sourceNameTruncated: z.literal(true).optional(),
+    date: z.string().nullable(),
+    read: z.boolean().nullable(),
+}
+const searchColumn = z.enum(["title", "snippet", "creator"])
+const listedCopy = z.strictObject(copyShape)
+const searchedCopy = z.strictObject({ ...copyShape, matchedIn: searchColumn })
+
+function duplicatesOf<C extends z.ZodType>(copy: C) {
+    return z.strictObject({
+        /** verified: identity computed, copies can join it; ineligible: never grouped by the rule; notVerifiable: a value over this server's limits, returned ungrouped. */
+        identity: z.enum(["verified", "ineligible", "notVerifiable"]),
+        /** Copies recognized on this page, in stored order. */
+        copies: z.array(copy).max(DUPLICATE_COPIES_PAGE_MAX),
+    })
+}
+
+const grouping = z.strictObject({
+    contract: z.literal(CONTRACT_NAME),
+    contractVersion: z.literal(CONTRACT_VERSION),
+    /** Copies reported by this page (duplicates.copies and earlierCopies). */
+    copies: count,
+    /** Articles of this page returned ungrouped because a value exceeded this server's limits (duplicates.identity notVerifiable). */
+    notVerifiable: count,
+    notVerifiableSoFar: count,
+    /** Stories remembered after this page, whose later copies can still be recognized. */
+    rememberedNews: count,
+    /** Since the first page, stories forgotten because of the memory limit: a later copy of one of them is returned as an article of its own. */
+    forgottenSoFar: count,
+    /** The scan is over, nothing was forgotten and every returned article was checked: every copy among the returned articles has been reported. */
+    complete: z.boolean(),
+    semantics: z.literal(GROUPING_SEMANTICS),
+})
+
+/** Output consistency of the grouped mode: grouping, earlierCopies and every duplicates come together; copies are counted exactly. */
+function checkGrouping(
+    v: {
+        readonly articles: readonly { readonly articleId: number; readonly duplicates?: { readonly copies: readonly unknown[] } | undefined }[]
+        readonly earlierCopies?: readonly { readonly representativeId: number }[] | undefined
+        readonly grouping?: { readonly copies: number } | undefined
+    },
+    ctx: z.RefinementCtx,
+): void {
+    const grouped = v.grouping !== undefined
+    if ((v.earlierCopies !== undefined) !== grouped || v.articles.some((a) => (a.duplicates !== undefined) !== grouped)) {
+        ctx.addIssue({ code: "custom", message: "grouping" })
+        return
+    }
+    if (!grouped) return
+    const inline = v.articles.reduce((n, a) => n + (a.duplicates?.copies.length ?? 0), 0)
+    const total = inline + (v.earlierCopies?.length ?? 0)
+    const onPage = new Set(v.articles.map((a) => a.articleId))
+    if (total !== v.grouping?.copies || total > DUPLICATE_COPIES_PAGE_MAX || v.earlierCopies?.some((c) => onPage.has(c.representativeId))) {
+        ctx.addIssue({ code: "custom", message: "grouping copies" })
+    }
+}
+
 const articleScan = z.strictObject({
     examined: count,
     exhausted: z.boolean(),
@@ -456,20 +540,30 @@ const articleScan = z.strictObject({
     invalidDateExcluded: count,
 })
 
-export const listArticlesOutput = z.strictObject({
-    articles: z.array(listedArticle).max(ARTICLE_PAGE_SIZE_MAX),
-    sort: z.literal("stored"),
-    pageSize: z.number().int().min(1).max(ARTICLE_PAGE_SIZE_MAX),
-    hasMore: z.boolean(),
-    nextCursor: z.string().nullable(),
-    scan: articleScan,
-    consistency: z.literal(ARTICLE_LIST_CONSISTENCY),
-    meta: groupMeta.extend({ urlsRedacted: z.literal(true) }),
-})
+export const listArticlesOutput = z
+    .strictObject({
+        articles: z.array(listedArticle.extend({ duplicates: duplicatesOf(listedCopy).optional() })).max(ARTICLE_PAGE_SIZE_MAX),
+        /** groupDuplicates only: copies found on this page of stories returned on an earlier page of the chain. */
+        earlierCopies: z.array(listedCopy.extend({ representativeId: articleIdValue })).max(DUPLICATE_COPIES_PAGE_MAX).optional(),
+        sort: z.literal("stored"),
+        pageSize: z.number().int().min(1).max(ARTICLE_PAGE_SIZE_MAX),
+        hasMore: z.boolean(),
+        nextCursor: z.string().nullable(),
+        scan: articleScan,
+        /** groupDuplicates only. */
+        grouping: grouping.optional(),
+        consistency: z.literal(ARTICLE_LIST_CONSISTENCY),
+        meta: groupMeta.extend({ urlsRedacted: z.literal(true) }),
+    })
+    .superRefine(checkGrouping)
 
 export type ListArticlesInput = z.output<typeof listArticlesInput>
 export type ListArticlesOutput = z.output<typeof listArticlesOutput>
-export type ListedArticle = ListArticlesOutput["articles"][number]
+export type ListedArticle = Omit<ListArticlesOutput["articles"][number], "duplicates">
+export type ListedCopy = z.output<typeof listedCopy>
+export type SearchedCopy = z.output<typeof searchedCopy>
+export type DuplicateIdentityStatus = z.output<ReturnType<typeof duplicatesOf>>["identity"]
+export type GroupingOutput = z.output<typeof grouping>
 
 // ---- Article search (FR-MCP-02B-02) ----
 
@@ -507,8 +601,11 @@ export const searchArticlesInput = z
         }
     })
 
-export const searchArticlesOutput = z.strictObject({
-    articles: z.array(listedArticle.extend({ matchedIn: z.enum(["title", "snippet", "creator"]) })).max(ARTICLE_PAGE_SIZE_MAX),
+export const searchArticlesOutput = z
+    .strictObject({
+    articles: z.array(listedArticle.extend({ matchedIn: searchColumn, duplicates: duplicatesOf(searchedCopy).optional() })).max(ARTICLE_PAGE_SIZE_MAX),
+    /** groupDuplicates only: copies found on this page of stories returned on an earlier page of the chain. */
+    earlierCopies: z.array(searchedCopy.extend({ representativeId: articleIdValue })).max(DUPLICATE_COPIES_PAGE_MAX).optional(),
     sort: z.literal("stored"),
     pageSize: z.number().int().min(1).max(ARTICLE_PAGE_SIZE_MAX),
     hasMore: z.boolean(),
@@ -526,10 +623,13 @@ export const searchArticlesOutput = z.strictObject({
         /** The search is over (scan.exhausted) and every article of the scan was fully searched (incompleteSoFar 0). */
         exhaustive: z.boolean(),
     }),
+    /** groupDuplicates only. */
+    grouping: grouping.optional(),
     matching: z.literal(SEARCH_MATCHING),
     consistency: z.literal(ARTICLE_LIST_CONSISTENCY),
     meta: groupMeta.extend({ urlsRedacted: z.literal(true) }),
-})
+    })
+    .superRefine(checkGrouping)
 
 export type SearchArticlesInput = z.output<typeof searchArticlesInput>
 export type SearchArticlesOutput = z.output<typeof searchArticlesOutput>

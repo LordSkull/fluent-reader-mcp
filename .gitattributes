@@ -1,0 +1,2 @@
+# Byte-exact copies of the Fluent Reader cross-source duplicates contract (hash-checked by tests).
+test/fixtures/cross-source-duplicates/** -text

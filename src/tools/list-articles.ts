@@ -59,6 +59,30 @@
  *    (types, sizes, source, date, fetchedDate) changed, e.g. a backup
  *    restore. A deleted checkpoint row cannot be told from a restore.
  * A replaced database file is DB_REPLACED (connection.ts).
+ *
+ * groupDuplicates (both tools; binding and cursor carry it, so a chain never
+ * changes mode). Without it, nothing below runs and no statement of
+ * DUPLICATE_SQL is prepared. With it, every article that passes the filters
+ * (and the text, in a search) and whose source is visible is a "matched"
+ * article, as before; then, in stored order:
+ *  - its identity is computed (domain/duplicates.ts) from the values loaded by
+ *    DUPLICATE_SQL for the matched rows of the window, within their own
+ *    per-record limits and byte budgets (ScanLimits identityWindowBytes and
+ *    identityCallBytes, accepted like the record bytes: the first record of a
+ *    call always, later ones only within the budget, otherwise the page stops
+ *    before the row without consuming it, scanBudget);
+ *  - a copy of a remembered story (DuplicateMemory.find) is consumed and
+ *    reported: in its representative's duplicates.copies when that one is on
+ *    this page, otherwise in earlierCopies. It takes no position: pageSize
+ *    counts the articles returned, scan.examined every consumed row;
+ *  - any other matched article is returned as before, with `duplicates`
+ *    (identity verified, ineligible or notVerifiable); a verified one opens a
+ *    story in the memory.
+ * Once the page holds pageSize articles, the rest of the window already read
+ * is still consumed while its rows are copies or excluded ones; the page
+ * stops (pageFull) before the first row that would be a new article, which
+ * the next call reads again. A copy that does not fit the response stops the
+ * page before it (responseBudget). Each call still consumes at least one row.
  */
 
 import crypto from "node:crypto"
@@ -67,9 +91,14 @@ import type { CallToolResult } from "@modelcontextprotocol/server"
 import { FrMcpError, isFrMcpError } from "../errors.js"
 import type { ReadOnlyDatabase } from "../db/connection.js"
 import { ARTICLE_RECORD_BYTES_MAX, FIELD_BYTES_MAX } from "../domain/articles.js"
+import { identityOfFields, timeOf } from "../domain/duplicates.js"
+import type { RememberedGroup } from "../scan/duplicate-memory.js"
 import {
+    classifyIdentitySizes,
     EXCERPT_SOURCE_BYTES_MAX,
     readEvaluation,
+    readIdentitySizes,
+    readIdentityValues,
     readIdBounds,
     readPosition,
     readProjection,
@@ -90,19 +119,32 @@ import { BATCH_BYTES_MAX, RECORD_BYTES_MAX, type StorageClass } from "../domain/
 import { CURSOR_TOKEN_LENGTH, type CursorEntry } from "../scan/cursors.js"
 import type { SourceIdentity } from "../scan/identity.js"
 import { loadGroups, type ToolContext } from "./context.js"
+import {
+    finishGrouping,
+    GROUPING_SKELETON,
+    NO_PAGE_GROUPING,
+        startGrouping,
+    successorOptions,
+    type GroupingSpec,
+    type GroupingState,
+    type PageGrouping,
+} from "./duplicate-grouping.js"
 import { parseArgs } from "./input.js"
 import { PageBudget, resultLength, successResult } from "./result.js"
 import {
     ARTICLE_LIST_CONSISTENCY,
     ARTICLE_PAGE_SIZE_DEFAULT,
+    DUPLICATE_COPIES_PAGE_MAX,
     EXCERPT_CHARS_DEFAULT,
     listArticlesInput,
     parseInstant,
     RESULT_SCHEMA_VERSION,
     type ArticleFieldIssue,
+    type DuplicateIdentityStatus,
     type ListArticlesInput,
     type ListArticlesOutput,
     type ListedArticle,
+    type ListedCopy,
 } from "./schemas.js"
 
 export const LIST_ARTICLES = "list_articles"
@@ -132,6 +174,14 @@ export interface ScanLimits {
     readonly searchWindowBytes: number
     /** Search only: bytes of searchable values loaded per call, checked before each window. */
     readonly searchCallBytes: number
+    /** groupDuplicates only: bytes of identity values loaded by one DUPLICATE_SQL.values statement (the first record of a call is always allowed). */
+    readonly identityWindowBytes: number
+    /** groupDuplicates only: bytes of identity values loaded per call. */
+    readonly identityCallBytes: number
+    /** groupDuplicates only, fixed by the first page of a chain: limits of the DuplicateMemory kept by its cursors. */
+    readonly duplicateGroupsMax: number
+    readonly duplicateMembersMax: number
+    readonly duplicateKeyGroupsMax: number
 }
 
 export const DEFAULT_SCAN_LIMITS: ScanLimits = {
@@ -147,6 +197,11 @@ export const DEFAULT_SCAN_LIMITS: ScanLimits = {
     sourceCacheEntries: 1024,
     searchWindowBytes: 1024 * 1024,
     searchCallBytes: 8 * 1024 * 1024,
+    identityWindowBytes: 1024 * 1024,
+    identityCallBytes: 8 * 1024 * 1024,
+    duplicateGroupsMax: 2048,
+    duplicateMembersMax: 8192,
+    duplicateKeyGroupsMax: 16,
 }
 
 /** Uncached sources resolved ahead by one source lookup (S1 of at most this many point lookups). */
@@ -178,8 +233,21 @@ export interface SearchSpec {
     readonly match: (row: EvaluatedRow) => TextOutcome
 }
 
-/** An article of a page; matchedIn only in a search. */
-export type ScannedArticle = ListedArticle & { matchedIn?: SearchColumn }
+/** A copy reported by a page; matchedIn only in a search. */
+export type ScannedCopy = ListedCopy & { matchedIn?: SearchColumn }
+/** A copy of a story returned on an earlier page of the chain. */
+export type EarlierCopy = { representativeId: number } & ScannedCopy
+
+/** An article of a page; matchedIn only in a search, duplicates only with groupDuplicates. */
+export type ScannedArticle = ListedArticle & {
+    matchedIn?: SearchColumn
+    duplicates?: { readonly identity: DuplicateIdentityStatus; readonly copies: ScannedCopy[] }
+}
+
+/** Identity of a matched row (groupDuplicates). */
+type RowIdentity = { readonly kind: "verified"; readonly fingerprint: string; readonly time: number } | { readonly kind: "ineligible" | "notVerifiable" }
+const INELIGIBLE: RowIdentity = { kind: "ineligible" }
+const NOT_VERIFIABLE: RowIdentity = { kind: "notVerifiable" }
 
 export interface Binding {
     readonly [key: string]: string | number | boolean | null
@@ -195,6 +263,7 @@ export interface Binding {
     readonly sort: "stored"
     readonly pageSize: number
     readonly excerptChars: number
+    readonly groupDuplicates: boolean
 }
 
 export interface ScanState {
@@ -209,6 +278,8 @@ export interface ScanState {
     /** Last consumed id and the fingerprint of its row at that time. */
     readonly positionId: number
     readonly positionFingerprint: string | null
+    /** groupDuplicates only. */
+    readonly grouping?: GroupingState
 }
 
 /** The filter arguments shared with search_articles, with their defaults. */
@@ -227,6 +298,7 @@ export function normalize(input: FilterInput): Binding {
         sort: input.sort ?? "stored",
         pageSize: input.pageSize ?? ARTICLE_PAGE_SIZE_DEFAULT,
         excerptChars: input.excerptChars ?? EXCERPT_CHARS_DEFAULT,
+        groupDuplicates: input.groupDuplicates ?? false,
     }
 }
 
@@ -338,6 +410,8 @@ export interface PageInput {
     readonly budget: PageBudget
     /** search_articles only. */
     readonly search?: SearchSpec
+    /** groupDuplicates only. */
+    readonly grouping?: GroupingSpec
 }
 
 export interface PageResult {
@@ -350,6 +424,8 @@ export interface PageResult {
     readonly notSearchedUnexpectedType: number
     /** Search only: bytes of searchable values loaded by this call. */
     readonly textBytes: number
+    /** groupDuplicates only. */
+    readonly grouping?: PageGrouping<EarlierCopy>
     readonly exhausted: boolean
     readonly stoppedBy: StoppedBy
     /** State of the successor cursor; null when exhausted. */
@@ -521,7 +597,25 @@ export function scanPage(db: ReadOnlyDatabase, page: PageInput): PageResult {
     let textUsed = 0
     let windows = 0
     let lastConsumed: number | null = null
-    const counters = () => ({ articles, examined, oversizeSkipped, invalidDateExcluded, notSearchedTooLarge, notSearchedUnexpectedType, textBytes: textUsed })
+
+    // groupDuplicates (see the header): representatives of this page, copies reported, identity bytes loaded.
+    const grouping = page.grouping
+    const onPage = new Map<number, ScannedArticle>()
+    const earlierCopies: EarlierCopy[] = []
+    let copies = 0
+    let notVerifiable = 0
+    let identityUsed = 0
+
+    const counters = () => ({
+        articles,
+        examined,
+        oversizeSkipped,
+        invalidDateExcluded,
+        notSearchedTooLarge,
+        notSearchedUnexpectedType,
+        textBytes: textUsed,
+        ...(grouping !== undefined && { grouping: { earlierCopies, copies, notVerifiable, identityBytes: identityUsed } }),
+    })
     /** Searchable bytes phase B will load for a candidate (always 0 for list_articles). */
     const textOf = (c: { readonly textBytes?: number }): number => (search === undefined ? 0 : (c.textBytes ?? 0))
 
@@ -583,6 +677,72 @@ export function scanPage(db: ReadOnlyDatabase, page: PageInput): PageResult {
         const wanted = rows.map((_, j) => eligible[j] === true && (text === undefined || (text[j] !== "tooLarge" && text[j] !== "unexpectedType")))
         let projection: Map<number, ProjectedRow> | undefined
 
+        /**
+         * groupDuplicates: identity of the matched row i, loading (G1 sizes,
+         * G2 values) the matched rows of this window from i on that fit the
+         * identity budgets; undefined when row i itself does not fit (the call
+         * budget is spent: the page stops before it). Rows whose sizes or
+         * storage classes decide their status cost nothing.
+         */
+        const identities = new Map<number, RowIdentity>()
+        const identityAt = (spec: GroupingSpec, i: number): RowIdentity | undefined => {
+            const row = rows[i] as EvaluatedRow
+            const known = identities.get(row.id)
+            if (known !== undefined) return known
+            // The contract needs a safe-integer source; phase B gives one only for an INTEGER within ±(2^53−1).
+            const loadable = (r: EvaluatedRow): boolean => r.sourceType === "integer" && r.source !== null
+            if (!loadable(row)) {
+                identities.set(row.id, INELIGIBLE)
+                return INELIGIBLE
+            }
+            const pending = new Map<number, EvaluatedRow>()
+            for (let j = i; j < rows.length; j++) {
+                const r = rows[j] as EvaluatedRow
+                if (wanted[j] === true && loadable(r) && !identities.has(r.id)) pending.set(r.id, r)
+            }
+            const sizes = readIdentitySizes(db, [...pending.keys()])
+            const load: number[] = []
+            let batchBytes = 0
+            for (const id of pending.keys()) {
+                const size = sizes.get(id)
+                // Same transaction as phase B: the row exists and passed the same record limit.
+                if (size === undefined) throw new FrMcpError("INTERNAL_ERROR", "unexpected")
+                const decided = classifyIdentitySizes(size)
+                if (decided === "ineligible" || decided === "notVerifiable") {
+                    identities.set(id, decided === "ineligible" ? INELIGIBLE : NOT_VERIFIABLE)
+                    continue
+                }
+                const first = identityUsed === 0 && load.length === 0
+                if (!first && (batchBytes + decided.load > limits.identityWindowBytes || identityUsed + batchBytes + decided.load > limits.identityCallBytes)) break
+                load.push(id)
+                batchBytes += decided.load
+            }
+            if (load.length > 0) {
+                const values = readIdentityValues(db, load)
+                for (const id of load) {
+                    const v = values.get(id)
+                    // Same transaction as the sizes: every value classified as loadable is there.
+                    if (v === undefined || typeof v.title !== "string" || typeof v.snippet !== "string" || typeof v.link !== "string") {
+                        throw new FrMcpError("INTERNAL_ERROR", "unexpected")
+                    }
+                    const found = identityOfFields({
+                        id,
+                        source: (pending.get(id) as EvaluatedRow).source,
+                        synthetic: v.synthetic === 1,
+                        time: timeOf(v.date),
+                        link: v.link,
+                        title: v.title,
+                        snippet: v.snippet,
+                    })
+                    identities.set(id, found === null ? INELIGIBLE : { kind: "verified", fingerprint: spec.fingerprint(found.key), time: found.time })
+                }
+            }
+            identityUsed += batchBytes
+            return identities.get(row.id)
+        }
+        /** groupDuplicates: the page holds pageSize articles; only copies and excluded rows are still consumed in this window. */
+        let full = false
+
         for (let i = 0; i < rows.length; i++) {
             const row = rows[i] as EvaluatedRow
             let matched = false
@@ -590,28 +750,68 @@ export function scanPage(db: ReadOnlyDatabase, page: PageInput): PageResult {
             if (eligible[i] === true) {
                 const check = sourceCheck(rows, eligible, i)
                 // Not evaluated: not consumed either, the next call starts with this row.
-                if (check === "unresolved") return result(false, "scanBudget", counters(), lastConsumed, lo, hi)
+                if (check === "unresolved") return result(false, full ? "pageFull" : "scanBudget", counters(), lastConsumed, lo, hi)
                 visible = check === "visible"
                 matched = visible && wanted[i] === true
             }
             if (matched) {
-                if (projection === undefined || !projection.has(row.id)) {
-                    // The candidates of this window that can still enter the page, from this one on.
-                    const ids = rows.filter((_, j) => j >= i && wanted[j] === true).slice(0, binding.pageSize - articles.length).map((r) => r.id)
-                    projection = readProjection(db, ids, binding.excerptChars)
-                }
-                const projected = projection.get(row.id)
-                // Same transaction as phase B: the row exists and passed the same record limit.
-                if (projected === undefined) throw new FrMcpError("INTERNAL_ERROR", "unexpected")
                 const sid = resolvable(row)
-                const listed = toArticle(row, projected, sid === null ? undefined : sources.get(sid), binding.excerptChars)
-                const article: ScannedArticle = text === undefined ? listed : { ...listed, matchedIn: text[i] as SearchColumn }
-                if (!page.budget.tryAdd(JSON.stringify(article))) {
-                    // A single article that cannot be returned even alone: stable error, no progress.
-                    if (articles.length === 0) throw new FrMcpError("LIMIT_EXCEEDED", "response-too-large")
-                    return result(false, "responseBudget", counters(), lastConsumed, lo, hi)
+                const source = sid === null ? undefined : sources.get(sid)
+                let identity: RowIdentity | undefined
+                let story: RememberedGroup | undefined
+                if (grouping !== undefined) {
+                    identity = identityAt(grouping, i)
+                    if (identity === undefined) return result(false, full ? "pageFull" : "scanBudget", counters(), lastConsumed, lo, hi)
+                    if (identity.kind === "verified") story = grouping.memory.find(identity.fingerprint, identity.time, row.source as number)
+                    // A full page takes no new article: this row is read again by the next call.
+                    if (story === undefined && full) return result(false, "pageFull", counters(), lastConsumed, lo, hi)
                 }
-                articles.push(article)
+                if (grouping !== undefined && story !== undefined && identity?.kind === "verified") {
+                    // A copy: reported under its story, never a new position.
+                    const copy = toCopy(row, source, text?.[i] as SearchColumn | undefined)
+                    const representative = onPage.get(story.representativeId)
+                    let added = false
+                    if (copies < DUPLICATE_COPIES_PAGE_MAX) {
+                        if (representative?.duplicates !== undefined) {
+                            added = page.budget.tryAddTo(representative.duplicates.copies.length, JSON.stringify(copy))
+                            if (added) representative.duplicates.copies.push(copy)
+                        } else {
+                            const earlier: EarlierCopy = { representativeId: story.representativeId, ...copy }
+                            added = page.budget.tryAddTo(earlierCopies.length, JSON.stringify(earlier))
+                            if (added) earlierCopies.push(earlier)
+                        }
+                    }
+                    if (!added) {
+                        // Unreachable in practice (a copy entry is a few hundred units); kept for the same guarantee as articles.
+                        if (articles.length === 0 && copies === 0) throw new FrMcpError("LIMIT_EXCEEDED", "response-too-large")
+                        return result(false, "responseBudget", counters(), lastConsumed, lo, hi)
+                    }
+                    copies++
+                    grouping.memory.join(story, identity.time, row.source as number)
+                } else {
+                    if (projection === undefined || !projection.has(row.id)) {
+                        // The candidates of this window that can still enter the page, from this one on.
+                        const ids = rows.filter((_, j) => j >= i && wanted[j] === true).slice(0, binding.pageSize - articles.length).map((r) => r.id)
+                        projection = readProjection(db, ids, binding.excerptChars)
+                    }
+                    const projected = projection.get(row.id)
+                    // Same transaction as phase B: the row exists and passed the same record limit.
+                    if (projected === undefined) throw new FrMcpError("INTERNAL_ERROR", "unexpected")
+                    const listed = toArticle(row, projected, source, binding.excerptChars)
+                    let article: ScannedArticle = text === undefined ? listed : { ...listed, matchedIn: text[i] as SearchColumn }
+                    if (identity !== undefined) article = { ...article, duplicates: { identity: identityStatus(identity), copies: [] } }
+                    if (!page.budget.tryAdd(JSON.stringify(article))) {
+                        // A single article that cannot be returned even alone: stable error, no progress.
+                        if (articles.length === 0 && copies === 0) throw new FrMcpError("LIMIT_EXCEEDED", "response-too-large")
+                        return result(false, "responseBudget", counters(), lastConsumed, lo, hi)
+                    }
+                    articles.push(article)
+                    if (grouping !== undefined && identity?.kind === "verified") {
+                        grouping.memory.open(row.id, identity.fingerprint, identity.time, row.source as number)
+                        onPage.set(row.id, article)
+                    }
+                    if (identity?.kind === "notVerifiable") notVerifiable++
+                }
             } else if (pre[i] === "invalidDate") {
                 invalidDateExcluded++
             } else if (visible && text?.[i] === "tooLarge") {
@@ -621,14 +821,48 @@ export function scanPage(db: ReadOnlyDatabase, page: PageInput): PageResult {
             }
             examined++
             lastConsumed = row.id
-            if (articles.length === binding.pageSize) {
+            if (articles.length === binding.pageSize && !full) {
+                if (grouping !== undefined) {
+                    full = true
+                    continue
+                }
                 const end = row.id === lo || (short && accepted === candidates.length && i === rows.length - 1)
                 return result(end, "pageFull", counters(), lastConsumed, lo, hi)
             }
         }
-        if (lower === lo || (short && accepted === candidates.length)) return result(true, "exhausted", counters(), lastConsumed, lo, hi)
+        const end = lower === lo || (short && accepted === candidates.length)
+        // groupDuplicates: a full page whose window was consumed to its end.
+        if (full) return result(end, "pageFull", counters(), lastConsumed, lo, hi)
+        if (end) return result(true, "exhausted", counters(), lastConsumed, lo, hi)
         upper = lower - 1
     }
+}
+
+function identityStatus(identity: RowIdentity): DuplicateIdentityStatus {
+    return identity.kind
+}
+
+/** A copy as reported (groupDuplicates): ids, source, date and read state, nothing of its text. */
+function toCopy(row: EvaluatedRow, source: SourceInfo | undefined, matchedIn: SearchColumn | undefined): ScannedCopy {
+    let sourceName: string | null = null
+    let truncated = false
+    if (source?.kind === "found" && source.row.nameType === "text" && source.row.namePrefix !== null) {
+        sourceName = source.row.namePrefix
+        truncated = source.row.nameCut === 1
+    }
+    const date = row.dateType === "integer" && row.date !== null && Math.abs(row.date) <= DATE_MS_MAX ? new Date(row.date).toISOString() : null
+    const read = row.hasReadType === "integer" && (row.hasRead === 0 || row.hasRead === 1) ? row.hasRead === 1 : null
+    const copy: ScannedCopy = {
+        articleId: row.id,
+        // Copies have an INTEGER source (identity); a negative one is reported as null, as for articles.
+        sourceId: row.source !== null && row.source >= 0 ? row.source : null,
+        sourceName,
+        ...(truncated && { sourceNameTruncated: true as const }),
+        date,
+        read,
+    }
+    if (matchedIn !== undefined) copy.matchedIn = matchedIn
+    return copy
 }
 
 function toArticle(row: EvaluatedRow, projected: ProjectedRow, source: SourceInfo | undefined, excerptChars: number): ListedArticle {
@@ -760,9 +994,11 @@ async function run(context: ToolContext, input: ListArticlesInput, limits: ScanL
         schemaVersion: RESULT_SCHEMA_VERSION,
         urlsRedacted: true,
     }
+    const grouped = binding.groupDuplicates
     // Every page-dependent field at its longest serialization.
     const skeleton: ListArticlesOutput = {
         articles: [],
+        ...(grouped && { earlierCopies: [] }),
         sort: binding.sort,
         pageSize: binding.pageSize,
         hasMore: false,
@@ -774,25 +1010,38 @@ async function run(context: ToolContext, input: ListArticlesInput, limits: ScanL
             oversizeSkipped: Number.MAX_SAFE_INTEGER,
             invalidDateExcluded: Number.MAX_SAFE_INTEGER,
         },
+        ...(grouped && { grouping: GROUPING_SKELETON }),
         consistency: ARTICLE_LIST_CONSISTENCY,
         meta,
     }
     const budget = new PageBudget(resultLength(skeleton))
+    const grouping = grouped ? startGrouping(context, entry, limits) : undefined
 
     let page: PageResult
     try {
         page = await context.database.withReadConnection((db) =>
-            scanPage(db, { binding, entry, filterSids, groupRevision, limits, identity: context.identity, budget }),
+            scanPage(db, { binding, entry, filterSids, groupRevision, limits, identity: context.identity, budget, ...(grouping !== undefined && { grouping }) }),
         )
     } catch (error) {
         if (isFrMcpError(error) && error.code === "CURSOR_STALE" && input.cursor !== undefined) context.cursors.invalidate(input.cursor)
         throw error
     }
 
+    const pageGrouping = page.grouping ?? NO_PAGE_GROUPING
+    const finished = grouping === undefined ? undefined : finishGrouping(grouping, pageGrouping, entry, page.exhausted)
     const nextCursor =
-        page.next === null ? null : context.cursors.create(LIST_ARTICLES, binding, page.next, entry?.scanStartedAt ?? context.now())
+        page.next === null
+            ? null
+            : context.cursors.create<ScanState>(
+                  LIST_ARTICLES,
+                  binding,
+                  finished === undefined ? page.next : { ...page.next, grouping: finished.state },
+                  entry?.scanStartedAt ?? context.now(),
+                  successorOptions(finished, entry),
+              )
     const payload: ListArticlesOutput = {
         articles: page.articles,
+        ...(finished !== undefined && { earlierCopies: pageGrouping.earlierCopies }),
         sort: binding.sort,
         pageSize: binding.pageSize,
         hasMore: nextCursor !== null,
@@ -804,6 +1053,7 @@ async function run(context: ToolContext, input: ListArticlesInput, limits: ScanL
             oversizeSkipped: page.oversizeSkipped,
             invalidDateExcluded: page.invalidDateExcluded,
         },
+        ...(finished !== undefined && { grouping: finished.output }),
         consistency: ARTICLE_LIST_CONSISTENCY,
         meta,
     }
@@ -814,6 +1064,6 @@ async function run(context: ToolContext, input: ListArticlesInput, limits: ScanL
         if (nextCursor !== null) context.cursors.invalidate(nextCursor)
         throw error
     }
-    if (entry !== undefined) entry.response = built.serialized
+    if (entry !== undefined) context.cursors.publish(entry, built.serialized, nextCursor)
     return built.result
 }
