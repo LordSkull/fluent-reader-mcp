@@ -100,4 +100,18 @@ export class PageBudget {
         this.#count++
         return true
     }
+
+    /**
+     * The same exact accounting for an element appended to ANOTHER array of
+     * the payload (any nesting depth), which already holds `count` elements:
+     * the growth formula above holds for every array of P. That array must be
+     * in the payload, empty, when the skeleton or its enclosing element was
+     * accounted.
+     */
+    tryAddTo(count: number, json: string): boolean {
+        const cost = 2 * json.length + quoteCount(json) + (count > 0 ? 2 : 0)
+        if (this.#used + cost > RESP_MAX) return false
+        this.#used += cost
+        return true
+    }
 }

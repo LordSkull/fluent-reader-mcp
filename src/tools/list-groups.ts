@@ -166,6 +166,6 @@ async function run(context: ToolContext, input: ListGroupsInput): Promise<CallTo
         if (nextCursor !== null) context.cursors.invalidate(nextCursor)
         throw error
     }
-    if (entry !== undefined) entry.response = built.serialized
+    if (entry !== undefined) context.cursors.publish(entry, built.serialized, nextCursor)
     return built.result
 }

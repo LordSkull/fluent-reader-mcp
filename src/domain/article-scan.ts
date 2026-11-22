@@ -32,6 +32,7 @@
 import type { ReadOnlyDatabase } from "../db/connection.js"
 import { FrMcpError } from "../errors.js"
 import { ARTICLE_RECORD_BYTES_MAX, FIELD_BYTES_MAX } from "./articles.js"
+import { SYNTHETIC_GUID_PREFIX } from "./duplicates.js"
 import { RECORD_BYTES_MAX, type StorageClass } from "./sources.js"
 
 const MAX_SAFE = "9007199254740991"
@@ -225,6 +226,123 @@ export const SEARCH_SQL: Readonly<Record<SearchFields, { readonly candidates: st
     title: searchSql("title"),
     text: searchSql("text"),
     creator: searchSql("creator"),
+}
+
+// ---- groupDuplicates (cross-source duplicates contract v1, domain/duplicates.ts) ----
+
+/**
+ * Identity values are loaded only when TEXT and within these sizes. A larger
+ * title, snippet, link or GUID is never loaded, wholly or in part: the
+ * article's identity is not verifiable here and it is returned ungrouped
+ * ("notVerifiable"). Values of another storage class make it ineligible, as
+ * the contract says for values of the wrong type. A date string longer than
+ * IDENTITY_DATE_TEXT_BYTES_MAX cannot be a valid contract date.
+ */
+export const IDENTITY_TITLE_BYTES_MAX = FIELD_BYTES_MAX
+export const IDENTITY_SNIPPET_BYTES_MAX = 256 * 1024
+export const IDENTITY_LINK_BYTES_MAX = FIELD_BYTES_MAX
+export const IDENTITY_GUID_BYTES_MAX = FIELD_BYTES_MAX
+export const IDENTITY_DATE_TEXT_BYTES_MAX = 64
+/** Bytes counted for a REAL date (an 8-byte value). */
+const REAL_BYTES = 8
+
+const GUID_PREFIX = SYNTHETIC_GUID_PREFIX
+// The prefix is spliced into static SQL: it must stay a plain ASCII literal.
+if (!/^[a-z:-]+$/.test(GUID_PREFIX)) throw new Error("GUID prefix")
+
+function identityLoadable(column: string, max: number): string {
+    return `typeof(${column}) = 'text' AND octet_length(${column}) <= ${max}`
+}
+
+/**
+ * Static SQL of the grouped mode, point lookups by primary key on the ids of
+ * one window that passed every filter (json_each, at most windowRows ids):
+ *  - sizes (G1): storage class and size of each identity column, from the
+ *    record header only (no value loaded);
+ *  - values (G2): the values within the limits above, for ids whose sizes
+ *    fit the identity byte budgets (list-articles.ts). The GUID never reaches
+ *    JavaScript: only whether it starts with the synthetic prefix (SQLite
+ *    loads it, within IDENTITY_GUID_BYTES_MAX). Integer dates are read with
+ *    the protected projection; REAL and short TEXT dates are given to the
+ *    contract's timeOf() as stored.
+ * Both repeat the record limit of phase B.
+ */
+export const DUPLICATE_SQL = {
+    sizes:
+        `SELECT _id AS id, typeof(title) AS titleType, octet_length(title) AS titleBytes, ` +
+        `typeof(snippet) AS snippetType, octet_length(snippet) AS snippetBytes, ` +
+        `typeof(link) AS linkType, octet_length(link) AS linkBytes, ` +
+        `typeof(guid) AS guidType, octet_length(guid) AS guidBytes, ` +
+        `typeof(date) AS dateType, CASE WHEN typeof(date) = 'text' THEN octet_length(date) END AS dateBytes ` +
+        `FROM items WHERE _id IN (SELECT value FROM json_each(?)) AND ${HEADER_BYTES} <= ${ARTICLE_RECORD_BYTES_MAX}`,
+    values:
+        `SELECT _id AS id, ` +
+        `CASE WHEN ${identityLoadable("title", IDENTITY_TITLE_BYTES_MAX)} THEN title END AS title, ` +
+        `CASE WHEN ${identityLoadable("snippet", IDENTITY_SNIPPET_BYTES_MAX)} THEN snippet END AS snippet, ` +
+        `CASE WHEN ${identityLoadable("link", IDENTITY_LINK_BYTES_MAX)} THEN link END AS link, ` +
+        `CASE WHEN ${identityLoadable("guid", IDENTITY_GUID_BYTES_MAX)} THEN substr(guid, 1, ${GUID_PREFIX.length}) = '${GUID_PREFIX}' END AS synthetic, ` +
+        `CASE WHEN typeof(date) = 'integer' AND date BETWEEN -${MAX_SAFE} AND ${MAX_SAFE} THEN date ` +
+        `WHEN typeof(date) = 'real' THEN date ` +
+        `WHEN ${identityLoadable("date", IDENTITY_DATE_TEXT_BYTES_MAX)} THEN date END AS date ` +
+        `FROM items WHERE _id IN (SELECT value FROM json_each(?)) AND ${HEADER_BYTES} <= ${ARTICLE_RECORD_BYTES_MAX}`,
+} as const
+
+/** One row of DUPLICATE_SQL.sizes. */
+export interface IdentitySizeRow {
+    readonly id: number
+    readonly titleType: StorageClass
+    readonly titleBytes: number | null
+    readonly snippetType: StorageClass
+    readonly snippetBytes: number | null
+    readonly linkType: StorageClass
+    readonly linkBytes: number | null
+    readonly guidType: StorageClass
+    readonly guidBytes: number | null
+    readonly dateType: StorageClass
+    readonly dateBytes: number | null
+}
+
+/** One row of DUPLICATE_SQL.values. */
+export interface IdentityValueRow {
+    readonly id: number
+    readonly title: string | null
+    readonly snippet: string | null
+    readonly link: string | null
+    /** 1 when the GUID is TEXT starting with the synthetic prefix, 0 when TEXT without it, null when not TEXT (or not loadable). */
+    readonly synthetic: number | null
+    readonly date: number | string | null
+}
+
+/**
+ * What G1 tells about one row: the bytes G2 will load for it, or why its
+ * identity is decided without loading anything. "ineligible" (a value of the
+ * wrong storage class) takes precedence over "notVerifiable" (a value over
+ * this server's limits): the first is certain, the second only means "not
+ * checked here".
+ */
+export function classifyIdentitySizes(s: IdentitySizeRow): { readonly load: number } | "ineligible" | "notVerifiable" {
+    if (s.titleType !== "text" || s.snippetType !== "text" || s.linkType !== "text") return "ineligible"
+    if (s.dateType !== "integer" && s.dateType !== "real" && s.dateType !== "text") return "ineligible"
+    if (s.dateType === "text" && (s.dateBytes ?? 0) > IDENTITY_DATE_TEXT_BYTES_MAX) return "ineligible"
+    const title = s.titleBytes ?? 0
+    const snippet = s.snippetBytes ?? 0
+    const link = s.linkBytes ?? 0
+    const guid = s.guidType === "text" ? (s.guidBytes ?? 0) : 0
+    if (title > IDENTITY_TITLE_BYTES_MAX || snippet > IDENTITY_SNIPPET_BYTES_MAX || link > IDENTITY_LINK_BYTES_MAX || guid > IDENTITY_GUID_BYTES_MAX) return "notVerifiable"
+    const date = s.dateType === "text" ? (s.dateBytes ?? 0) : s.dateType === "real" ? REAL_BYTES : 0
+    return { load: title + snippet + link + guid + date }
+}
+
+/** G1 for the given ids (each within the record limit). */
+export function readIdentitySizes(db: ReadOnlyDatabase, ids: readonly number[]): Map<number, IdentitySizeRow> {
+    const rows = db.prepare(DUPLICATE_SQL.sizes).all(JSON.stringify(ids)) as unknown as IdentitySizeRow[]
+    return new Map(rows.map((row) => [row.id, row]))
+}
+
+/** G2 for the given ids. */
+export function readIdentityValues(db: ReadOnlyDatabase, ids: readonly number[]): Map<number, IdentityValueRow> {
+    const rows = db.prepare(DUPLICATE_SQL.values).all(JSON.stringify(ids)) as unknown as IdentityValueRow[]
+    return new Map(rows.map((row) => [row.id, row]))
 }
 
 export interface ScanCandidate {

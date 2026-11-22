@@ -310,6 +310,30 @@ describe("list_groups: pagination and cursors", () => {
         assert.equal((await h.call("list_groups", { cursor })).error?.code, "CURSOR_EXPIRED")
     })
 
+    test("14b. a cursor that expires while its last page is built (no successor) is CURSOR_EXPIRED, never published", async () => {
+        let now = Date.UTC(2026, 9, 28, 12)
+        // The registry's clock: `jump` is added right after its next reading (resolve), so the page is built across the expiry.
+        let jump = 0
+        const registryClock = () => {
+            const t = now
+            now += jump
+            jump = 0
+            return t
+        }
+        const { h } = await setup({ sources: plain([0]), settings: groupsOf(entries) }, { now: () => now, cursors: new CursorRegistry({ now: registryClock }) })
+        const expiring = (await groups(h, { limit: expectedAll.length - 1 })).nextCursor as string
+        jump = CURSOR_TTL_MS + 1
+        const refused = await h.call("list_groups", { cursor: expiring })
+        assert.equal(refused.error?.code, "CURSOR_EXPIRED", refused.text)
+        assert.equal((await h.call("list_groups", { cursor: expiring })).error?.code, "CURSOR_EXPIRED", "nothing to replay")
+        // Within the limits the same last page is published and replayed.
+        const valid = (await groups(h, { limit: expectedAll.length - 1 })).nextCursor as string
+        const last = await groups(h, { cursor: valid })
+        assert.deepEqual([last.groups.length, last.nextCursor], [1, null])
+        now += CURSOR_TTL_MS
+        assert.equal((await h.call("list_groups", { cursor: valid })).text, last.outcome.text, "replayed verbatim")
+    })
+
     test("15. a sourceGroups change between pages is CURSOR_STALE and kills the cursor; other keys and 'expanded' do not", async () => {
         const { p, h } = await setup({ sources: plain([0]), settings: groupsOf(entries) })
         const first = await groups(h, { limit: 2 })

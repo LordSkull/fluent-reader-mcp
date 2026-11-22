@@ -1,0 +1,1043 @@
+{
+    "contract": "fluent-reader/cross-source-duplicates",
+    "version": 1,
+    "about": "Conformance data for grouping copies of the same article across RSS sources. Synthetic data only. See README.md in this directory for the rules. 'cases[].groups' lists every group of two or more articles, representative first, for candidates in Fluent Reader feed order (descending date, then descending _id); every other article is ungrouped. 'cases[].pairs' are order-independent identity checks. Item dates are strings in the strict date format of the contract; the database stores integer milliseconds.",
+    "constants": {
+        "MAX_DATE_DIFFERENCE_MS": 600000,
+        "MIN_SNIPPET_LENGTH": 60,
+        "MIN_SNIPPET_WORDS": 8,
+        "SYNTHETIC_GUID_PREFIX": "urn:fluent-reader:"
+    },
+    "genericPaths": [
+        "",
+        "/index",
+        "/index.htm",
+        "/index.html",
+        "/index.php",
+        "/index.asp",
+        "/index.aspx",
+        "/default.asp",
+        "/default.aspx",
+        "/home",
+        "/home.html",
+        "/home.php"
+    ],
+    "whitespace": [
+        "U+0009",
+        "U+000A",
+        "U+000B",
+        "U+000C",
+        "U+000D",
+        "U+0020",
+        "U+00A0",
+        "U+1680",
+        "U+2000",
+        "U+2001",
+        "U+2002",
+        "U+2003",
+        "U+2004",
+        "U+2005",
+        "U+2006",
+        "U+2007",
+        "U+2008",
+        "U+2009",
+        "U+200A",
+        "U+2028",
+        "U+2029",
+        "U+202F",
+        "U+205F",
+        "U+3000",
+        "U+FEFF"
+    ],
+    "invisible": [
+        "U+00AD",
+        "U+200B",
+        "U+200C",
+        "U+200D",
+        "U+2060",
+        "U+FEFF"
+    ],
+    "namedEntities": {
+        "amp": "U+0026",
+        "lt": "U+003C",
+        "gt": "U+003E",
+        "quot": "U+0022",
+        "apos": "U+0027",
+        "nbsp": "U+00A0",
+        "shy": "U+00AD",
+        "laquo": "U+00AB",
+        "raquo": "U+00BB",
+        "lsaquo": "U+2039",
+        "rsaquo": "U+203A",
+        "lsquo": "U+2018",
+        "rsquo": "U+2019",
+        "sbquo": "U+201A",
+        "ldquo": "U+201C",
+        "rdquo": "U+201D",
+        "bdquo": "U+201E",
+        "ndash": "U+2013",
+        "mdash": "U+2014",
+        "hellip": "U+2026",
+        "middot": "U+00B7",
+        "bull": "U+2022",
+        "deg": "U+00B0",
+        "euro": "U+20AC",
+        "pound": "U+00A3",
+        "copy": "U+00A9",
+        "reg": "U+00AE",
+        "trade": "U+2122",
+        "sect": "U+00A7",
+        "para": "U+00B6",
+        "times": "U+00D7",
+        "divide": "U+00F7",
+        "iexcl": "U+00A1",
+        "iquest": "U+00BF",
+        "ordf": "U+00AA",
+        "ordm": "U+00BA",
+        "agrave": "U+00E0",
+        "aacute": "U+00E1",
+        "acirc": "U+00E2",
+        "atilde": "U+00E3",
+        "auml": "U+00E4",
+        "aring": "U+00E5",
+        "aelig": "U+00E6",
+        "ccedil": "U+00E7",
+        "egrave": "U+00E8",
+        "eacute": "U+00E9",
+        "ecirc": "U+00EA",
+        "euml": "U+00EB",
+        "igrave": "U+00EC",
+        "iacute": "U+00ED",
+        "icirc": "U+00EE",
+        "iuml": "U+00EF",
+        "ntilde": "U+00F1",
+        "ograve": "U+00F2",
+        "oacute": "U+00F3",
+        "ocirc": "U+00F4",
+        "otilde": "U+00F5",
+        "ouml": "U+00F6",
+        "oslash": "U+00F8",
+        "ugrave": "U+00F9",
+        "uacute": "U+00FA",
+        "ucirc": "U+00FB",
+        "uuml": "U+00FC",
+        "yacute": "U+00FD",
+        "yuml": "U+00FF",
+        "szlig": "U+00DF",
+        "Agrave": "U+00C0",
+        "Aacute": "U+00C1",
+        "Acirc": "U+00C2",
+        "Atilde": "U+00C3",
+        "Auml": "U+00C4",
+        "Aring": "U+00C5",
+        "AElig": "U+00C6",
+        "Ccedil": "U+00C7",
+        "Egrave": "U+00C8",
+        "Eacute": "U+00C9",
+        "Ecirc": "U+00CA",
+        "Euml": "U+00CB",
+        "Igrave": "U+00CC",
+        "Iacute": "U+00CD",
+        "Icirc": "U+00CE",
+        "Iuml": "U+00CF",
+        "Ntilde": "U+00D1",
+        "Ograve": "U+00D2",
+        "Oacute": "U+00D3",
+        "Ocirc": "U+00D4",
+        "Otilde": "U+00D5",
+        "Ouml": "U+00D6",
+        "Oslash": "U+00D8",
+        "Ugrave": "U+00D9",
+        "Uacute": "U+00DA",
+        "Ucirc": "U+00DB",
+        "Uuml": "U+00DC",
+        "Yacute": "U+00DD"
+    },
+    "normalization": [
+        [
+            "  Mps,  il CDA\tapprova\n",
+            "mps, il cda approva"
+        ],
+        [
+            "a &amp;lt; b",
+            "a &lt; b"
+        ],
+        [
+            "&#39;&#x27;&apos;&quot;&amp;",
+            "'''\"&"
+        ],
+        [
+            "perch&eacute; citt&agrave; &Egrave;",
+            "perché città è"
+        ],
+        [
+            "&laquo;Sì&raquo; &ndash; &hellip;",
+            "«sì» – ..."
+        ],
+        [
+            "&unknown; &#0; &#xD800; &#x110000; &AMP;",
+            "&unknown; &#0; &#xd800; &#x110000; &amp;"
+        ],
+        [
+            "&#128512; &#x1F600;",
+            "\ud83d\ude00 \ud83d\ude00"
+        ],
+        [
+            "Ｍｐｓ",
+            "mps"
+        ],
+        [
+            "Cafe\u0301",
+            "café"
+        ],
+        [
+            "ﬁ ①",
+            "fi 1"
+        ],
+        [
+            "a\u00adb\u200bc\u2060d\ufeff",
+            "abcd"
+        ],
+        [
+            "a\u00a0\u3000b\u2028c\u202fd",
+            "a b c d"
+        ],
+        [
+            "a&nbsp;&nbsp;b&shy;c",
+            "a bc"
+        ],
+        [
+            "l’energia",
+            "l’energia"
+        ],
+        [
+            "İSTANBUL",
+            "i\u0307stanbul"
+        ],
+        [
+            "   ",
+            ""
+        ]
+    ],
+    "publishers": [
+        [
+            "https://www.ansa.it/veneto/notizie/x.html",
+            "ansa.it"
+        ],
+        [
+            "HTTP://ANSA.IT./lombardia/x.html",
+            "ansa.it"
+        ],
+        [
+            "https://www.www.ansa.it/x.html",
+            "www.ansa.it"
+        ],
+        [
+            "https://lombardia.ansa.it/x.html",
+            "lombardia.ansa.it"
+        ],
+        [
+            "https://www.ansa.it:8443/x.html",
+            "ansa.it:8443"
+        ],
+        [
+            "https://www.ansa.it:443/x.html",
+            "ansa.it"
+        ],
+        [
+            "  https://www.ansa.it/x.html \n",
+            "ansa.it"
+        ],
+        [
+            "https://www.example.org/?p=123",
+            "example.org"
+        ],
+        [
+            "https://www.ansa.it",
+            null
+        ],
+        [
+            "https://www.ansa.it/",
+            null
+        ],
+        [
+            "https://www.ansa.it//",
+            null
+        ],
+        [
+            "https://www.ansa.it/index.html",
+            null
+        ],
+        [
+            "https://www.ansa.it/Index.PHP",
+            null
+        ],
+        [
+            "https://www.ansa.it/home/",
+            null
+        ],
+        [
+            "https://www.ansa.it/#notizia",
+            null
+        ],
+        [
+            "",
+            null
+        ],
+        [
+            "ansa.it/x.html",
+            null
+        ],
+        [
+            "/notizie/x.html",
+            null
+        ],
+        [
+            "ftp://www.ansa.it/x.html",
+            null
+        ],
+        [
+            "javascript:void(0)",
+            null
+        ],
+        [
+            "https://user:pw@www.ansa.it/x.html",
+            null
+        ],
+        [
+            "https://localhost/x.html",
+            null
+        ],
+        [
+            "https://[::1]/x.html",
+            null
+        ],
+        [
+            42,
+            null
+        ],
+        [
+            null,
+            null
+        ]
+    ],
+    "dates": [
+        [
+            "2026-11-20T12:00:00Z",
+            1795176000000
+        ],
+        [
+            "2026-11-20T12:00:00.5Z",
+            1795176000500
+        ],
+        [
+            "2026-11-20T12:00:00.123+01:00",
+            1795172400123
+        ],
+        [
+            "2026-11-20T12:00:00-05:30",
+            1795195800000
+        ],
+        [
+            "2024-02-29T00:00:00Z",
+            1709164800000
+        ],
+        [
+            "0099-01-01T00:00:00Z",
+            -59042995200000
+        ],
+        [
+            "1900-02-29T00:00:00Z",
+            null
+        ],
+        [
+            "2000-02-29T00:00:00Z",
+            951782400000
+        ],
+        [
+            "2026-02-29T00:00:00Z",
+            null
+        ],
+        [
+            "2026-04-31T00:00:00Z",
+            null
+        ],
+        [
+            "2026-11-20T24:00:00Z",
+            null
+        ],
+        [
+            "2026-11-20T12:60:00Z",
+            null
+        ],
+        [
+            "2026-11-20T12:00:60Z",
+            null
+        ],
+        [
+            "2026-11-20T12:00:00+24:00",
+            null
+        ],
+        [
+            "2026-11-20T12:00Z",
+            null
+        ],
+        [
+            "2026-11-20T12:00:00",
+            null
+        ],
+        [
+            "2026-11-20 12:00:00Z",
+            null
+        ],
+        [
+            "2026-11-20T12:00:00.1234Z",
+            null
+        ],
+        [
+            "2026-11-20",
+            null
+        ],
+        [
+            "Fri, 20 Nov 2026 12:00:00 GMT",
+            null
+        ],
+        [
+            "1795176000000",
+            null
+        ],
+        [
+            " 2026-11-20T12:00:00Z",
+            null
+        ],
+        [
+            1795176000000,
+            1795176000000
+        ],
+        [
+            0,
+            0
+        ],
+        [
+            -1,
+            -1
+        ],
+        [
+            1.5,
+            null
+        ],
+        [
+            8640000000000001,
+            null
+        ],
+        [
+            null,
+            null
+        ],
+        [
+            true,
+            null
+        ]
+    ],
+    "cases": [
+        {
+            "name": "A. Superjet: two ANSA sources, 23 seconds apart",
+            "items": [
+                {
+                    "_id": 101,
+                    "source": 2,
+                    "guid": "https://www.ansa.it/veneto/notizie/2026/11/20/superjet-ordine-flotta-regionale_aaaa1111.html",
+                    "title": "Superjet, nuovo ordine per la flotta regionale",
+                    "link": "https://www.ansa.it/veneto/notizie/2026/11/20/superjet-ordine-flotta-regionale_aaaa1111.html",
+                    "date": "2026-11-20T09:14:05.000Z",
+                    "snippet": "La compagnia ha confermato l'acquisto di dodici aerei Superjet destinati ai collegamenti regionali, con le prime consegne previste nel corso del 2027."
+                },
+                {
+                    "_id": 102,
+                    "source": 1,
+                    "guid": "https://www.ansa.it/lombardia/notizie/2026/11/20/superjet-ordine-flotta-regionale_bbbb2222.html",
+                    "title": "SUPERJET,  nuovo ordine per la flotta regionale ",
+                    "link": "https://ansa.it/lombardia/notizie/2026/11/20/superjet-ordine-flotta-regionale_bbbb2222.html",
+                    "date": "2026-11-20T09:14:28.000Z",
+                    "snippet": "La compagnia ha confermato l&#39;acquisto di dodici aerei Superjet destinati ai collegamenti regionali,&nbsp;con le prime consegne previste nel corso del 2027."
+                }
+            ],
+            "groups": [
+                [
+                    102,
+                    101
+                ]
+            ],
+            "pairs": [
+                [
+                    101,
+                    102,
+                    true
+                ]
+            ]
+        },
+        {
+            "name": "B. MPS: three ANSA sources within 11 seconds",
+            "items": [
+                {
+                    "_id": 201,
+                    "source": 1,
+                    "guid": "ansa-lombardia-mps-0001",
+                    "title": "Mps, il cda approva il piano industriale",
+                    "link": "https://www.ansa.it/lombardia/notizie/economia/2026/11/20/mps-cda-piano_cccc3333.html",
+                    "date": "2026-11-20T17:02:10.000Z",
+                    "snippet": "Il consiglio di amministrazione della banca ha approvato il nuovo piano industriale, che prevede investimenti nella rete e una riduzione dei costi operativi."
+                },
+                {
+                    "_id": 202,
+                    "source": 2,
+                    "guid": "ansa-veneto-mps-0002",
+                    "title": "Mps, il cda approva il piano industriale",
+                    "link": "https://www.ansa.it/veneto/notizie/economia/2026/11/20/mps-cda-piano_dddd4444.html",
+                    "date": "2026-11-20T17:02:16.000Z",
+                    "snippet": "Il consiglio di amministrazione della banca ha approvato il nuovo piano industriale, che prevede investimenti nella rete e una riduzione dei costi operativi."
+                },
+                {
+                    "_id": 203,
+                    "source": 3,
+                    "guid": "ansa-emilia-mps-0003",
+                    "title": "Mps, il cda approva il piano industriale",
+                    "link": "https://www.ansa.it/emiliaromagna/notizie/economia/2026/11/20/mps-cda-piano_eeee5555.html",
+                    "date": "2026-11-20T17:02:21.000Z",
+                    "snippet": "Il consiglio di amministrazione della banca ha approvato il nuovo piano industriale, che prevede investimenti nella rete e una riduzione dei costi operativi."
+                }
+            ],
+            "groups": [
+                [
+                    203,
+                    202,
+                    201
+                ]
+            ],
+            "pairs": [
+                [
+                    201,
+                    202,
+                    true
+                ],
+                [
+                    201,
+                    203,
+                    true
+                ],
+                [
+                    202,
+                    203,
+                    true
+                ]
+            ]
+        },
+        {
+            "name": "Same title, different text: not grouped",
+            "items": [
+                {
+                    "_id": 301,
+                    "source": 1,
+                    "title": "Maltempo, allerta arancione in regione",
+                    "link": "https://www.ansa.it/lombardia/notizie/2026/11/20/maltempo-allerta_1.html",
+                    "date": "2026-11-20T07:00:00.000Z",
+                    "snippet": "La protezione civile ha diramato un'allerta arancione per piogge intense sulle province di Como, Lecco e Sondrio fino alla mezzanotte."
+                },
+                {
+                    "_id": 302,
+                    "source": 2,
+                    "title": "Maltempo, allerta arancione in regione",
+                    "link": "https://www.ansa.it/veneto/notizie/2026/11/20/maltempo-allerta_2.html",
+                    "date": "2026-11-20T07:01:00.000Z",
+                    "snippet": "La protezione civile ha diramato un'allerta arancione per piogge intense sulle province di Belluno, Treviso e Vicenza fino alla mezzanotte."
+                }
+            ],
+            "groups": [],
+            "pairs": [
+                [
+                    301,
+                    302,
+                    false
+                ]
+            ]
+        },
+        {
+            "name": "Different publishers: not grouped",
+            "items": [
+                {
+                    "_id": 401,
+                    "source": 1,
+                    "title": "Mps, il cda approva il piano industriale",
+                    "link": "https://www.ansa.it/lombardia/notizie/economia/2026/11/20/mps_1.html",
+                    "date": "2026-11-20T17:02:10.000Z",
+                    "snippet": "Il consiglio di amministrazione della banca ha approvato il nuovo piano industriale, che prevede investimenti nella rete e una riduzione dei costi operativi."
+                },
+                {
+                    "_id": 402,
+                    "source": 4,
+                    "title": "Mps, il cda approva il piano industriale",
+                    "link": "https://www.ilpost.it/2026/11/20/mps-piano/",
+                    "date": "2026-11-20T17:02:30.000Z",
+                    "snippet": "Il consiglio di amministrazione della banca ha approvato il nuovo piano industriale, che prevede investimenti nella rete e una riduzione dei costi operativi."
+                },
+                {
+                    "_id": 403,
+                    "source": 2,
+                    "title": "Mps, il cda approva il piano industriale",
+                    "link": "https://veneto.ansa.it/notizie/economia/2026/11/20/mps_3.html",
+                    "date": "2026-11-20T17:02:40.000Z",
+                    "snippet": "Il consiglio di amministrazione della banca ha approvato il nuovo piano industriale, che prevede investimenti nella rete e una riduzione dei costi operativi."
+                }
+            ],
+            "groups": [],
+            "pairs": [
+                [
+                    401,
+                    402,
+                    false
+                ],
+                [
+                    401,
+                    403,
+                    false
+                ]
+            ]
+        },
+        {
+            "name": "Dates: exactly 10 minutes apart are grouped, 10 minutes and 1 ms are not",
+            "items": [
+                {
+                    "_id": 501,
+                    "source": 1,
+                    "title": "Scuola, firmato il nuovo contratto nazionale",
+                    "link": "https://www.ansa.it/lombardia/notizie/2026/11/20/scuola_1.html",
+                    "date": "2026-11-20T12:00:00.000Z",
+                    "snippet": "Sindacati e governo hanno firmato il contratto nazionale per il personale della scuola, con aumenti medi di cento euro lordi al mese."
+                },
+                {
+                    "_id": 502,
+                    "source": 2,
+                    "title": "Scuola, firmato il nuovo contratto nazionale",
+                    "link": "https://www.ansa.it/veneto/notizie/2026/11/20/scuola_2.html",
+                    "date": "2026-11-20T12:10:00.000Z",
+                    "snippet": "Sindacati e governo hanno firmato il contratto nazionale per il personale della scuola, con aumenti medi di cento euro lordi al mese."
+                },
+                {
+                    "_id": 503,
+                    "source": 3,
+                    "title": "Scuola, firmato il nuovo contratto nazionale",
+                    "link": "https://www.ansa.it/emiliaromagna/notizie/2026/11/20/scuola_3.html",
+                    "date": "2026-11-20T12:20:00.001Z",
+                    "snippet": "Sindacati e governo hanno firmato il contratto nazionale per il personale della scuola, con aumenti medi di cento euro lordi al mese."
+                }
+            ],
+            "groups": [
+                [
+                    502,
+                    501
+                ]
+            ],
+            "pairs": [
+                [
+                    501,
+                    502,
+                    true
+                ],
+                [
+                    502,
+                    503,
+                    false
+                ],
+                [
+                    501,
+                    503,
+                    false
+                ]
+            ],
+            "note": "503 is the newest, so it is the first representative; 502 is 10 min 1 ms older and starts its own group, which takes 501 (exactly 10 min older)."
+        },
+        {
+            "name": "No transitive chain: A-B and B-C within 8 minutes, A-C 16 minutes",
+            "items": [
+                {
+                    "_id": 601,
+                    "source": 1,
+                    "title": "Treni, sciopero nazionale di otto ore",
+                    "link": "https://www.ansa.it/lombardia/notizie/2026/11/20/treni_1.html",
+                    "date": "2026-11-20T06:16:00.000Z",
+                    "snippet": "I sindacati dei trasporti hanno confermato lo sciopero di otto ore del personale ferroviario, con fasce di garanzia al mattino e alla sera."
+                },
+                {
+                    "_id": 602,
+                    "source": 2,
+                    "title": "Treni, sciopero nazionale di otto ore",
+                    "link": "https://www.ansa.it/veneto/notizie/2026/11/20/treni_2.html",
+                    "date": "2026-11-20T06:08:00.000Z",
+                    "snippet": "I sindacati dei trasporti hanno confermato lo sciopero di otto ore del personale ferroviario, con fasce di garanzia al mattino e alla sera."
+                },
+                {
+                    "_id": 603,
+                    "source": 3,
+                    "title": "Treni, sciopero nazionale di otto ore",
+                    "link": "https://www.ansa.it/emiliaromagna/notizie/2026/11/20/treni_3.html",
+                    "date": "2026-11-20T06:00:00.000Z",
+                    "snippet": "I sindacati dei trasporti hanno confermato lo sciopero di otto ore del personale ferroviario, con fasce di garanzia al mattino e alla sera."
+                }
+            ],
+            "groups": [
+                [
+                    601,
+                    602
+                ]
+            ],
+            "pairs": [
+                [
+                    601,
+                    602,
+                    true
+                ],
+                [
+                    602,
+                    603,
+                    true
+                ],
+                [
+                    601,
+                    603,
+                    false
+                ]
+            ]
+        },
+        {
+            "name": "Two copies in the same source: one per source in a group",
+            "items": [
+                {
+                    "_id": 701,
+                    "source": 1,
+                    "title": "Sanità, nuove regole per le liste d'attesa",
+                    "link": "https://www.ansa.it/lombardia/notizie/2026/11/20/sanita_1.html",
+                    "date": "2026-11-20T10:05:00.000Z",
+                    "snippet": "Il ministero ha presentato le nuove regole per ridurre le liste d'attesa, con un registro unico delle prenotazioni e controlli trimestrali."
+                },
+                {
+                    "_id": 702,
+                    "source": 1,
+                    "title": "Sanità, nuove regole per le liste d'attesa",
+                    "link": "https://www.ansa.it/lombardia/notizie/2026/11/20/sanita_2.html",
+                    "date": "2026-11-20T10:04:00.000Z",
+                    "snippet": "Il ministero ha presentato le nuove regole per ridurre le liste d'attesa, con un registro unico delle prenotazioni e controlli trimestrali."
+                },
+                {
+                    "_id": 703,
+                    "source": 2,
+                    "title": "Sanità, nuove regole per le liste d'attesa",
+                    "link": "https://www.ansa.it/veneto/notizie/2026/11/20/sanita_3.html",
+                    "date": "2026-11-20T10:03:00.000Z",
+                    "snippet": "Il ministero ha presentato le nuove regole per ridurre le liste d'attesa, con un registro unico delle prenotazioni e controlli trimestrali."
+                }
+            ],
+            "groups": [
+                [
+                    701,
+                    703
+                ]
+            ],
+            "pairs": [
+                [
+                    701,
+                    702,
+                    false
+                ],
+                [
+                    702,
+                    703,
+                    true
+                ]
+            ]
+        },
+        {
+            "name": "Missing, short or uninformative snippets: not grouped",
+            "items": [
+                {
+                    "_id": 801,
+                    "source": 1,
+                    "title": "Calcio, risultati della giornata",
+                    "link": "https://www.ansa.it/lombardia/notizie/2026/11/20/calcio_1.html",
+                    "date": "2026-11-20T21:00:00.000Z",
+                    "snippet": ""
+                },
+                {
+                    "_id": 802,
+                    "source": 2,
+                    "title": "Calcio, risultati della giornata",
+                    "link": "https://www.ansa.it/veneto/notizie/2026/11/20/calcio_2.html",
+                    "date": "2026-11-20T21:00:05.000Z",
+                    "snippet": ""
+                },
+                {
+                    "_id": 803,
+                    "source": 1,
+                    "title": "Borsa, chiusura in rialzo",
+                    "link": "https://www.ansa.it/lombardia/notizie/2026/11/20/borsa_1.html",
+                    "date": "2026-11-20T17:40:00.000Z",
+                    "snippet": "Piazza Affari chiude in rialzo dello 0,8%."
+                },
+                {
+                    "_id": 804,
+                    "source": 2,
+                    "title": "Borsa, chiusura in rialzo",
+                    "link": "https://www.ansa.it/veneto/notizie/2026/11/20/borsa_2.html",
+                    "date": "2026-11-20T17:40:05.000Z",
+                    "snippet": "Piazza Affari chiude in rialzo dello 0,8%."
+                },
+                {
+                    "_id": 805,
+                    "source": 1,
+                    "title": "Elezioni regionali, l'affluenza alle ore dodici nei comuni della provincia",
+                    "link": "https://www.ansa.it/lombardia/notizie/2026/11/20/affluenza_1.html",
+                    "date": "2026-11-20T12:30:00.000Z",
+                    "snippet": "Elezioni regionali, l'affluenza alle ore dodici nei comuni della provincia"
+                },
+                {
+                    "_id": 806,
+                    "source": 2,
+                    "title": "Elezioni regionali, l'affluenza alle ore dodici nei comuni della provincia",
+                    "link": "https://www.ansa.it/veneto/notizie/2026/11/20/affluenza_2.html",
+                    "date": "2026-11-20T12:30:05.000Z",
+                    "snippet": "Elezioni regionali, l'affluenza alle ore dodici nei comuni della provincia"
+                }
+            ],
+            "groups": [],
+            "pairs": [
+                [
+                    801,
+                    802,
+                    false
+                ],
+                [
+                    803,
+                    804,
+                    false
+                ],
+                [
+                    805,
+                    806,
+                    false
+                ]
+            ]
+        },
+        {
+            "name": "Generic links (site root, index page) are no evidence: not grouped",
+            "items": [
+                {
+                    "_id": 901,
+                    "source": 1,
+                    "title": "Comunicato: aggiornamento dei servizi online",
+                    "link": "https://www.ansa.it/",
+                    "date": "2026-11-20T08:00:00.000Z",
+                    "snippet": "I servizi online resteranno sospesi per manutenzione programmata dalle ventidue alle sei, senza conseguenze sui dati degli utenti registrati."
+                },
+                {
+                    "_id": 902,
+                    "source": 2,
+                    "title": "Comunicato: aggiornamento dei servizi online",
+                    "link": "https://www.ansa.it/index.html",
+                    "date": "2026-11-20T08:00:05.000Z",
+                    "snippet": "I servizi online resteranno sospesi per manutenzione programmata dalle ventidue alle sei, senza conseguenze sui dati degli utenti registrati."
+                },
+                {
+                    "_id": 903,
+                    "source": 3,
+                    "title": "Comunicato: aggiornamento dei servizi online",
+                    "link": "https://www.ansa.it",
+                    "date": "2026-11-20T08:00:09.000Z",
+                    "snippet": "I servizi online resteranno sospesi per manutenzione programmata dalle ventidue alle sei, senza conseguenze sui dati degli utenti registrati."
+                }
+            ],
+            "groups": [],
+            "pairs": [
+                [
+                    901,
+                    902,
+                    false
+                ],
+                [
+                    902,
+                    903,
+                    false
+                ]
+            ]
+        },
+        {
+            "name": "Malformed fields: not grouped",
+            "items": [
+                {
+                    "_id": 1001,
+                    "source": 1,
+                    "title": "Trasporti, nuove corse notturne per i pendolari",
+                    "link": "javascript:alert(1)",
+                    "date": "2026-11-20T23:00:00.000Z",
+                    "snippet": "L'azienda dei trasporti ha annunciato nuove corse notturne su sei linee urbane a partire dal prossimo mese, con un servizio ogni venti minuti."
+                },
+                {
+                    "_id": 1002,
+                    "source": 2,
+                    "title": "Trasporti, nuove corse notturne per i pendolari",
+                    "link": "notizie/2026/11/20/trasporti.html",
+                    "date": "2026-11-20T23:00:05.000Z",
+                    "snippet": "L'azienda dei trasporti ha annunciato nuove corse notturne su sei linee urbane a partire dal prossimo mese, con un servizio ogni venti minuti."
+                },
+                {
+                    "_id": 1003,
+                    "source": 3,
+                    "title": "Trasporti, nuove corse notturne per i pendolari",
+                    "link": "https://www.ansa.it/emiliaromagna/notizie/2026/11/20/trasporti_3.html",
+                    "date": "not a date",
+                    "snippet": "L'azienda dei trasporti ha annunciato nuove corse notturne su sei linee urbane a partire dal prossimo mese, con un servizio ogni venti minuti."
+                },
+                {
+                    "_id": 1004,
+                    "source": 4,
+                    "title": null,
+                    "link": "https://www.ansa.it/lombardia/notizie/2026/11/20/trasporti_4.html",
+                    "date": "2026-11-20T23:00:07.000Z",
+                    "snippet": "L'azienda dei trasporti ha annunciato nuove corse notturne su sei linee urbane a partire dal prossimo mese, con un servizio ogni venti minuti."
+                },
+                {
+                    "_id": 1005,
+                    "source": 5,
+                    "title": "Trasporti, nuove corse notturne per i pendolari",
+                    "link": "https://user:secret@www.ansa.it/veneto/notizie/2026/11/20/trasporti_5.html",
+                    "date": "2026-11-20T23:00:08.000Z",
+                    "snippet": "L'azienda dei trasporti ha annunciato nuove corse notturne su sei linee urbane a partire dal prossimo mese, con un servizio ogni venti minuti."
+                },
+                {
+                    "_id": 1006,
+                    "source": 6,
+                    "title": "Trasporti, nuove corse notturne per i pendolari",
+                    "link": "https://www.ansa.it/veneto/notizie/2026/11/20/trasporti_6.html",
+                    "date": "2026-11-20T23:00:09.000Z",
+                    "snippet": 42
+                }
+            ],
+            "groups": [],
+            "pairs": [
+                [
+                    1001,
+                    1002,
+                    false
+                ],
+                [
+                    1003,
+                    1005,
+                    false
+                ],
+                [
+                    1004,
+                    1006,
+                    false
+                ]
+            ]
+        },
+        {
+            "name": "Camera dei deputati: aggregated agendas (synthetic GUID) and legacy points are never grouped",
+            "items": [
+                {
+                    "_id": 1101,
+                    "source": 5,
+                    "guid": "urn:fluent-reader:camera-deputati:odg:legislatura-19:seduta-749",
+                    "title": "Camera dei deputati — Ordine del giorno del 19 novembre 2026 (seduta n. 749)",
+                    "link": "https://www.camera.it/leg19/187",
+                    "date": "2026-11-18T23:00:00.000Z",
+                    "snippet": "Ordine del giorno della seduta. Discussione sulle linee generali dei disegni di legge, svolgimento di interpellanze urgenti e votazioni finali."
+                },
+                {
+                    "_id": 1102,
+                    "source": 6,
+                    "guid": "urn:fluent-reader:camera-deputati:odg:legislatura-19:seduta-749",
+                    "title": "Camera dei deputati — Ordine del giorno del 19 novembre 2026 (seduta n. 749)",
+                    "link": "https://www.camera.it/leg19/187",
+                    "date": "2026-11-18T23:00:00.000Z",
+                    "snippet": "Ordine del giorno della seduta. Discussione sulle linee generali dei disegni di legge, svolgimento di interpellanze urgenti e votazioni finali."
+                },
+                {
+                    "_id": 1103,
+                    "source": 5,
+                    "title": "Ordine del giorno",
+                    "link": "https://www.camera.it/leg19/187",
+                    "date": "2026-11-17T23:00:00.000Z",
+                    "snippet": "1. Discussione sulle linee generali del disegno di legge di conversione del decreto-legge in materia di energia e delle mozioni connesse."
+                },
+                {
+                    "_id": 1104,
+                    "source": 6,
+                    "title": "Ordine del giorno",
+                    "link": "https://www.camera.it/leg19/187",
+                    "date": "2026-11-17T23:00:00.000Z",
+                    "snippet": "2. Svolgimento di interpellanze urgenti e seguito della discussione delle mozioni concernenti iniziative per il sostegno delle aree interne."
+                }
+            ],
+            "groups": [],
+            "pairs": [
+                [
+                    1101,
+                    1102,
+                    false
+                ],
+                [
+                    1103,
+                    1104,
+                    false
+                ]
+            ]
+        },
+        {
+            "name": "Publisher host normalization: case, www. and trailing dot",
+            "items": [
+                {
+                    "_id": 1201,
+                    "source": 1,
+                    "title": "Energia, bollette in calo dal primo dicembre",
+                    "link": "HTTPS://WWW.ANSA.IT./lombardia/notizie/2026/11/20/energia_1.html",
+                    "date": "2026-11-20T15:00:00.000Z",
+                    "snippet": "L'autorità per l'energia ha annunciato una riduzione delle tariffe di luce e gas per le famiglie in regime di tutela a partire da dicembre."
+                },
+                {
+                    "_id": 1202,
+                    "source": 2,
+                    "title": "Energia, bollette in calo dal primo dicembre",
+                    "link": "http://ansa.it/veneto/notizie/2026/11/20/energia_2.html?ref=rss",
+                    "date": "2026-11-20T15:00:30.000Z",
+                    "snippet": "L’autorità per l’energia ha annunciato una riduzione delle tariffe di luce e gas per le famiglie in regime di tutela a partire da dicembre."
+                },
+                {
+                    "_id": 1203,
+                    "source": 3,
+                    "title": "Energia, bollette in calo dal primo dicembre",
+                    "link": "https://www.ansa.it/emiliaromagna/notizie/2026/11/20/energia_3.html",
+                    "date": "2026-11-20T15:00:45.000Z",
+                    "snippet": "L&apos;autorit&agrave; per l&#x27;energia ha annunciato una riduzione delle tariffe di luce e gas per le famiglie in regime di tutela a partire da dicembre."
+                }
+            ],
+            "groups": [
+                [
+                    1203,
+                    1201
+                ]
+            ],
+            "pairs": [
+                [
+                    1201,
+                    1203,
+                    true
+                ],
+                [
+                    1201,
+                    1202,
+                    false
+                ]
+            ],
+            "note": "1202 uses U+2019 instead of an apostrophe: typographic quotes are not normalized, so it stays apart."
+        }
+    ]
+}
